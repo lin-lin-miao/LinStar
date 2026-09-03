@@ -6,7 +6,8 @@ export default {
   'brand': 'LinStar',
 
   /* 顶栏 HUD */
-  'hud.tick': 'tick {n}',
+  'hud.tps': '{n} tick/s',
+  'hud.tpsTip': '实测每秒游戏刻',
   'hud.pause': '暂停',
   'hud.resume': '继续',
   'hud.speed': '速度x{n}',
@@ -29,5 +30,8 @@ export default {
   'save.exported': '存档已导出',
   'save.imported': '存档导入成功',
   'save.importError': '存档导入失败：{err}',
+  'save.exportBusy': '战斗中不可导出存档',
+  'save.importBusy': '战斗中不可导入存档',
+  'save.busy': '战斗中不可保存，结算完成后自动保存',
   'save.unavailable': '本地存储不可用（受限/无痕模式），仍可手动导出与导入存档。',
 };

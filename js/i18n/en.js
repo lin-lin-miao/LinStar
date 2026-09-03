@@ -6,7 +6,8 @@ export default {
   'brand': 'LinStar',
 
   /* HUD */
-  'hud.tick': 'tick {n}',
+  'hud.tps': '{n} tps',
+  'hud.tpsTip': 'Measured ticks per second',
   'hud.pause': 'Pause',
   'hud.resume': 'Resume',
   'hud.speed': 'Speed x{n}',
@@ -29,5 +30,8 @@ export default {
   'save.exported': 'Save exported',
   'save.imported': 'Save imported successfully',
   'save.importError': 'Failed to import save: {err}',
+  'save.exportBusy': 'Cannot export save mid-battle',
+  'save.importBusy': 'Cannot import save mid-battle',
+  'save.busy': 'Cannot save mid-battle; autosaves after settlement',
   'save.unavailable': 'Local storage unavailable (private/restricted mode); manual export/import still works.',
 };
