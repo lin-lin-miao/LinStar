@@ -50,7 +50,7 @@ function boot() {
 
   bus.on('save:import-error', ({ err }) => {
     // eslint-disable-next-line no-alert
-    window.alert(i18n.t('save.importError', { err }));
+    window.alert(err === 'busy' ? i18n.t('save.importBusy') : i18n.t('save.importError', { err }));
   });
 
   // 6. 自动保存
@@ -71,9 +71,16 @@ function attachDebug() {
     goto: (name) => router.show(name),
     tick: {
       get count() { return ticker.count; },
+      get tps() { return ticker.tps; },
       pause: () => ticker.pause(),
       resume: () => ticker.resume(),
       setSpeed: (v) => ticker.setSpeed(v),
+    },
+    // 战斗状态模拟（供测试 HUD 与存档门控；M1 起由 battle.js 自动广播）
+    combat: {
+      on: () => bus.emit('combat:state', { active: true }),
+      off: () => bus.emit('combat:state', { active: false }),
+      get active() { return save.combatActive; },
     },
     i18n: {
       set: (loc) => i18n.set(loc),

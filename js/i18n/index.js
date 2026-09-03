@@ -1,6 +1,6 @@
 /* ===== i18n/index.js —— 词条查询与语言切换 =====
  * 词条表为扁平结构，key 形如 'menu.start'（不做嵌套路径解析）。
- * 用法：i18n.t('menu.start') / i18n.t('hud.tick', { n: 123 })
+ * 用法：i18n.t('menu.start') / i18n.t('hud.tps', { n: 20 })
  * 回退链：当前语言 -> zh-CN -> '??key'（便于发现缺词）。
  * 切换语言广播 'i18n:changed'，UI 层据此重绘。
  */
