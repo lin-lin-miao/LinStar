@@ -1,0 +1,52 @@
+/* ===== LinStar screens.css —— 各屏幕布局（菜单 / 战斗占位等） ===== */
+
+/* ---------- 主菜单 ---------- */
+.screen-menu {
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.screen-menu h1 {
+  font-size: 64px;
+  margin: 0;
+  letter-spacing: 10px;
+  color: var(--accent);
+  text-shadow: 0 0 24px rgba(110, 203, 245, 0.6);
+}
+
+.screen-menu .subtitle {
+  color: var(--text-dim);
+  margin: 0 0 28px;
+  font-size: 15px;
+  letter-spacing: 2px;
+}
+
+.screen-menu .btn { width: 240px; font-size: 17px; }
+
+.screen-menu .hint {
+  margin-top: 30px;
+  color: var(--text-dim);
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* ---------- 战斗占位屏（M0，M1 替换为真实对战场景） ---------- */
+.screen-placeholder {
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.panel-placeholder {
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  padding: 42px 56px;
+  text-align: center;
+  background: rgba(20, 27, 51, 0.5);
+  max-width: 560px;
+}
+
+.panel-placeholder h2 { margin: 0 0 10px; color: var(--accent); }
+.panel-placeholder p { color: var(--text-dim); margin: 0 0 20px; line-height: 1.7; }
