@@ -24,7 +24,8 @@ const SEC_TICKS = 20; // 1 秒 = 20 tick（与战斗核心一致，用于按 tic
  * 本轮仅可选"战斗舰"(combat)；模块从 data/modules.js 已注册模块中选装/卸除，
  * 每舰模块数不超过 SHIPS[type].slots（combat=3）。 */
 const SHIP_TYPES = ['combat']; // M1：演练仅战斗舰（运输/采矿 M2 再放开）
-const MODULE_IDS = Object.keys(MODULES);
+// 可被玩家选装的模块清单（排除内部模块如 rocketWarhead，其仅随召唤携带）
+const MODULE_IDS = Object.keys(MODULES).filter((id) => !MODULES[id].picker);
 let allyShips = [{ type: 'combat', modules: [] }]; // 我方演练编队（编辑态）
 let enemyShips = [{ type: 'combat', modules: [] }]; // 敌方演练编队（编辑态）
 let battleAllyCfg = null;  // 最近一次开战的我方配置快照（供"再战"重开同一配置）
@@ -571,6 +572,9 @@ function perActText(ship, inst) {
   if (fxHas(fx, 'damage')) {
     parts.push(i18n.t('battle.detail.statDamage', { n: Math.round(fx.damage * coef) }));
   }
+  const fxType = Array.isArray(fx.type) ? fx.type : fx.type ? [fx.type] : [];
+  if (fxType.includes('cool_first')) parts.push(i18n.t('battle.detail.statCoolFirst'));
+  if ((fx.self_destruct_damage || 0) < 0) parts.push(i18n.t('battle.detail.statSelfDestruct'));
   if ((fx.ramp_per_hit || 0) > 0) {
     const cap = (fx.max_damage || 0) > 0 ? fx.max_damage : fx.damage || 0;
     parts.push(i18n.t('battle.detail.statRamp', { r: fx.ramp_per_hit, c: Math.round(cap) }));
@@ -959,6 +963,19 @@ function buildDetail(ship) {
       targetBar.append(el('span', { class: 'target-note', text: note }));
       return;
     }
+    // 锁定单位（一次性火箭）：目标召唤时固定、不可改 → 只读提示，不显示自动策略/手动选择
+    if (ship.lockTargetId) {
+      const b = foesOf(ship).find((f) => f.id === ship.lockTargetId);
+      targetBar.append(
+        el('span', {
+          class: 'target-note target-locked',
+          text: i18n.t('battle.detail.targetLocked', {
+            name: b && b.alive ? baseName(b) : i18n.t('battle.detail.lockGone'),
+          }),
+        })
+      );
+      return;
+    }
     const foes = foesOf(ship).filter((f) => f.alive);
     // 该舰自动策略：''=跟随全队，否则为该舰独立策略（覆盖全队）
     const policySel = el(
@@ -1004,6 +1021,13 @@ function buildDetail(ship) {
 
   function targetHintText(s) {
     const cur = currentTargetOf(s); // 与战斗核心同一套目标链：船级指定 → 阵营策略
+    if (s.lockTargetId) {
+      const b = (s.side === 'ally' ? battle?.enemies : battle?.allies)?.find(
+        (f) => f.id === s.lockTargetId
+      );
+      const name = b && b.alive ? baseName(b) : i18n.t('battle.detail.lockGone');
+      return i18n.t('battle.detail.targetLocked', { name });
+    }
     if (s.side === 'ally') {
       if (s.targetId) {
         return cur

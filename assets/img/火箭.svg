@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <g fill="#FFCCCC" stroke="#FF3B30" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" transform="translate(0, 12.5)">
+        
+        <!-- 火箭弹主体（矩形身体） -->
+        <rect x="42" y="25" width="16" height="35" />
+
+        <!-- 火箭弹头部（正三角形） -->
+        <path d="M 42 25 L 50 10 L 58 25 Z" />
+
+        <!-- 火箭弹身体细节 / 分段线 -->
+        <line x1="42" y1="35" x2="58" y2="35" />
+        <line x1="42" y1="45" x2="58" y2="45" />
+
+        <!-- 火箭弹尾部稳定翼 -->
+        <path d="M 42 60 L 38 65 L 42 65 Z" />
+        <path d="M 58 60 L 62 65 L 58 65 Z" />
+    </g>
+</svg>

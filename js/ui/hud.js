@@ -10,7 +10,7 @@ import { i18n } from '../i18n/index.js';
 import { save } from '../systems/save.js';
 import { log } from '../core/log.js';
 
-const SPEEDS = [1, 2, 4];
+const SPEEDS = [0.25, 0.5, 1, 2, 4]; // 可轮换的速度档（含慢速 0.25x/0.5x）
 
 let rootEl = null;
 let tickEl = null;
@@ -35,11 +35,20 @@ function onImportClick() {
 function build() {
   tickEl = el('span', { class: 'hud-tick', text: tpsLabel(), title: i18n.t('hud.tpsTip') });
 
-  // —— 战斗专属控件（暂停 / 倍速），仅战斗中显示 ——
+  // —— 战斗专属控件（暂停 / 逐帧 / 倍速），仅战斗中显示 ——
   const pauseBtn = el('button', {
     class: 'btn small',
     text: ticker.running ? i18n.t('hud.pause') : i18n.t('hud.resume'),
     onclick: () => ticker.toggle(),
+  });
+
+  // 逐帧：暂停状态下点击推进一帧（运行中禁用）
+  const stepBtn = el('button', {
+    class: 'btn small',
+    text: i18n.t('hud.step'),
+    title: i18n.t('hud.stepTip'),
+    disabled: ticker.running ? 'disabled' : null,
+    onclick: () => ticker.step(),
   });
 
   const speedBtn = el('button', {
@@ -54,7 +63,7 @@ function build() {
   combatControlsEl = el('span', {
     class: 'hud-combat-controls',
     style: combatActive ? '' : 'display:none',
-  }, [pauseBtn, speedBtn]);
+  }, [pauseBtn, stepBtn, speedBtn]);
 
   // —— 全局控件 ——
   const langSelect = el(

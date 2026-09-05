@@ -18,6 +18,8 @@ import laser from './modules/laser.js';
 import dualLaser from './modules/dualLaser.js';
 import denseBarrage from './modules/denseBarrage.js';
 import laserDroneSpawn from './modules/laserDroneSpawn.js';
+import rocketLauncher from './modules/rocketLauncher.js';
+import rocketWarhead from './modules/rocketWarhead.js';
 
 export const MODULES = {
   cannon,
@@ -26,6 +28,8 @@ export const MODULES = {
   dualLaser,
   denseBarrage,
   laserDroneSpawn,
+  rocketLauncher,   // 攻击 · 召唤一次性火箭（C06）
+  rocketWarhead,    // 内部：火箭携带的一次性弹药（picker:false，不进入编队可选）
 };
 
 /** 模块类别展示顺序（后续 UI/筛选用）：攻击/护盾/功能/运输/采矿/无人机 */

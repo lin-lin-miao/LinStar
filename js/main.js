@@ -75,6 +75,7 @@ function attachDebug() {
       get tps() { return ticker.tps; },
       pause: () => ticker.pause(),
       resume: () => ticker.resume(),
+      step: () => ticker.step(),           // 暂停下逐帧推进一帧
       setSpeed: (v) => ticker.setSpeed(v),
     },
     // 战斗状态模拟（供测试 HUD 与存档门控；M1 起由 battle.js 自动广播）
