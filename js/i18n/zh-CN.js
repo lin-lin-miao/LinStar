@@ -50,6 +50,7 @@ export default {
   'battle.drill.removeShip': '移除该舰',
   'battle.drill.addModule': '＋ 添加模块…',
   'battle.drill.removeModule': '移除该模块',
+  'battle.drill.levelOf': '模块 {n}：选择等级',
   'battle.drill.fullSlots': '模块槽位已满',
   'battle.drill.start': '开战',
   'battle.zone.enemy': '敌方单位',

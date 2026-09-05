@@ -91,7 +91,11 @@ export function createBattle(preset) {
   function spawnList(arr, side, list) {
     for (const cfg of list) {
       const ship = createShip(cfg.type, side);
-      for (const moduleId of cfg.modules) installModule(ship, moduleId);
+      for (const mod of cfg.modules) {
+        // 支持字符串 id（level=1）或规格对象 { moduleId/id, level }
+        const spec = mod && typeof mod === 'object' ? mod : { moduleId: mod };
+        installModule(ship, spec.moduleId ?? spec.id, spec.level ?? 1);
+      }
       // 开战护盾 = 护盾上限（含被动模块加成上限；时长型模块持续期外不贡献，
       // 因 recalcDerived 只在持续期计入其上限加成，故此处即"满盾"）
       ship.hull.shield = ship.hull.shieldCap;
