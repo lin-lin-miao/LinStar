@@ -57,12 +57,18 @@ export function createModuleInstance(moduleId, level = 1) {
   const cfg = MODULES[moduleId];
   if (!cfg) throw new Error(`未知模块: ${moduleId}`);
   const lv = Math.max(1, level | 0);
+  const resolved = resolveModuleCfg(cfg, lv);
+  // cool_first：type 含 cool_first 的模块"部署即进入冷却"——安装后以（该等级的）cooldown_ticks 作引信
+  // 倒计时，不会立刻触发一次（用于自毁弹药等需先冷却/延时引爆的一次性模块）。
+  const fxt = (resolved.effects && resolved.effects.type) || [];
+  const coolFirst = Array.isArray(fxt) && fxt.includes('cool_first');
+  const startCd = coolFirst ? (resolved.effects.cooldown_ticks || 1) | 0 : 0;
   return {
     id: uid('mod'),
     moduleId,
     level: lv,
-    cfg: resolveModuleCfg(cfg, lv),
-    cooldown: 0,     // 剩余冷却 tick 数（无 duration 模块：激活后即开始；有 duration：持续时间结束后开始）
+    cfg: resolved,
+    cooldown: startCd,  // 剩余冷却 tick 数（无 duration 模块：激活后即开始；有 duration：持续时间结束后开始）
     durationLeft: 0, // ★ 持续时间词条 effects.duration_ticks 的剩余 tick（>0 = 效果持续中）
     enabled: true, // 模块开关（玩家可在详情面板停用/启用；停用时不结算、不耗能）
     // 模块级目标（可选目标的模块使用，如单体/有限目标武器）：

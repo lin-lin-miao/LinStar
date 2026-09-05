@@ -7,7 +7,7 @@
 import { bus } from './eventBus.js';
 
 const TICK_MS = 50;             // 每 tick 的毫秒数（20 tps）
-const SPEED_MIN = 1;
+const SPEED_MIN = 0.25;         // 0.25x 慢速档下限（倍速可为分数）
 const SPEED_MAX = 8;
 const TPS_WINDOW_MS = 1000;     // TPS 统计窗口
 
@@ -81,6 +81,16 @@ export const ticker = {
   },
 
   toggle() { running ? this.pause() : this.resume(); },
+
+  /** 逐帧：仅暂停状态下手动推进一帧（结算 1 tick）。运行中调用无效果。 */
+  step() {
+    if (running) return false;
+    count += 1;
+    history.push(nowMs());
+    bus.emit('tick', { count, tps: 0 });
+    emitState();
+    return true;
+  },
 
   setSpeed(v) {
     const n = Math.max(SPEED_MIN, Math.min(SPEED_MAX, Number(v) || 1));

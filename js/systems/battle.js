@@ -203,6 +203,13 @@ export function createBattle(preset) {
     const foes = ship.side === 'ally' ? enemies : allies;
     const sameSide = ship.side === 'ally' ? allies : enemies;
 
+    // —— 锁定单位（如一次性火箭）：目标在召唤时固定、永不可改——
+    //    即使锁定目标已阵亡也只返回空（绝不另选/改换其他目标）。
+    if (ship.lockTargetId) {
+      const b = foes.find((u) => u.id === ship.lockTargetId);
+      return b && b.alive ? [b] : [];
+    }
+
     const pool = [];
     if (kinds.includes('self')) pool.push(ship);
     if (kinds.includes('enemy')) pool.push(...orderedFoes(foes, policyOf(ship)));
@@ -271,6 +278,10 @@ export function createBattle(preset) {
    * 即沿用上一轮已锁定的存活目标），而不是只看目标队列队首。 */
   function shipEffectiveTarget(ship) {
     const foes = ship.side === 'ally' ? enemies : allies;
+    if (ship.lockTargetId) {
+      const b = foes.find((f) => f.id === ship.lockTargetId && f.alive);
+      return b || null; // 锁定单位不回落其他目标（即使锁定目标已阵亡也返回 null）
+    }
     if (ship.targetId) {
       const u = foes.find((f) => f.id === ship.targetId && f.alive);
       if (u) return u;
@@ -456,11 +467,17 @@ export function createBattle(preset) {
    *  - 已达该阵营该单位的"最大召唤数" → 不召唤（保持待命，有空位即补召）
    *  - 能量不足 → 不召唤
    *  - 召唤单位存在 lifespan_ticks tick，到期自动死亡；临时单位阵亡/到期后直接移出场景 */
-  function doSummon(ship, inst, fx) {
+  function doSummon(ship, inst, fx, boundId, ignoreCap) {
     const sum = (fx.summon && typeof fx.summon === 'object') ? fx.summon : {};
     if (!sum.type) return;
     const side = ship.side;
-    if (countLiveOfType(side, sum.type) >= (sum.maxSummoned || 1)) return; // 已达上限
+    // 场上存活上限按"所属召唤模块"(family)计：不同召唤模块即使复用同一船型(如 drone)也不互相挤占。
+    // ignoreCap：本次为"按目标数齐射"（per_target），不受该模块在场上限限制。
+    if (!ignoreCap) {
+      let n = 0;
+      for (const u of sidesOf(side)) if (u.alive && u.summonMod === inst.moduleId) n += 1;
+      if (n >= (sum.maxSummoned || 1)) return; // 已达该模块在场召唤数上限
+    }
     const cost = fx.energy_cost || 0;
     if (ship.hull.energy < cost) return; // 能量不足
     ship.hull.energy -= cost;
@@ -475,12 +492,17 @@ export function createBattle(preset) {
     //     设 false 则召出的是一艘普通单位（无存在时间限制，阵亡保留灰色卡片）
     const isTemp = !(sum.temp === false);
     const u = spawnSummoned(sum.type, side, ov, isTemp);
+    u.summonMod = inst.moduleId; // 用于按召唤模块统计在场存活上限（不同召唤模块互不挤占）
     if (isTemp) u.tempLeft = (sum.lifespan_ticks || 0) > 0 ? sum.lifespan_ticks : 60;
-    u.summonIcon = inst.cfg.icon || '';   // 单位图标随召唤模块图标
-    u.tempNoIcon = !inst.cfg.icon;        // 模块无图标 → 单位降级 ▲
+    u.summonIcon = A.icon || inst.cfg.icon || ''; // 召唤单位图标：attrs.icon 优先，其次模块 icon
+    u.tempNoIcon = !u.summonIcon;                   // 无图标 → 单位降级 ▲
     // 显示名：模块给召唤单位显式指定名称词条(attrs.nameKey)则用之；
     // 模块未指定时才覆写为所属召唤模块名（模板 ship.drone 词条仅作缺省安全回退）。
     if (!A.nameKey) u.nameKey = inst.cfg.nameKey || u.nameKey;
+    if (boundId) {
+      u.lockTargetId = boundId; // 固定目标：召唤时锁定，不可再改（即使目标阵亡也不切换）
+      u.targetId = boundId;
+    }
     // 携带模组：等级默认 = 召唤模块等级；若 spec.level 显式给出则用之
     const mods = Array.isArray(sum.modules) ? sum.modules : [];
     for (const m of mods) {
@@ -488,19 +510,23 @@ export function createBattle(preset) {
       const mid = spec.moduleId ?? spec.id;
       if (!mid) continue;
       const lv = spec.level ? spec.level : (inst.level || 1);
-      installModule(u, mid, lv, true); // force：不受该单位模块槽上限约束
+      installModule(u, mid, lv, true); // force：不受该单位模块槽上限约束（cool_first 引信在模块安装时统一处理）
     }
     u.hull.shield = u.hull.shieldCap; // 满盾登场（同 spawnList 逻辑）
-    // 继承模块所属船舰的自动策略与该船当前目标：策略覆盖随母船；首击与母船攻击同一目标，之后按其策略
-    if (ship.policy) u.policy = ship.policy; // ship.policy 为空=跟随全队（召唤物同默认）
-    const parentTarget = shipEffectiveTarget(ship);
-    if (parentTarget && parentTarget.alive) {
-      for (const inner of u.modules) {
-        const ifx = (inner.cfg && inner.cfg.effects) || {};
-        const ikinds = (inner.cfg && inner.cfg.target && inner.cfg.target.kinds) || [];
-        const off = ikinds.includes('enemy') || ikinds.includes('any') || (ifx.damage > 0);
-        if (off) inner._stick = [parentTarget.id];
+    // 继承模块所属船舰的自动策略与该船当前目标（仅非锁定单位；锁定单位目标由 boundId 固定）
+    if (!boundId) {
+      if (ship.policy) u.policy = ship.policy; // ship.policy 为空=跟随全队（召唤物同默认）
+      const parentTarget = shipEffectiveTarget(ship);
+      if (parentTarget && parentTarget.alive) {
+        for (const inner of u.modules) {
+          const ifx = (inner.cfg && inner.cfg.effects) || {};
+          const ikinds = (inner.cfg && inner.cfg.target && inner.cfg.target.kinds) || [];
+          const off = ikinds.includes('enemy') || ikinds.includes('any') || (ifx.damage > 0);
+          if (off) inner._stick = [parentTarget.id];
+        }
       }
+    } else {
+      inst._stick = [boundId]; // 发射器持续瞄准同一锁定目标（存活时）
     }
     inst.cooldown = fx.cooldown_ticks ?? 1;
     battleLog(
@@ -558,15 +584,32 @@ export function createBattle(preset) {
       return;
     }
 
-    // —— 召唤类模块：无目标，走召唤执行（fx.summon 存在时）——
+    // —— 召唤类模块（fx.summon 存在）：走召唤执行 ——
     if (fx.summon && typeof fx.summon === 'object' && fx.summon.type) {
+      const sTypes = Array.isArray(fx.type) ? fx.type : fx.type ? [fx.type] : [];
+      const perTarget = sTypes.includes('per_target'); // 特殊 type 标记：召唤数量 = 当前目标数（每个目标一枚）
+      const needTargets = perTarget || fx.summon.bind_target; // 需先解析发射器模块目标
+      const aimList = needTargets ? moduleTargetList(ship, inst) : [];
+      if (perTarget) {
+        // 逐目标补召一枚（每枚绑定其对应目标）；无目标则不召唤
+        if (!aimList.length) return;
+        for (const t of aimList) doSummon(ship, inst, fx, t.id, true); // ignoreCap：本次齐射不受在场上限限制
+        return;
+      }
+      if (fx.summon.bind_target) {
+        const boundId = aimList.length ? aimList[0].id : undefined;
+        if (boundId) doSummon(ship, inst, fx, boundId); // 有目标才召唤并锁定
+        return;
+      }
       doSummon(ship, inst, fx);
       return;
     }
 
     const targets = moduleTargetList(ship, inst);
-    if (!targets.length) return; // 无足够目标：本次不激活
-    if (!canImpact(targets, fx, inst)) return; // 无可生效目标（如盾满/效果已在持续）：不激活不耗能
+    // 自毁词条(self_destruct_damage)：即使无可命中目标也必须引爆自毁（始终触发）
+    const isSuicide = (fx.self_destruct_damage || 0) !== 0;
+    if (!isSuicide && !targets.length) return; // 无足够目标：本次不激活
+    if (!isSuicide && !canImpact(targets, fx, inst)) return; // 无可生效目标：不激活不耗能
 
     ship.hull.energy -= cost;
     if ((fx.duration_ticks || 0) > 0) {
@@ -695,6 +738,20 @@ export function createBattle(preset) {
       }
       // 未来词条执行器在此追加（如 heal / energyDrain / shieldDrain …）
     }
+    // —— 自毁词条 self_destruct_damage：对所属单位自身血量"正加负减"（负值即扣光机体死亡）；
+    //    始终触发（锁定目标即使已阵亡也照常引爆），且置于对目标造成伤害之后。 ——
+    if (isSuicide && ship.alive) {
+      const sdam = fx.self_destruct_damage || 0;
+      ship.hull.hp =
+        sdam > 0
+          ? Math.min(ship.hull.hpMax, ship.hull.hp + sdam)
+          : Math.max(0, ship.hull.hp + sdam);
+      if (ship.hull.hp <= 0) {
+        ship.hull.hp = 0;
+        ship.alive = false;
+        battleLog('battle.log.selfDestruct', { ship: uTok(ship) }, ['ship']);
+      }
+    }
     // 持久化自动目标（粘性）：无手动锁定时记住本次实际命中的目标，下次沿用存活者
     const autoLocked =
       !ship.targetId && (!inst.target || inst.target.mode === 'follow');
@@ -716,7 +773,7 @@ export function createBattle(preset) {
         const u = foes.find((f) => f.id === id);
         return u && u.alive;
       };
-      if (ship.targetId && !aliveId(ship.targetId)) {
+      if (ship.targetId && !ship.lockTargetId && !aliveId(ship.targetId)) {
         ship.targetId = null;
         battleLog('battle.log.autoTarget', { ship: uTok(ship) }, ['ship']);
       }
