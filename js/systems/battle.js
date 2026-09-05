@@ -26,21 +26,29 @@
  * 事件：'battle:settled' { result:'win'|'lose' }
  */
 import { bus } from '../core/eventBus.js';
-import { log } from '../core/log.js';
+import { log, formatRich } from '../core/log.js';
 import { i18n } from '../i18n/index.js';
 import { createShip, installModule, coeff, recalcDerived } from '../entities/ship.js';
 
 const TPS = 20; // 1 秒 = 20 tick
 
-/** 全队（阵营级）自动目标策略：顺序 / 最低血量 / 最低护盾（可扩展） */
-export const TARGET_POLICIES = ['order', 'lowestHp', 'lowestShield'];
+/** 全队（阵营级）自动目标策略：顺序 / 最低血量 / 最低护盾 / 优先无人机 / 优先舰船（可扩展）。
+ *  ship 级可用 ship.policy 覆盖（null=跟随全队）；该列表也作为 船舰主要目标 的策略选项。 */
+export const TARGET_POLICIES = ['order', 'lowestHp', 'lowestShield', 'droneFirst', 'shipFirst'];
 
-/** 按全队策略对存活目标排序（order=阵列顺序=前排优先；其余按数值升序） */
+/** 按策略对存活目标排序：
+ *  lowestHp / lowestShield 按数值升序；
+ *  droneFirst / order（默认）→ 召唤(无人机)组视为"队首"，先于主力；
+ *  shipFirst → 主力(舰船)先于召唤(无人机)。组内按阵列顺序。
+ *  注：此处用于【目标选择队列】；渲染队列顺序与它无关（召唤物排在列尾显示）。 */
 function orderedFoes(foes, policy) {
   const alive = foes.filter((f) => f.alive);
   if (policy === 'lowestHp') return alive.sort((a, b) => a.hull.hp - b.hull.hp);
   if (policy === 'lowestShield') return alive.sort((a, b) => a.hull.shield - b.hull.shield);
-  return alive;
+  const summoned = alive.filter((f) => f.isSummon);
+  const mains = alive.filter((f) => !f.isSummon);
+  if (policy === 'shipFirst') return [...mains, ...summoned];
+  return [...summoned, ...mains]; // order / droneFirst
 }
 
 /** 单位类型名（多个同阵营同名单位时带 #序号 区分，如 战斗舰 #2） */
@@ -52,6 +60,17 @@ function typeName(ship) {
 function nameForLog(ship) {
   const key = ship.side === 'ally' ? 'battle.unit.ally' : 'battle.unit.enemy';
   return i18n.t(key, { type: typeName(ship) });
+}
+
+/** 单位名着色段（敌方名红 / 我方名蓝，由渲染层包 span） */
+function uTok(ship) {
+  return { side: ship.side, label: nameForLog(ship) };
+}
+
+/** 战斗战报（channel=battle）：colorKeys 所列占位参数按着色单位名段替换 */
+function battleLog(key, params, colorKeys) {
+  const { msg, rich } = formatRich(key, params, colorKeys);
+  log.add(msg, 'battle', rich);
 }
 
 /** 造成伤害：护盾先承伤，再扣血；目标死亡时记录战报 */
@@ -71,7 +90,7 @@ function damageShip(target, amount) {
   if (target.hull.hp <= 0 && target.alive) {
     target.hull.hp = 0;
     target.alive = false;
-    log.add(i18n.t('battle.log.destroyed', { ship: nameForLog(target) }), 'battle');
+    battleLog('battle.log.destroyed', { ship: uTok(target) }, ['ship']);
   }
   return dealt;
 }
@@ -87,6 +106,7 @@ export function createBattle(preset) {
   let result = null;
   let tickOff = null;
   let runTicks = 0; // 战斗已进行的 tick 数（running 起计）
+  const seqCount = { ally: 0, enemy: 0 }; // 各阵营"出场序号"分配器：编号由出场顺序决定、不随队列变化
 
   function spawnList(arr, side, list) {
     for (const cfg of list) {
@@ -99,7 +119,8 @@ export function createBattle(preset) {
       // 开战护盾 = 护盾上限（含被动模块加成上限；时长型模块持续期外不贡献，
       // 因 recalcDerived 只在持续期计入其上限加成，故此处即"满盾"）
       ship.hull.shield = ship.hull.shieldCap;
-      ship.order = arr.length + 1; // 该阵营内的出场序号（用于 #编号 显示）
+      seqCount[side] += 1;
+      ship.order = seqCount[side]; // 出场序号（#编号），稳定不随队列/移除变化
       arr.push(ship);
     }
   }
@@ -110,9 +131,62 @@ export function createBattle(preset) {
   for (const s of allies) s.sideSize = allies.length;
   for (const s of enemies) s.sideSize = enemies.length;
 
+  /* ---------- 召唤 / 临时单位支持 ---------- */
+  const sidesOf = (side) => (side === 'ally' ? allies : enemies);
+  /** 该阵营当前存活的某种单位数量（用于"最大召唤数"判定） */
+  function countLiveOfType(side, typeId) {
+    let n = 0;
+    for (const u of sidesOf(side)) if (u.alive && u.typeId === typeId) n += 1;
+    return n;
+  }
+  /** 该阵营人数变化后同步各单位的 sideSize（仅决定是否显示 # 前缀），不改动出场序号 */
+  function refreshSideSize(side) {
+    const arr = sidesOf(side);
+    for (const u of arr) u.sideSize = arr.length;
+  }
+  /** 生成一个召唤单位并入阵营（overrides 覆写模板），排在该阵营队列【列尾】显示；
+   * 目标队列顺序由 orderedFoes 另行处理（召唤物视为队首）。
+   * 出场序号由 seqCount 统一分配、稳定不随队列/移除变化。
+   * temp=true → 临时单位：受存在时间(lifespan)约束，到期自动死亡；阵亡/到期后直接移出场景。
+   * temp=false → 普通单位：不设存在时间，持续作战至死亡（阵亡后保留灰色卡片）。 */
+  function spawnSummoned(typeId, side, overrides, temp) {
+    const s = createShip(typeId, side, overrides || null);
+    s.isSummon = true;           // 召唤单位标记（目标队列视为队首；渲染仍排在列尾）
+    s.temp = !!temp;             // 是否为临时单位（由召唤配置决定）
+    if (s.temp) s.tempLeft = 0;  // 剩余存在 tick（仅临时单位使用）
+    seqCount[side] += 1;
+    s.order = seqCount[side];    // #编号由出场顺序决定（整队统一递增）
+    sidesOf(side).push(s);       // 排在列尾（显示在主力之后）；目标顺序由 orderedFoes 另行处理
+    refreshSideSize(side);
+    return s;
+  }
+  /** 把临时单位移出场景，并清理其各模块对本场其它单位施加的影响 */
+  function removeSummoned(side, u) {
+    for (const inst of u.modules) {
+      if (inst.durationLeft > 0) inst.durationLeft = 0;
+      dropSourceMods(inst);
+    }
+    const arr = sidesOf(side);
+    const i = arr.indexOf(u);
+    if (i >= 0) {
+      arr.splice(i, 1);
+      refreshSideSize(side);
+    }
+  }
+
   /* ---------- 统一目标系统 ---------- */
   const policies = { ally: 'order', enemy: 'order' };
-  const policyOf = (ship) => policies[ship.side] || 'order';
+  // 单位级策略：ship.policy 有效则用它覆盖全队策略；否则跟随全队
+  const policyOf = (ship) =>
+    ship.policy && TARGET_POLICIES.includes(ship.policy) ? ship.policy : policies[ship.side] || 'order';
+  /** 设置某船的自动目标策略（ship 对象或 id）；kind=null → 跟随全队。即时清除旧自动粘性目标。 */
+  function setShipPolicy(ship, kind) {
+    if (!ship) return false;
+    if (kind && !TARGET_POLICIES.includes(kind)) return false;
+    ship.policy = kind || null;
+    for (const inst of ship.modules || []) inst._stick = undefined; // 策略变化即时生效
+    return true;
+  }
 
   /** 依目标词条(kinds/countMode/maxCount)解析本次命中的目标列表（引擎与 UI 共用）
    *  - 目标池：self → 自身；enemy → 敌方存活（按全队策略排序）；ally → 同阵营其它存活
@@ -150,6 +224,21 @@ export function createBattle(preset) {
         uniq.unshift(d);
       }
     }
+    // —— 自动目标"粘性"：无任何手动锁定(船 targetId / 模块 unit|units)时，
+    //     沿用上一轮自动已锁定的存活目标并前置；旧目标未阵亡前不切到新单位
+    //     （如新召到队首的单位不会立刻被集火），旧目标丢失后才按策略选新目标 ——
+    const manualLocked = !!ship.targetId || (inst.target && inst.target.mode !== 'follow');
+    if (!manualLocked && Array.isArray(inst._stick) && inst._stick.length) {
+      const aliveStick = inst._stick.filter((id) => uniq.some((u) => u.id === id));
+      if (aliveStick.length) {
+        const head = [];
+        const rest = [];
+        for (const u of uniq) (aliveStick.includes(u.id) ? head : rest).push(u);
+        const ord = aliveStick.map((id) => head.find((u) => u.id === id)).filter(Boolean);
+        uniq.length = 0;
+        uniq.push(...ord, ...rest);
+      }
+    }
 
     if (mode === 'all') return uniq;
 
@@ -177,12 +266,24 @@ export function createBattle(preset) {
     return uniq.slice(0, 1);
   }
 
-  /** 船的"上游"目标（供 UI 显示单位主要目标/提示） */
+  /** 船的"当前实际目标"（供 UI 显示单位主要目标/提示）：
+   * 优先手动目标；否则取首个能攻击敌方的模块的实时解析结果（moduleTargetList 含自动"粘性"，
+   * 即沿用上一轮已锁定的存活目标），而不是只看目标队列队首。 */
   function shipEffectiveTarget(ship) {
     const foes = ship.side === 'ally' ? enemies : allies;
     if (ship.targetId) {
       const u = foes.find((f) => f.id === ship.targetId && f.alive);
       if (u) return u;
+    }
+    if (ship.modules && ship.modules.length) {
+      for (const inst of ship.modules) {
+        const fx = (inst.cfg && inst.cfg.effects) || {};
+        const kinds = (inst.cfg && inst.cfg.target && inst.cfg.target.kinds) || [];
+        const offensive = kinds.includes('enemy') || kinds.includes('any') || (fx.damage > 0);
+        if (!offensive) continue; // 跳过纯增益/召唤等不攻敌的模块
+        const list = moduleTargetList(ship, inst);
+        if (list.length) return list[0];
+      }
     }
     return orderedFoes(foes, policyOf(ship))[0] || null;
   }
@@ -351,6 +452,68 @@ export function createBattle(preset) {
     return true;
   }
 
+  /** 召唤类模块执行：按 fx.summon 补召一个临时单位（携带模组数量不受该单位槽限约束）
+   *  - 已达该阵营该单位的"最大召唤数" → 不召唤（保持待命，有空位即补召）
+   *  - 能量不足 → 不召唤
+   *  - 召唤单位存在 lifespan_ticks tick，到期自动死亡；临时单位阵亡/到期后直接移出场景 */
+  function doSummon(ship, inst, fx) {
+    const sum = (fx.summon && typeof fx.summon === 'object') ? fx.summon : {};
+    if (!sum.type) return;
+    const side = ship.side;
+    if (countLiveOfType(side, sum.type) >= (sum.maxSummoned || 1)) return; // 已达上限
+    const cost = fx.energy_cost || 0;
+    if (ship.hull.energy < cost) return; // 能量不足
+    ship.hull.energy -= cost;
+    // —— 用召唤模块给通用无人机"覆写模板"：attrs 按船型结构整条可覆写，缺省沿用模板 ——
+    const A = (sum.attrs && typeof sum.attrs === 'object') ? sum.attrs : {};
+    const ov = {
+      ...(A.nameKey ? { nameKey: A.nameKey } : {}),
+      ...(A.base && typeof A.base === 'object' ? { base: A.base } : {}),
+      ...(A.coefficients && typeof A.coefficients === 'object' ? { coefficients: A.coefficients } : {}),
+    };
+    // temp：缺省 true（临时单位，存在时间到期自动死亡+阵亡直接移除）；
+    //     设 false 则召出的是一艘普通单位（无存在时间限制，阵亡保留灰色卡片）
+    const isTemp = !(sum.temp === false);
+    const u = spawnSummoned(sum.type, side, ov, isTemp);
+    if (isTemp) u.tempLeft = (sum.lifespan_ticks || 0) > 0 ? sum.lifespan_ticks : 60;
+    u.summonIcon = inst.cfg.icon || '';   // 单位图标随召唤模块图标
+    u.tempNoIcon = !inst.cfg.icon;        // 模块无图标 → 单位降级 ▲
+    // 显示名：模块给召唤单位显式指定名称词条(attrs.nameKey)则用之；
+    // 模块未指定时才覆写为所属召唤模块名（模板 ship.drone 词条仅作缺省安全回退）。
+    if (!A.nameKey) u.nameKey = inst.cfg.nameKey || u.nameKey;
+    // 携带模组：等级默认 = 召唤模块等级；若 spec.level 显式给出则用之
+    const mods = Array.isArray(sum.modules) ? sum.modules : [];
+    for (const m of mods) {
+      const spec = m && typeof m === 'object' ? m : { moduleId: m };
+      const mid = spec.moduleId ?? spec.id;
+      if (!mid) continue;
+      const lv = spec.level ? spec.level : (inst.level || 1);
+      installModule(u, mid, lv, true); // force：不受该单位模块槽上限约束
+    }
+    u.hull.shield = u.hull.shieldCap; // 满盾登场（同 spawnList 逻辑）
+    // 继承模块所属船舰的自动策略与该船当前目标：策略覆盖随母船；首击与母船攻击同一目标，之后按其策略
+    if (ship.policy) u.policy = ship.policy; // ship.policy 为空=跟随全队（召唤物同默认）
+    const parentTarget = shipEffectiveTarget(ship);
+    if (parentTarget && parentTarget.alive) {
+      for (const inner of u.modules) {
+        const ifx = (inner.cfg && inner.cfg.effects) || {};
+        const ikinds = (inner.cfg && inner.cfg.target && inner.cfg.target.kinds) || [];
+        const off = ikinds.includes('enemy') || ikinds.includes('any') || (ifx.damage > 0);
+        if (off) inner._stick = [parentTarget.id];
+      }
+    }
+    inst.cooldown = fx.cooldown_ticks ?? 1;
+    battleLog(
+      'battle.log.summon',
+      {
+        ship: uTok(ship),
+        unit: uTok(u),
+        module: i18n.t(inst.cfg.nameKey),
+      },
+      ['ship', 'unit']
+    );
+  }
+
   /** 激活前可行性：时长型加盾模块（未在持续期即可激活）；纯增益须对某目标生效 */
   function canImpact(targets, fx, inst) {
     if ((fx.damage || 0) > 0) return true;
@@ -392,6 +555,12 @@ export function createBattle(preset) {
     if (ship.hull.energy < cost) {
       // 能量不足：本次不触发；逐步伤害(ramp)成长清零 → 断能后伤害回到基础值
       if (inst._ramp) inst._ramp = { key: '', count: 0 };
+      return;
+    }
+
+    // —— 召唤类模块：无目标，走召唤执行（fx.summon 存在时）——
+    if (fx.summon && typeof fx.summon === 'object' && fx.summon.type) {
+      doSummon(ship, inst, fx);
       return;
     }
 
@@ -441,11 +610,11 @@ export function createBattle(preset) {
               amt > 0
                 ? Math.min(target.hull.hpMax, target.hull.hp + amt)
                 : Math.max(0, target.hull.hp + amt);
-            if (target.hull.hp <= 0 && target.alive) {
-              target.hull.hp = 0;
-              target.alive = false;
-              log.add(i18n.t('battle.log.destroyed', { ship: nameForLog(target) }), 'battle');
-            }
+              if (target.hull.hp <= 0 && target.alive) {
+                target.hull.hp = 0;
+                target.alive = false;
+                battleLog('battle.log.destroyed', { ship: uTok(target) }, ['ship']);
+              }
           }
         }
       }
@@ -459,21 +628,47 @@ export function createBattle(preset) {
     const baseRaw = fx.damage || 0;
     let effRaw = baseRaw;
     if ((fx.ramp_per_hit || 0) > 0) {
-      const sig = targets
-        .map((u) => u.id)
-        .sort()
-        .join(',');
-      if (!inst._ramp) inst._ramp = { key: '', count: 0 };
-      if (sig !== inst._ramp.key) {
-        inst._ramp.key = sig;
-        inst._ramp.count = 0;
+      const typeArr = fx.type || [];
+      if (typeArr.includes('ramp_by_enemy_count')) {
+        // —— type 钩子 ramp_by_enemy_count：单次伤害随“当前场上敌方存活数”提升（不随时间累积）——
+        //    伤害 = 基础 damage + ramp_per_hit × 当前敌方存活数；有 max_damage 则封顶。
+        //    敌方阵亡越多，单发伤害越低。 ——
+        const foes = ship.side === 'ally' ? enemies : allies;
+        let foeCount = 0;
+        for (const f of foes) if (f.alive) foeCount += 1;
+        const hasMax = (fx.max_damage || 0) > 0;
+        const rawBonus = baseRaw + (fx.ramp_per_hit || 0) * foeCount;
+        effRaw = hasMax ? Math.min(fx.max_damage, rawBonus) : rawBonus;
+      } else {
+        // —— type 钩子 ramp_full：仅当“目标选择的所有槽位都有目标”才逐击增伤；
+        //    目标未满时（如 dualLaser 只命中 1/2）不成长，伤害维持基础 ——
+        const needFull = typeArr.includes('ramp_full');
+        let canRamp = true;
+        if (needFull) {
+          const reqCount = Math.max(
+            1,
+            (inst.cfg.target && inst.cfg.target.maxCount) || targets.length
+          );
+          canRamp = targets.length >= reqCount;
+        }
+        if (canRamp) {
+          const sig = targets
+            .map((u) => u.id)
+            .sort()
+            .join(',');
+          if (!inst._ramp) inst._ramp = { key: '', count: 0 };
+          if (sig !== inst._ramp.key) {
+            inst._ramp.key = sig;
+            inst._ramp.count = 0;
+          }
+          inst._ramp.count += 1; // 本次激活计数 +1
+          const steps = inst._ramp.count - 1; // 首次=基础，此后每次激活 +ramp
+          const hasMax = (fx.max_damage || 0) > 0;
+          const cap = hasMax ? fx.max_damage : baseRaw;
+          const start = hasMax ? baseRaw : 0;
+          effRaw = Math.min(cap, start + (fx.ramp_per_hit || 0) * steps);
+        }
       }
-      inst._ramp.count += 1; // 本次激活计数 +1
-      const steps = inst._ramp.count - 1; // 首次=基础，此后每次激活 +ramp
-      const hasMax = (fx.max_damage || 0) > 0;
-      const cap = hasMax ? fx.max_damage : baseRaw;
-      const start = hasMax ? baseRaw : 0;
-      effRaw = Math.min(cap, start + (fx.ramp_per_hit || 0) * steps);
     }
     const effDmg = effRaw * coeff(ship, inst.cfg.category);
     for (const target of targets) {
@@ -482,13 +677,14 @@ export function createBattle(preset) {
         const dmg = effDmg;
         const dealt = damageShip(target, dmg);
         dmgTotal += dealt;
-        log.add(
-          i18n.t('battle.log.fire', {
-            actor: nameForLog(ship),
-            target: nameForLog(target),
+        battleLog(
+          'battle.log.fire',
+          {
+            actor: uTok(ship),
+            target: uTok(target),
             dmg: Math.round(dealt),
-          }),
-          'battle'
+          },
+          ['actor', 'target']
         );
       }
       if ((fx.shield_gain || 0) > 0) {
@@ -499,6 +695,12 @@ export function createBattle(preset) {
       }
       // 未来词条执行器在此追加（如 heal / energyDrain / shieldDrain …）
     }
+    // 持久化自动目标（粘性）：无手动锁定时记住本次实际命中的目标，下次沿用存活者
+    const autoLocked =
+      !ship.targetId && (!inst.target || inst.target.mode === 'follow');
+    if (autoLocked && targets.length) inst._stick = targets.map((t) => t.id);
+    inst.lastDmg = dmgTotal;       // 本次激活造成的总伤害（供"本场贡献/本击"实时显示）
+    inst.lastShield = shieldTotal; // 本次激活恢复的总护盾
     inst.stats.activations += 1;
     inst.stats.damageDealt += dmgTotal;
     inst.stats.shieldRestored += shieldTotal;
@@ -516,7 +718,7 @@ export function createBattle(preset) {
       };
       if (ship.targetId && !aliveId(ship.targetId)) {
         ship.targetId = null;
-        log.add(i18n.t('battle.log.autoTarget', { ship: nameForLog(ship) }), 'battle');
+        battleLog('battle.log.autoTarget', { ship: uTok(ship) }, ['ship']);
       }
       for (const inst of ship.modules) {
         const t = inst.target;
@@ -524,12 +726,10 @@ export function createBattle(preset) {
         if (t.mode === 'unit') {
           if (!aliveId(t.id)) {
             inst.target = { mode: 'follow' };
-            log.add(
-              i18n.t('battle.log.moduleFollow', {
-                ship: nameForLog(ship),
-                module: i18n.t(inst.cfg.nameKey),
-              }),
-              'battle'
+            battleLog(
+              'battle.log.moduleFollow',
+              { ship: uTok(ship), module: i18n.t(inst.cfg.nameKey) },
+              ['ship']
             );
           }
         } else if (t.mode === 'units') {
@@ -537,12 +737,10 @@ export function createBattle(preset) {
           if (kept.length !== (t.ids || []).length) {
             if (!kept.length) {
               inst.target = { mode: 'follow' };
-              log.add(
-                i18n.t('battle.log.moduleFollow', {
-                  ship: nameForLog(ship),
-                  module: i18n.t(inst.cfg.nameKey),
-                }),
-                'battle'
+              battleLog(
+                'battle.log.moduleFollow',
+                { ship: uTok(ship), module: i18n.t(inst.cfg.nameKey) },
+                ['ship']
               );
             } else {
               t.ids = kept; // 部分目标阵亡：仅移除并保留其余
@@ -584,9 +782,26 @@ export function createBattle(preset) {
         if (moduleActiveNow(s, inst)) inst.stats.activeTicks += 1;
       }
     }
-    // 敌方先行动，我方后行动（先手规则占位，M2 细调）
-    for (const s of enemies) if (s.alive) for (const inst of s.modules) activate(s, inst);
-    for (const s of allies) if (s.alive) for (const inst of s.modules) activate(s, inst);
+    // 敌方先行动，我方后行动（先手规则占位，M2 细调）。
+    // 用 slice() 副本迭代：本次召唤/移除单位不干扰本轮遍历。
+    for (const s of enemies.slice()) if (s.alive) for (const inst of s.modules.slice()) activate(s, inst);
+    for (const s of allies.slice()) if (s.alive) for (const inst of s.modules.slice()) activate(s, inst);
+    // —— 临时(召唤)单位生命周期：存在时间逐 tick 递减，到期自动死亡；
+    //     临时单位阵亡/到期后直接移出场景（普通单位仍保留灰色卡片）——
+    for (const side of ['ally', 'enemy']) {
+      for (const u of sidesOf(side).slice()) {
+        if (!u.temp) continue;
+        if (u.alive) {
+          u.tempLeft -= 1;
+          if (u.tempLeft <= 0) {
+            u.hull.hp = 0;
+            u.alive = false;
+            battleLog('battle.log.tempExpired', { ship: uTok(u) }, ['ship']);
+          }
+        }
+        if (!u.alive) removeSummoned(side, u);
+      }
+    }
     checkEnd();
   }
 
@@ -605,9 +820,11 @@ export function createBattle(preset) {
     get runTicks() { return runTicks; },
     get allyPolicy() { return policies.ally; },
     get enemyPolicy() { return policies.enemy; },
+    setShipPolicy,
     setAllyPolicy(kind) {
       if (!TARGET_POLICIES.includes(kind)) return false;
       policies.ally = kind;
+      for (const s of allies) if (!s.policy) for (const inst of s.modules) inst._stick = undefined;
       return true;
     },
     /** 全部存活单位（含双方） */

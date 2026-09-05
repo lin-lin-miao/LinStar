@@ -8,7 +8,8 @@
 export default {
   id: 'cannon',
   nameKey: 'module.cannon', // i18n -> 火炮 / Cannon
-  glyph: '炮',
+  name: '火炮',
+  icon: 'assets/img/火炮.svg',
   category: 'attack',
   target: {
     kinds: ['enemy'],

@@ -5,18 +5,40 @@
 import { MODULES } from '../data/modules.js';
 import { uid, deepClone } from '../core/utils.js';
 
-/** 把模块定义按指定等级合并出该等级的完整配置（effects/target 已按该级解析） */
+/** 深合并补丁对象 patch 到 base（就地改 base）：普通对象递归合并，数组/原始值直接覆盖（数组拷贝）。
+ * 用于 levels 的"逐级只写差异、未填字段回退上一级"——含嵌套的 effects.summon 等对象。
+ */
+function deepMerge(base, patch) {
+  if (!patch) return base;
+  for (const k of Object.keys(patch)) {
+    const v = patch[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      if (base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
+        deepMerge(base[k], v);
+      } else {
+        base[k] = deepClone(v);
+      }
+    } else {
+      base[k] = Array.isArray(v) ? v.slice() : v;
+    }
+  }
+  return base;
+}
+
+/** 把模块定义按指定等级合并出该等级的完整配置（effects/target 已按该级解析，逐级差异深合并） */
 export function resolveModuleCfg(def, level) {
   const lv = Math.max(1, level | 0);
   const out = deepClone(def);
-  out.effects = Object.assign({}, def.effects || {});
-  if (def.target) out.target = deepClone(def.target);
+  const eff = deepClone(def.effects || {});
+  const tgt = def.target ? deepClone(def.target) : {};
   for (const e of def.levels || []) {
     if ((e.level | 0) <= lv) {
-      if (e.effects) out.effects = Object.assign({}, out.effects, e.effects);
-      if (e.target) out.target = Object.assign({}, out.target, deepClone(e.target));
+      if (e.effects) deepMerge(eff, e.effects);
+      if (e.target) deepMerge(tgt, e.target);
     }
   }
+  out.effects = eff;
+  out.target = tgt;
   return out;
 }
 

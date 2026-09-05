@@ -70,6 +70,32 @@ export const SHIPS = {
       mining: 1,              // 采矿类模块效果系数（本职，修正后 =1）
     },
   },
+
+  /* —— 通用无人机：由召唤模块临时召唤的单位。
+   * 说明：这里只放"一份通用无人机数据模型"（基础三围/系数/槽位）——
+   * 各具体无人机的种类差异（显示名/图标/携带模组/基础三围/系数）由各召唤模块
+   * 在 effects.summon 里覆写设定，勿在此按种类堆叠多个船型。
+   * 召唤携带的模组不受其 slots 上限约束（引擎 force 安装）。
+   */
+  drone: {
+    id: 'drone',               // 唯一标识（通用无人机）
+    nameKey: 'ship.drone',     // 名称词条 key（i18n -> 无人机 / Drone；召唤单位会覆写为所属召唤模块名）
+    slots: 3,                  // 通用槽位（召唤携带模组数量可超出此限）
+    base: {
+      hp: 50,                  // 血量上限（通用占位；召唤模块可用 attrs 覆写）
+      shieldCap: 0,           // 基础护盾上限（占位）
+      energyCap: 250,          // 能量上限（占位）
+      energyRegen: 10,         // 基础能量回复 / 秒（占位）
+    },
+    coefficients: {
+      attack: 1,
+      shield: 1,
+      function: 1,
+      transport: 1,
+      mining: 1,
+      drone: 1,
+    },
+  },
 };
 
 export default SHIPS;

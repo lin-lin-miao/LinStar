@@ -220,15 +220,18 @@
 .unit-modules { display: flex; gap: 4px; justify-content: center; margin-top: 1px; }
 .module-chip {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 22px;
   height: 22px;
-  line-height: 21px;
   text-align: center;
   font-size: 12px;
   border-radius: 5px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.05);
   font-weight: 600;
+  line-height: 1;
 }
 .module-chip.attack { color: #ff9da6; border-color: rgba(255, 93, 108, 0.6); }
 .module-chip.shield { color: #9adcff; border-color: rgba(79, 195, 247, 0.6); }
@@ -265,6 +268,12 @@
   width: 22px; height: 22px;
   border: 1px dashed rgba(255, 255, 255, 0.14);
   border-radius: 5px;
+}
+.module-chip img.module-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  pointer-events: none;
 }
 .module-chip .module-lv {
   position: absolute;
@@ -477,12 +486,24 @@
   box-shadow: 0 0 8px rgba(110, 203, 245, 0.4);
 }
 .target-note { font-size: 11px; color: var(--text-dim); }
+.target-policy-row { display: flex; align-items: center; gap: 6px; margin: 2px 0 6px; }
+.target-policy-label { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.target-policy {
+  background: rgba(20, 30, 48, 0.8);
+  color: var(--text);
+  border: 1px solid rgba(110, 203, 245, 0.35);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+.target-policy:disabled { opacity: 0.45; }
 .target-btn.enemy-tag { border-color: rgba(255, 93, 108, 0.5); }
 .target-btn.enemy-tag.active { border-color: #ff8a94; color: #ff8a94; box-shadow: 0 0 8px rgba(255, 93, 108, 0.4); }
 .detail-target-cur { font-size: 11px; color: var(--text-dim); }
 
 /* ---------- 战报 ---------- */
 .battle-log {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: rgba(7, 11, 22, 0.7);
@@ -495,6 +516,23 @@
 .battle-log .log-title { color: var(--text-dim); margin-bottom: 2px; }
 .battle-log .log-line { line-height: 1.5; color: var(--text); opacity: 0.9; word-break: break-all; }
 .battle-log .log-line.destroy { color: #ff9da6; }
+/* 战报下缘手动调高 grip */
+.battle-log .log-resize {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+  background: transparent;
+}
+.battle-log .log-resize:hover, .battle-log .log-resize.active { background: rgba(110, 203, 245, 0.35); }
+/* 战报单位名着色：敌方红 / 我方蓝 */
+.log-unit-name.side-ally { color: #9adcff; }
+.log-unit-name.side-enemy { color: #ff8a94; }
+/* 临时单位存活剩余时间（单位卡 & 详情） */
+.unit-timer { font-size: 10px; color: #ffd24a; text-align: center; min-height: 12px; }
+.detail-timer { font-size: 11px; color: #ffd24a; padding: 2px 0 0; }
 
 /* ---------- 结算横幅（不阻挡场景浏览；数值已冻结如暂停） ---------- */
 .battle-overlay {

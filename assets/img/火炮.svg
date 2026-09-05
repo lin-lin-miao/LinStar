@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 红色简约线条，无填充背景 -->
+    <g fill="none" stroke="#FF3B30" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <!-- 炮管主体 -->
+        <rect x="42" y="25" width="16" height="45" />
+
+        <!-- 炮口（分段设计，体现科技感） -->
+        <path d="M40 25 H60 V15 H40 Z" />
+        <path d="M40 15 H60" />
+
+        <!-- 底座（发射/能量控制部分） -->
+        <path d="M35 70 H65 V90 H35 Z" />
+        <line x1="45" y1="80" x2="55" y2="80" />
+
+        <!-- 炮管散热/磁轨细节 -->
+        <line x1="42" y1="40" x2="58" y2="40" />
+        <line x1="42" y1="55" x2="58" y2="55" />
+    </g>
+</svg>

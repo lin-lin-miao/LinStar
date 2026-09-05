@@ -33,10 +33,21 @@ export function recalcDerived(ship) {
   return ship;
 }
 
-/** 创建一艘船（模块槽初始为空） */
-export function createShip(typeId, side = 'ally') {
-  const type = SHIPS[typeId];
-  if (!type) throw new Error(`未知船型: ${typeId}`);
+/** 创建一艘船（模块槽初始为空）。
+ * overrides 可选：在船型模板上做"全条目"覆写（结构与 data/ships.js 单船一致，如 nameKey / slots /
+ * base{hp,shieldCap,energyCap,energyRegen} / coefficients{...}），缺省的条目沿用模板。
+ * 用于召唤模块给通用无人机模板设定具体种类；常规造舰不传即可。 */
+export function createShip(typeId, side = 'ally', overrides = null) {
+  const tmpl = SHIPS[typeId];
+  if (!tmpl) throw new Error(`未知船型: ${typeId}`);
+  const ov = overrides && typeof overrides === 'object' ? overrides : {};
+  // 模板 + 全条目覆写（base/coefficients 做深合并，缺省用模板）
+  const type = {
+    ...tmpl,
+    ...ov,
+    base: Object.assign({}, tmpl.base, ov.base),
+    coefficients: Object.assign({}, tmpl.coefficients, ov.coefficients),
+  };
   const ship = {
     id: uid('ship'),
     side,
@@ -63,10 +74,10 @@ export function createShip(typeId, side = 'ally') {
   return ship;
 }
 
-/** 安装模块（槽位不足抛错）；返回模块实例 */
-export function installModule(ship, moduleId, level = 1) {
+/** 安装模块（槽位不足抛错，除非 force=true 忽略槽位上限）；返回模块实例 */
+export function installModule(ship, moduleId, level = 1, force = false) {
   const type = SHIPS[ship.typeId];
-  if (ship.modules.length >= type.slots) throw new Error('模块槽位已满');
+  if (!force && ship.modules.length >= type.slots) throw new Error('模块槽位已满');
   const inst = createModuleInstance(moduleId, level);
   ship.modules.push(inst);
   recalcDerived(ship);
