@@ -64,10 +64,10 @@ export function createShip(typeId, side = 'ally') {
 }
 
 /** 安装模块（槽位不足抛错）；返回模块实例 */
-export function installModule(ship, moduleId) {
+export function installModule(ship, moduleId, level = 1) {
   const type = SHIPS[ship.typeId];
   if (ship.modules.length >= type.slots) throw new Error('模块槽位已满');
-  const inst = createModuleInstance(moduleId);
+  const inst = createModuleInstance(moduleId, level);
   ship.modules.push(inst);
   recalcDerived(ship);
   return inst;

@@ -75,6 +75,16 @@
   color: var(--text);
 }
 .drill-mod-chip:hover { border-color: var(--hp); color: var(--hp); }
+.drill-mod { display: inline-flex; gap: 3px; align-items: center; }
+.drill-mod-level {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 2px;
+}
 .drill-add-mod {
   font: inherit;
   font-size: 11px;
@@ -256,6 +266,19 @@
   border: 1px dashed rgba(255, 255, 255, 0.14);
   border-radius: 5px;
 }
+.module-chip .module-lv {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 0 1px;
+  border-radius: 3px;
+}
+.mod-lv { font-size: 10px; color: var(--accent); opacity: 0.9; }
 
 /* 下一步行动提示 */
 .unit-intent {

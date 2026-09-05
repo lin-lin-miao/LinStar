@@ -50,6 +50,7 @@ export default {
   'battle.drill.removeShip': 'Remove Ship',
   'battle.drill.addModule': '+ Add Module…',
   'battle.drill.removeModule': 'Remove Module',
+  'battle.drill.levelOf': 'Module {n}: choose level',
   'battle.drill.fullSlots': 'Module slots full',
   'battle.drill.start': 'Start Battle',
   'battle.zone.enemy': 'Enemy Units',

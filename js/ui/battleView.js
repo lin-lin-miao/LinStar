@@ -12,6 +12,7 @@ import { i18n } from '../i18n/index.js';
 import { SHIPS } from '../data/ships.js';
 import { MODULES } from '../data/modules.js';
 import { createBattle, TARGET_POLICIES } from '../systems/battle.js';
+import { moduleMaxLevel } from '../entities/module.js';
 import { bar } from './widgets.js';
 import { router } from './router.js';
 import { log } from '../core/log.js';
@@ -148,8 +149,9 @@ function buildModuleChips(ship) {
     const chip = el('span', {
       class: `module-chip ${inst.cfg.category}`,
       text: inst.cfg.glyph,
-      title: i18n.t(inst.cfg.nameKey),
+      title: `${i18n.t(inst.cfg.nameKey)} · L${inst.level}`,
     });
+    chip.append(el('span', { class: 'module-lv', text: `L${inst.level}` }));
     chip.append(badge);
     chips.push({ empty: false, inst, el: chip, badge });
   }
@@ -649,6 +651,7 @@ function moduleRows(ship) {
     const row = el('div', { class: 'mod-row' }, [
       chipEl,
       el('span', { class: 'mod-name', text: i18n.t(inst.cfg.nameKey) }),
+      el('span', { class: 'mod-lv', text: `L${inst.level}` }),
       metaEl,
       el('span', { class: 'mod-cost', text: costText }),
       statusEl,
@@ -949,19 +952,40 @@ function renderFleetColumn(sideKey) {
         },
       }),
     ]);
+    sh.modules = sh.modules.map((m) => (typeof m === 'string' ? { moduleId: m, level: 1 } : m));
     const chips = el('div', { class: 'drill-modules' });
-    sh.modules.forEach((mid, mi) => {
-      chips.append(
+    sh.modules.forEach((mod, mi) => {
+      const id = mod.moduleId;
+      const maxLv = moduleMaxLevel(MODULES[id]);
+      const unit = el('span', { class: 'drill-mod' });
+      unit.append(
         el('button', {
           class: 'chip on drill-mod-chip',
           title: i18n.t('battle.drill.removeModule'),
-          text: `× ${moduleName(mid)}`,
+          text: `× ${moduleName(id)}`,
           onclick: () => {
             sh.modules.splice(mi, 1);
             renderLaunch();
           },
         })
       );
+      // 模块等级可选：仅当该模块 maxLevel>1 时显示 Lv 下拉（未给高阶数值前不出现）
+      if (maxLv > 1) {
+        const sel = el('select', {
+          class: 'drill-mod-level',
+          'aria-label': i18n.t('battle.drill.levelOf', { n: moduleName(id) }),
+        }, Array.from({ length: maxLv }, (_, i) => {
+          const o = el('option', { value: String(i + 1), text: `Lv${i + 1}` });
+          if (i + 1 === (mod.level || 1)) o.selected = true;
+          return o;
+        }));
+        sel.addEventListener('change', () => {
+          mod.level = Number(sel.value) || 1;
+          renderLaunch();
+        });
+        unit.append(sel);
+      }
+      chips.append(unit);
     });
     const full = sh.modules.length >= shipSlotLimit(sh.type);
     const addSel = el('select', {
@@ -976,7 +1000,7 @@ function renderFleetColumn(sideKey) {
     addSel.addEventListener('change', () => {
       const id = addSel.value;
       if (id && sh.modules.length < shipSlotLimit(sh.type)) {
-        sh.modules.push(id);
+        sh.modules.push({ moduleId: id, level: 1 });
       }
       renderLaunch();
     });
