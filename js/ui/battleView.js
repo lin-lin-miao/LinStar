@@ -15,7 +15,7 @@ import { createBattle, TARGET_POLICIES } from '../systems/battle.js';
 import { moduleMaxLevel } from '../entities/module.js';
 import { bar } from './widgets.js';
 import { router } from './router.js';
-import { log } from '../core/log.js';
+import { log, formatRich } from '../core/log.js';
 import { ticker } from '../core/tick.js';
 
 const SEC_TICKS = 20; // 1 秒 = 20 tick（与战斗核心一致，用于按 tick 折算每秒消耗）
@@ -30,9 +30,31 @@ let enemyShips = [{ type: 'combat', modules: [] }]; // 敌方演练编队（编�
 let battleAllyCfg = null;  // 最近一次开战的我方配置快照（供"再战"重开同一配置）
 let battleEnemyCfg = null; // 最近一次开战的敌方配置快照
 
+/** UI 侧战斗战报（channel=battle，带着色段） */
+function uiLog(key, params, colorKeys) {
+  const { msg, rich } = formatRich(key, params, colorKeys);
+  log.add(msg, 'battle', rich);
+}
+/** 单位名着色段 */
+function shipTok(s, label) {
+  return { side: s.side, label };
+}
+
 function moduleName(id) {
   const m = MODULES[id];
-  return m ? i18n.t(m.nameKey) : id;
+  if (!m) return id;
+  const t = i18n.t(m.nameKey);
+  return t && !t.startsWith('??') ? t : (m.name || id); // 名称降级占位：i18n 缺失时用模块 name/id
+}
+/** 模块"脸"节点：有 SVG 图标(cfg.icon)用 <img>，否则降级显示名称首字 */
+function moduleGlyphEl(cfg) {
+  const name = moduleName(cfg.id);
+  if (cfg.icon) {
+    const img = el('img', { class: 'module-icon-img', src: cfg.icon, alt: '' });
+    img.draggable = false;
+    return img;
+  }
+  return el('span', { text: name ? Array.from(name)[0] : '?' });
 }
 function shipName(type) {
   return SHIPS[type] ? i18n.t(SHIPS[type].nameKey) : type;
@@ -83,17 +105,22 @@ function rowSelfOnly(inst) {
   return Array.isArray(k) && k.length === 1 && k[0] === 'self';
 }
 
-/** 单位图标：读取独立素材文件 assets/img/ship-<type>-<side>.svg（我方蓝/敌方红）
- * 命名规则：船型-阵营，后续新船型(运输舰/采矿船)各新增素材即可。
- * 加载失败时回退为文本三角符号（便于发现素材缺失）。
+/** 单位图标：
+ *  - 召唤(无人机)单位：使用所属召唤模块的图标(ship.summonIcon)；模块无图标时直接降级 ▲。
+ *  - 常规单位：读取独立素材文件 assets/img/ship-<type>-<side>.svg；加载失败回退 ▲。
  */
 function unitIcon(ship) {
   const wrap = el('span', { class: 'unit-icon-wrap' });
+  if (ship.tempNoIcon) {
+    wrap.classList.add('fallback');
+    wrap.appendChild(document.createTextNode('▲'));
+    return wrap;
+  }
   const img = el('img', {
     class: 'unit-icon-img',
     alt: '',
     draggable: 'false',
-    src: `./assets/img/ship-${ship.typeId}-${ship.side}.svg`,
+    src: ship.summonIcon || `./assets/img/ship-${ship.typeId}-${ship.side}.svg`,
   });
   img.addEventListener('error', () => {
     wrap.replaceChildren(document.createTextNode('▲'));
@@ -146,13 +173,11 @@ function buildModuleChips(ship) {
       continue;
     }
     const badge = el('span', { class: 'chip-badge', text: '' });
-    const chip = el('span', {
-      class: `module-chip ${inst.cfg.category}`,
-      text: inst.cfg.glyph,
-      title: `${i18n.t(inst.cfg.nameKey)} · L${inst.level}`,
-    });
+    const chip = el('span', { class: `module-chip ${inst.cfg.category}` });
+    chip.append(moduleGlyphEl(inst.cfg));
     chip.append(el('span', { class: 'module-lv', text: `L${inst.level}` }));
     chip.append(badge);
+    chip.title = `${moduleName(inst.cfg.id)} · L${inst.level}`;
     chips.push({ empty: false, inst, el: chip, badge });
   }
   return chips;
@@ -168,10 +193,12 @@ function buildShipCard(ship) {
   const intentEl = el('div', { class: 'unit-intent', text: '' });
   const focusEl = el('div', { class: 'unit-focus', text: '' }); // 主要目标
   const nameTag = el('div', { class: 'unit-name', text: `${baseName(ship)} · ${i18n.t(tagKey)}` });
+  const lifeEl = el('div', { class: 'unit-timer', text: '' }); // 临时单位存活剩余（非临时隐藏）
 
   const cardEl = el('div', { class: `unit-card ${ship.side}`, onclick: () => selectUnit(ship.id) }, [
     el('div', { class: 'unit-icon-zone' }, [unitIcon(ship), nameTag]),
     el('div', { class: 'unit-bars' }, [hpBar.el, shieldBar.el, energyBar.el]),
+    lifeEl,
     el('div', { class: 'unit-modules' }, chips.map((c) => c.el)),
     intentEl,
     focusEl,
@@ -241,6 +268,13 @@ function buildShipCard(ship) {
     energyBar.update(s.hull.energy, s.hull.energyCap);
     cardEl.classList.toggle('dead', !s.alive);
     cardEl.classList.toggle('selected', selectedId === s.id);
+    // 临时单位存活剩余时间（秒）；非临时单位隐藏
+    if (s.temp && s.alive && typeof s.tempLeft === 'number') {
+      lifeEl.style.display = '';
+      lifeEl.textContent = i18n.t('battle.lifeLeft', { n: Math.max(0, Math.ceil(s.tempLeft / SEC_TICKS)) });
+    } else {
+      lifeEl.style.display = 'none';
+    }
     refreshChips(s);
     intentEl.textContent = s.alive
       ? i18n.t('battle.intent', { act: nextActionText(s) })
@@ -327,6 +361,32 @@ function buildStage() {
   const logLines = el('div');
   const logPanel = el('div', { class: 'battle-log' }, [logTitle, logLines]);
 
+  // 战报下缘拖动手柄：手动调整战报框高度（上下拖动）
+  const grip = el('div', { class: 'log-resize', title: '' });
+  logPanel.appendChild(grip);
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+  grip.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startH = logPanel.offsetHeight;
+    grip.classList.add('active');
+    grip.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const h = startH + (startY - e.clientY); // 上拉增高
+    logPanel.style.height = `${Math.max(36, Math.min(520, h))}px`;
+  });
+  const endDrag = () => {
+    dragging = false;
+    grip.classList.remove('active');
+  };
+  grip.addEventListener('pointerup', endDrag);
+  grip.addEventListener('pointercancel', endDrag);
+
   const stage = el('div', { class: 'battle-stage' }, [
     enemyZ.zone,
     el('div', { class: 'battle-sep' }),
@@ -340,17 +400,48 @@ function buildStage() {
 }
 
 function rebuildUnits() {
-  const allCards = [];
-  for (const ship of battle.units()) {
-    const card = buildShipCard(ship);
-    allCards.push({ ship, card });
-    const row = ship.side === 'enemy' ? enemyZone.unitsRow : allyZone.unitsRow;
-    row.append(card.el);
-  }
-  updateCards = () => {
-    for (const { ship, card } of allCards) card.update(ship);
+  const cardById = new Map();
+  const rowOf = (ship) => (ship.side === 'enemy' ? enemyZone.unitsRow : allyZone.unitsRow);
+  // 每次刷新按当前 roster 调和：新增(召唤)单位建卡、被移除(临时单位阵亡/到期)单位删卡
+  let lastSig = ''; // 上一次的 roster 签名（单位 id 顺序串），变化时才增删/重排卡片
+  const reconcile = () => {
+    const units = battle.units();
+    const sig = units.map((u) => u.id).join('|');
+    if (sig !== lastSig) {
+      lastSig = sig;
+      const present = new Set();
+      for (const ship of units) {
+        present.add(ship.id);
+        let rec = cardById.get(ship.id);
+        if (!rec) {
+          rec = { ship, card: buildShipCard(ship) };
+          cardById.set(ship.id, rec);
+          rowOf(ship).append(rec.card.el);
+        }
+      }
+      for (const [id, rec] of [...cardById]) {
+        if (present.has(id)) continue;
+        rec.card.el.remove();
+        cardById.delete(id);
+        if (selectedId === id) {
+          selectedId = null;
+          showEmptyDetail();
+        }
+      }
+      // 按数组(渲染队列)顺序重排卡片：主力在前、召唤物在列尾
+      for (const u of units) {
+        const rec = cardById.get(u.id);
+        if (rec) rowOf(u).appendChild(rec.card.el);
+      }
+    }
+    // 每 tick 仅就地刷新数值（不触碰 DOM 顺序，避免打断点击/详情选中）
+    for (const ship of units) {
+      const rec = cardById.get(ship.id);
+      if (rec) rec.card.update(ship);
+    }
   };
-  updateCards();
+  updateCards = reconcile;
+  reconcile();
 }
 
 /* ================= 详情面板 ================= */
@@ -510,6 +601,17 @@ function perActText(ship, inst) {
   if (fx.duration_ticks > 0) {
     parts.push(i18n.t('battle.detail.statDuration', { n: fx.duration_ticks }));
   }
+  if (fx.summon && typeof fx.summon === 'object') {
+    const st = fx.summon;
+    const tname = SHIPS[st.type] ? i18n.t(SHIPS[st.type].nameKey) : st.type || '';
+    parts.push(
+      i18n.t('battle.detail.statSummon', {
+        type: tname,
+        n: st.maxSummoned || 0,
+        t: st.lifespan_ticks || 0,
+      })
+    );
+  }
   return parts.join(' · ');
 }
 
@@ -524,19 +626,26 @@ function contribText(ship, inst) {
   const secs = (st.activeTicks || 0) / SEC_TICKS;
   if (fxHas(fx, 'damage')) {
     const dps = secs > 0 ? st.damageDealt / secs : 0;
-    return i18n.t('battle.detail.contrib.dmg', {
+    const base = i18n.t('battle.detail.contrib.dmg', {
       dmg: Math.round(st.damageDealt),
       dps: dps.toFixed(1),
       act: st.activations,
     });
+    // 追加"本次触发伤害"（最近一次激活造成/恢复的即时值）
+    return Number.isFinite(inst.lastDmg)
+      ? `${base} · ${i18n.t('battle.detail.contrib.latestDmg', { n: Math.round(inst.lastDmg) })}`
+      : base;
   }
   if (fxHas(fx, 'shield_gain')) {
     const rate = secs > 0 ? st.shieldRestored / secs : 0;
-    return i18n.t('battle.detail.contrib.regen', {
+    const base = i18n.t('battle.detail.contrib.regen', {
       amt: Math.round(st.shieldRestored),
       rate: rate.toFixed(1),
       act: st.activations,
     });
+    return Number.isFinite(inst.lastShield)
+      ? `${base} · ${i18n.t('battle.detail.contrib.latestShield', { n: Math.round(inst.lastShield) })}`
+      : base;
   }
   return '';
 }
@@ -553,7 +662,8 @@ function moduleRows(ship) {
 
   for (const inst of ship.modules) {
     const fx = inst.cfg.effects;
-    const chipEl = el('span', { class: `module-chip ${inst.cfg.category}`, text: inst.cfg.glyph });
+    const chipEl = el('span', { class: `module-chip ${inst.cfg.category}` });
+    chipEl.append(moduleGlyphEl(inst.cfg));
     const statusEl = el('span', { class: 'mod-status' });
     const metaEl = el('span', { class: 'mod-effect', text: perActText(ship, inst) });
     const dur = fx.duration_ticks || 0;
@@ -624,12 +734,10 @@ function moduleRows(ship) {
           // 走引擎启停：处理自身被动重算 + 撤销其目标级护盾上限影响/结束自身时长
           if (inst.enabled) battle.disableModule(inst);
           else battle.enableModule(inst);
-          log.add(
-            i18n.t(inst.enabled ? 'battle.log.moduleOn' : 'battle.log.moduleOff', {
-              ship: unitLabel,
-              module: i18n.t(inst.cfg.nameKey),
-            }),
-            'battle'
+          uiLog(
+            inst.enabled ? 'battle.log.moduleOn' : 'battle.log.moduleOff',
+            { ship: shipTok(ship, unitLabel), module: i18n.t(inst.cfg.nameKey) },
+            ['ship']
           );
           if (updateCards) updateCards();
           if (detail) detail.refreshStats();
@@ -746,6 +854,8 @@ function buildDetail(ship) {
     el('div', { class: 'stat-cell' }, [el('span', { class: 'stat-name energy', text: i18n.t('battle.energy') }), stats.energy]),
   ]);
 
+  const lifeNote = el('div', { class: 'detail-timer', text: '' }); // 临时单位存活剩余（非临时隐藏）
+
   const modsTitle = el('div', { class: 'detail-subtitle', text: i18n.t('battle.detail.modules') });
   const modsList = el('div', { class: 'detail-mods' }, modRows.map((r) => r.block));
 
@@ -753,7 +863,7 @@ function buildDetail(ship) {
   const targetBar = el('div', { class: 'detail-target' });
   const targetHint = el('div', { class: 'detail-target-cur', text: '' });
 
-  const topRow = el('div', { class: 'detail-top' }, [head, statLine]);
+  const topRow = el('div', { class: 'detail-top' }, [head, statLine, lifeNote]);
   const panelEl = el('div', { class: 'detail-inner' }, [
     topRow,
     modsTitle,
@@ -770,6 +880,12 @@ function buildDetail(ship) {
     stats.hp.textContent = `${Math.ceil(ship.hull.hp)} / ${ship.hull.hpMax}`;
     stats.shield.textContent = `${Math.ceil(ship.hull.shield)} / ${ship.hull.shieldCap}（+${shipHullRegenText(ship, 'shield')}/s）`;
     stats.energy.textContent = `${Math.floor(ship.hull.energy)} / ${ship.hull.energyCap}（+${ship.energyRegenPerSec}/s）`;
+    if (ship.temp && ship.alive && typeof ship.tempLeft === 'number') {
+      lifeNote.style.display = '';
+      lifeNote.textContent = i18n.t('battle.lifeLeft', { n: Math.max(0, Math.ceil(ship.tempLeft / SEC_TICKS)) });
+    } else {
+      lifeNote.style.display = 'none';
+    }
     for (const r of modRows) {
       if (r.statusEl) r.statusEl.textContent = modStatusText(ship, r.inst);
       if (r.toggleEl) {
@@ -844,6 +960,29 @@ function buildDetail(ship) {
       return;
     }
     const foes = foesOf(ship).filter((f) => f.alive);
+    // 该舰自动策略：''=跟随全队，否则为该舰独立策略（覆盖全队）
+    const policySel = el(
+      'select',
+      { class: 'target-policy', 'aria-label': i18n.t('battle.detail.autoPolicy') },
+      [
+        el('option', { value: '', text: i18n.t('battle.detail.followFleet') }),
+        ...TARGET_POLICIES.map((p) =>
+          el('option', { value: p, text: i18n.t(`battle.policy.${p}`) })
+        ),
+      ]
+    );
+    policySel.value = ship.policy || '';
+    policySel.addEventListener('change', () => {
+      if (battle && battle.setShipPolicy) battle.setShipPolicy(ship, policySel.value || null);
+      refreshStats();
+      updateCards?.();
+    });
+    targetBar.append(
+      el('div', { class: 'target-policy-row' }, [
+        el('span', { class: 'target-policy-label', text: i18n.t('battle.detail.autoPolicy') }),
+        policySel,
+      ])
+    );
     const autoBtn = el('button', {
       class: `btn small ${!ship.targetId ? 'active' : ''}`,
       text: i18n.t('battle.detail.auto'),
@@ -871,9 +1010,10 @@ function buildDetail(ship) {
           ? i18n.t('battle.detail.locked', { name: baseName(cur) })
           : i18n.t('battle.detail.noTargets');
       }
-      const policy = battle ? battle.allyPolicy : 'order';
+      const policy = s.policy || (battle ? battle.allyPolicy : 'order');
+      const key = s.policy ? 'battle.detail.autoOwn' : 'battle.detail.following';
       return cur
-        ? i18n.t('battle.detail.following', {
+        ? i18n.t(key, {
             policy: i18n.t(`battle.policy.${policy}`),
             name: baseName(cur),
           })
@@ -900,12 +1040,13 @@ function buildDetail(ship) {
     s.targetId = enemyId;
     if (enemyId) {
       const foe = foesOf(s).find((f) => f.id === enemyId);
-      log.add(
-        i18n.t('battle.log.retarget', { ship: unitDisplayName(s), target: baseName(foe) }),
-        'battle'
+      uiLog(
+        'battle.log.retarget',
+        { ship: shipTok(s, unitDisplayName(s)), target: shipTok(foe, baseName(foe)) },
+        ['ship', 'target']
       );
     } else {
-      log.add(i18n.t('battle.log.autoTarget', { ship: unitDisplayName(s) }), 'battle');
+      uiLog('battle.log.autoTarget', { ship: shipTok(s, unitDisplayName(s)) }, ['ship']);
     }
     renderTargetBar();
     refreshStats();
@@ -1076,6 +1217,7 @@ function beginBattleFromCfg(allyCfg, enemyCfg) {
   battle.start();
   ticker.pause(); // 开战即暂停：让玩家先手动调整目标/启停再开始
   refreshStatus();
+  refreshCommand(); // 立即按 running 状态启用指挥栏（暂停中也可先设全队目标）
 }
 
 function exitToMenu() {
@@ -1217,8 +1359,24 @@ function bindGlobalListeners() {
     if (line.kind !== 'battle') return;
     const entry = el('div', {
       class: `log-line${line.msg.includes('击毁') || line.msg.includes('destroyed') ? ' destroy' : ''}`,
-      text: line.msg,
     });
+    if (Array.isArray(line.rich) && line.rich.length) {
+      // 分段渲染：敌方单位名红 / 我方单位名蓝
+      for (const seg of line.rich) {
+        if (seg && typeof seg === 'object' && seg.side) {
+          entry.appendChild(
+            el('span', {
+              class: `log-unit-name ${seg.side === 'ally' ? 'side-ally' : 'side-enemy'}`,
+              text: seg.label,
+            })
+          );
+        } else {
+          entry.appendChild(document.createTextNode(typeof seg === 'string' ? seg : ''));
+        }
+      }
+    } else {
+      entry.textContent = line.msg;
+    }
     logPanelEl.prepend(entry);
     while (logPanelEl.children.length > 40) logPanelEl.lastChild.remove();
   });

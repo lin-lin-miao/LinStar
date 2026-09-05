@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+    <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#FFF4A3"/>
+            <stop offset="1" stop-color="#FFB800"/>
+        </linearGradient>
+    </defs>
+    <!-- 主体三角形（实心渐变，接近舰船图标风格） -->
+    <polygon points="24,19 13,37 35,37" fill="url(#g)" stroke="#FFF4A3" stroke-width="2.5" stroke-linejoin="round"/>
+
+    <!-- 中心能量核心细节（内部实心▲，仅保留轻微装饰线） -->
+    <line x1="24" y1="19" x2="24" y2="35" stroke="#FFD700" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+
+    <!-- 激光束（向上射出） -->
+    <line x1="24" y1="19" x2="24" y2="11" stroke="#FFD700" stroke-width="2.5" stroke-linecap="round"/>
+
+    <!-- 无人机侧翼 -->
+    <!-- <line x1="13" y1="37" x2="8" y2="37" stroke="#FFD700" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="35" y1="37" x2="40" y2="37" stroke="#FFD700" stroke-width="2.5" stroke-linecap="round"/> -->
+
+    <!-- 底部起落支架 -->
+    <line x1="18" y1="37" x2="18" y2="32" stroke="#ffd900c0" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="30" y1="37" x2="30" y2="32" stroke="#FFD700c0" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

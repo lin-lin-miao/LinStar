@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 红色简约线条，无填充背景，激光武器 -->
+    <g fill="none" stroke="#FF3B30" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        
+        <!-- 底座部分 -->
+        <path d="M 30 70 H 70 V 85 H 30 Z" />
+        <line x1="45" y1="85" x2="55" y2="85" />
+
+        <!-- 两侧能量轨道 -->
+        <path d="M 35 45 V 70" />
+        <path d="M 65 45 V 70" />
+
+        连接线（将棱镜固定在轨道之间）
+        <path d="M 35 45 H 42" />
+        <path d="M 58 45 H 65" />
+        <path d="M 35 55 H 42" />
+        <path d="M 58 55 H 65" />
+
+        <!-- 棱镜内部能量线 -->
+        <line x1="50" y1="15" x2="50" y2="62" />
+        
+    </g>
+</svg>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 红色简约线条，无填充背景，密集弹幕（主炮群+两侧副炮） -->
+    <g fill="none" stroke="#FF3B30" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <!-- 左侧主炮 -->
+        <rect x="30" y="25" width="12" height="45" />
+        <path d="M24 25 H49 V15 H24 Z" />
+        <!-- <line x1="30" y1="15" x2="40" y2="15" /> -->
+        <path d="M15 70 H45 V90 H15 Z" />
+        <line x1="25" y1="80" x2="35" y2="80" />
+        <line x1="30" y1="40" x2="70" y2="40" />
+        <line x1="30" y1="55" x2="70" y2="55" />
+
+        <!-- 中间主炮 -->
+        <!-- <rect x="42" y="25" width="16" height="45" /> -->
+        <!-- <path d="M40 25 H60 V15 H40 Z" /> -->
+        <!-- <line x1="40" y1="15" x2="60" y2="15" /> -->
+        <path d="M35 70 H65 V90 H35 Z" />
+        <!-- <line x1="45" y1="80" x2="55" y2="80" /> -->
+        <!-- <line x1="42" y1="40" x2="58" y2="40" />
+        <line x1="42" y1="55" x2="58" y2="55" /> -->
+
+        <!-- 右侧主炮 -->
+        <rect x="58" y="25" width="12" height="45" />
+        <path d="M51 25 H76 V15 H51 Z" />
+        <!-- <line x1="60" y1="15" x2="80" y2="15" /> -->
+        <path d="M55 70 H85 V90 H55 Z" />
+        <line x1="65" y1="80" x2="75" y2="80" />
+        <!-- <line x1="52" y1="40" x2="78" y2="40" />
+        <line x1="62" y1="55" x2="78" y2="55" /> -->
+    </g>
+</svg>
