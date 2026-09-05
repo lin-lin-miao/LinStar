@@ -3,6 +3,7 @@
  * 调试：window.LS（M0.8）
  */
 import { bus } from './core/eventBus.js';
+import { el } from './core/utils.js';
 import { ticker } from './core/tick.js';
 import { log } from './core/log.js';
 import { i18n } from './i18n/index.js';
@@ -60,13 +61,13 @@ function boot() {
   // 7. 调试控制台
   attachDebug();
 
-  log.info('LinStar M0 启动完成');
+  log.info('LinStar M1.9 启动完成');
 }
 
 /* ===== window.LS 调试控制台（M0.8） ===== */
 function attachDebug() {
   window.LS = {
-    version: '0.1-m0',
+    version: '0.5-m1.9',
     state: () => save.data,
     goto: (name) => router.show(name),
     tick: {
@@ -99,8 +100,55 @@ function attachDebug() {
   };
 }
 
+/* ===== window 级错误红条（诊断用）：任何运行时报错都会显示在页面上 ===== */
+function installErrorReporter() {
+  function show(title, msg) {
+    try {
+      const box = el('div', {
+        class: 'fatal-overlay',
+        style:
+          'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;' +
+          'background:rgba(20,5,8,0.92);padding:24px;',
+      });
+      const panel = el('div', {
+        style:
+          'max-width:720px;max-height:80vh;overflow:auto;border:1px solid #ff5d6c;border-radius:12px;' +
+          'background:#1a0f14;padding:18px 22px;color:#ffd7db;font:13px/1.6 Consolas,monospace;white-space:pre-wrap;',
+      });
+      panel.append(
+        el('div', {
+          style: 'font-size:16px;font-weight:700;color:#ff8a94;margin-bottom:8px;',
+          text: title,
+        }),
+        el('div', { text: msg }),
+        el('button', {
+          class: 'btn small',
+          style: 'margin-top:12px;',
+          text: '重载 Reload',
+          onclick: () => location.reload(),
+        })
+      );
+      box.append(panel);
+      document.body.append(box);
+    } catch {
+      // 无法渲染时保持控制台输出
+    }
+  }
+  window.addEventListener('error', (e) => {
+    show(`运行时错误 Runtime Error（${e.message || 'unknown'}）`, e.error?.stack || `${e.filename || ''}:${e.lineno || ''}`);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    show('未处理的 Promise 拒绝 Unhandled Rejection', String(e.reason));
+  });
+}
+
+/* ===== 启动引导 ===== */
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', boot);
+  document.addEventListener('DOMContentLoaded', () => {
+    installErrorReporter();
+    boot();
+  });
 } else {
+  installErrorReporter();
   boot();
 }
