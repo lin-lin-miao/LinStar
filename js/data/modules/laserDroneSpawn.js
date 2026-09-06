@@ -19,7 +19,7 @@ export default {
   category: 'drone',
   target: {}, // 召唤类：无命中目标（走 summon 执行）
   effects: {
-    type: ['summon'], // 召唤钩子
+    type: ['summon','cool_first'], // 召唤钩子
     summon: {
       type: 'drone',                   // 通用无人机模板
       modules: [{ moduleId: 'laser' }], // 携带的模组（等级=召唤模块等级，不受槽限）
@@ -30,13 +30,13 @@ export default {
       maxSummoned: 2,                  // 占位：存活上限 2
       temp: true,                     
     },
-    cooldown_ticks: 150, // 每次补召间隔（占位，各级沿用 Lv1）
+    cooldown_ticks: 200, // 每次补召间隔（占位，各级沿用 Lv1）
     energy_cost: 50,     // 每次召唤能耗（占位，各级沿用 Lv1）
   },
   maxLevel: 16,
   levels: [
-    { level: 5, effects: { summon: { attrs: { base: { hp: 34, shieldCap: 12, energyCap: 130, energyRegen: 13 } }, lifespan_ticks: 220, maxSummoned: 3 } } },
-    { level: 10, effects: { summon: { attrs: { base: { hp: 40, shieldCap: 14, energyCap: 140, energyRegen: 14 } }, lifespan_ticks: 250, maxSummoned: 4 } } },
-    { level: 16, effects: { summon: { attrs: { base: { hp: 48, shieldCap: 18, energyCap: 160, energyRegen: 16 } }, lifespan_ticks: 300, maxSummoned: 5 } } },
+    { level: 5, effects: { summon: { attrs: { base: { hp: 34, shieldCap: 12, energyCap: 130, energyRegen: 13 } }, lifespan_ticks: 300, maxSummoned: 3 } } },
+    { level: 10, effects: { summon: { attrs: { base: { hp: 40, shieldCap: 14, energyCap: 140, energyRegen: 14 } }, lifespan_ticks: 400, maxSummoned: 4 } } },
+    { level: 16, effects: { summon: { attrs: { base: { hp: 48, shieldCap: 18, energyCap: 160, energyRegen: 16 } }, lifespan_ticks: 500, maxSummoned: 5 } } },
   ],
 };
