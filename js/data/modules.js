@@ -23,6 +23,12 @@ import rocketLauncher from './modules/attack/rocketLauncher.js';
 import rocketWarhead from './modules/attack/rocketWarhead.js';
 import missileLauncher from './modules/attack/missileLauncher.js';
 import missileWarhead from './modules/attack/missileWarhead.js';
+import alphaShield from './modules/shield/alphaShield.js';
+import regenShield from './modules/shield/regenShield.js';
+import hardShield from './modules/shield/hardShield.js';
+import reflectShield from './modules/shield/reflectShield.js';
+import allianceShield from './modules/shield/allianceShield.js';
+import blastShield from './modules/shield/blastShield.js';
 
 export const MODULES = {
   cannon,
@@ -36,6 +42,12 @@ export const MODULES = {
   rocketWarhead,    // 内部：火箭携带的一次性弹药（picker:false，不进入编队可选）
   missileLauncher,  // 攻击 · 召唤导弹（爆炸范围 blast_range）
   missileWarhead,   // 内部：导弹携带的爆炸弹头（picker:false，不进入编队可选）
+  alphaShield,      // 护盾 · 对自身持续的"无敌"护盾
+  regenShield,      // 护盾 · 持续型再生护盾（耗能回盾）
+  hardShield,       // 护盾 · 厚实大护盾(大上限·持续)
+  reflectShield,    // 护盾 · 反射护盾（自身层被击时按系数返还）
+  allianceShield,   // 护盾 · 同盟护盾（跨友方共享层）
+  blastShield,      // 护盾 · 防爆护盾（跨友方共享层 · 只挡爆炸型伤害）
 };
 
 /** 模块类别展示顺序（后续 UI/筛选用）：攻击/护盾/功能/运输/采矿/无人机 */

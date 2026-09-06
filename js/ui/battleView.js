@@ -13,6 +13,7 @@ import { SHIPS } from '../data/ships.js';
 import { MODULES } from '../data/modules.js';
 import { createBattle, TARGET_POLICIES } from '../systems/battle.js';
 import { moduleMaxLevel } from '../entities/module.js';
+import { modulePoolCapOf } from '../entities/ship.js';
 import { bar } from './widgets.js';
 import { router } from './router.js';
 import { log, formatRich } from '../core/log.js';
@@ -80,6 +81,93 @@ let logPanelEl = null;
 let statusEl = null;           // 战斗状态行（阶段/存活数）
 let cmdSel = null;             // 指挥栏：全队目标策略下拉
 let cmdPreview = null;         // 指挥栏：当前命中目标预览
+let cmdAlliance = null;        // 指挥栏：友方同盟护盾共享层条（单独一行）
+let cmdAllianceFill = null;    // 同盟护盾条填充
+let cmdAllianceNum = null;     // 同盟护盾条数值
+let cmdBlast = null;           // 指挥栏：友方防爆护盾共享层条（单独一行）
+let cmdBlastFill = null;       // 防爆护盾条填充
+let cmdBlastNum = null;        // 防爆护盾条数值
+
+/* 迷你护盾池条（详情/长期池用）：无标签小横条 + 数值 */
+function makeMiniPool() {
+  const fill = el('div', { class: 'pool-mini-fill' });
+  const num = el('span', { class: 'pool-mini-num', text: '' });
+  const track = el('div', { class: 'pool-mini-track' }, [fill]);
+  return { el: el('div', { class: 'pool-mini' }, [track, num]), fill, num, track };
+}
+/** 刷新迷你护盾池条：value/cap 显式传入；tint={color,glow}|null 决定变色(同色光)。
+ *  cap>0 恒显示（值可为 0，破盾后不隐藏避免跳动）；cap<=0 隐藏。 */
+function setMiniPool(w, value, cap, tint) {
+  if (!w) return;
+  if (cap > 0) {
+    w.el.style.display = '';
+    const pct = Math.max(0, Math.min(100, ((value || 0) / cap) * 100));
+    w.fill.style.width = pct.toFixed(1) + '%';
+    w.num.textContent = `${Math.round(value || 0)} / ${Math.round(cap)}`;
+    if (tint) {
+      w.fill.style.background = tint.color;
+      w.fill.style.boxShadow = tint.glow;
+    } else {
+      w.fill.style.background = ''; // 回 CSS 默认渐变
+      w.fill.style.boxShadow = '';
+    }
+  } else {
+    w.el.style.display = 'none';
+  }
+}
+/** 带标签的长期(本体)护盾池块：头部文字 + 迷你条。 */
+function longShieldBlock() {
+  const pool = makeMiniPool();
+  const label = el('div', { class: 'detail-subtitle', text: i18n.t('battle.detail.longShield') });
+  return { el: el('div', { class: 'detail-long-pool' }, [label, pool.el]), pool };
+}
+
+/* 护盾条变色（护盾值改变的类型 → 同色 + 同色光，去掉闪烁）。优先级高者先：反射黄 → 同盟深蓝 →
+ * 防爆橙 → 回盾青绿 → 普通受击白。返回 {color,glow} 或 null。 */
+function shieldTint(s) {
+  if ((s._reflectFlash || 0) > 0)
+    return { color: '#facc15', glow: '0 0 14px 4px rgba(250, 204, 21, 0.9)' };
+  if ((s._allyFlash || 0) > 0)
+    return { color: '#1d4ed8', glow: '0 0 14px 4px rgba(29, 78, 216, 0.9)' };
+  if ((s._bpFlash || 0) > 0)
+    return { color: '#f59e0b', glow: '0 0 14px 4px rgba(245, 158, 11, 0.9)' };
+  if ((s._healFlash || 0) > 0)
+    return { color: '#5eead4', glow: '0 0 14px 4px rgba(94, 234, 212, 0.9)' };
+  if ((s._dmgFlash || 0) > 0)
+    return { color: '#f8fafc', glow: '0 0 14px 4px rgba(248, 250, 252, 0.85)' };
+  return null;
+}
+
+/* 统一变色状态机（单位卡条 + 独立/长期护盾条共用）：
+ * 值变化触发该池变色(currentTint 给色)，保持 TINT_MS 以覆盖“缓动到位”，随后自动回本色。 */
+const TINT_MS = 600; // 覆盖 0.35s 宽度缓动 + 余量后消退
+const barTints = new Map(); // key: bar 标识 -> { last, color, glow, until }
+
+/** 每帧推进一条 bar 的变色：value 为本帧真实值；currentTint=该单位此刻应展示的事件色(可 null)。
+ *  返回应在护盾条上应用的 {color,glow}；无(已回本色)返回 null。 */
+function nextBarTint(key, value, currentTint) {
+  const now = performance.now();
+  let st = barTints.get(key);
+  if (!st) st = { last: NaN, color: null, glow: null, until: 0 };
+  if (value !== st.last) {
+    // 值发生了改变：用此刻的事件类型色
+    if (currentTint) {
+      st.color = currentTint.color;
+      st.glow = currentTint.glow;
+      st.until = now + TINT_MS;
+    }
+    st.last = value;
+    barTints.set(key, st);
+  }
+  if (now < st.until && st.color) return { color: st.color, glow: st.glow };
+  if (st.color !== null) {
+    st.color = null;
+    st.glow = null;
+    st.until = 0;
+    barTints.set(key, st);
+  }
+  return null;
+}
 
 /* ================= 图标与卡片 ================= */
 
@@ -104,6 +192,16 @@ function isShieldRestore(fx) { return fxHas(fx, 'shield_gain') && !fxHas(fx, 'da
 function rowSelfOnly(inst) {
   const k = (inst.cfg.target || {}).kinds;
   return Array.isArray(k) && k.length === 1 && k[0] === 'self';
+}
+/** 单位当前是否处于无敌：自身有某模块正处于激活持续期且 effects.type 含 invincible */
+function isInvincibleShip(ship) {
+  if (!ship || !Array.isArray(ship.modules)) return false;
+  for (const inst of ship.modules) {
+    if (!inst || !(inst.durationLeft > 0)) continue;
+    const t = (inst.cfg && inst.cfg.effects && inst.cfg.effects.type) || [];
+    if (Array.isArray(t) && t.includes('invincible')) return true;
+  }
+  return false;
 }
 
 /** 单位图标：
@@ -244,10 +342,20 @@ function buildShipCard(ship) {
           c.badge.style.display = 'none';
         }
       } else if (isShieldRestore(fx)) {
-        c.el.classList.toggle(
-          'active',
-          s.hull.shield < s.hull.shieldCap && s.hull.energy >= (fx.energy_cost || 0)
-        );
+        // 回盾模组：与普通模组一致地显示冷却倒计时；就绪且有能量、盾未满时显示"可回盾"
+        const cooling = c.inst.cooldown > 0;
+        c.el.classList.toggle('cooling', cooling);
+        if (cooling) {
+          c.el.classList.remove('active');
+          c.badge.textContent = String(c.inst.cooldown);
+          c.badge.style.display = '';
+        } else {
+          c.badge.style.display = 'none';
+          c.el.classList.toggle(
+            'active',
+            s.hull.shield < s.hull.shieldCap && s.hull.energy >= (fx.energy_cost || 0)
+          );
+        }
       } else {
         // 其它（如目标级抑制等）：通用冷却倒计时/就绪
         const cooling = c.inst.cooldown > 0;
@@ -264,9 +372,23 @@ function buildShipCard(ship) {
   }
 
   function update(s) {
+    // 无敌状态：护盾条变白并泛白光晕（仅护盾条，非整卡）
+    if (isInvincibleShip(s)) {
+      shieldBar.setColor('var(--invincible)');
+      shieldBar.glow('0 0 10px 1px rgba(255,255,255,0.85)');
+    } else {
+      shieldBar.setColor('var(--shield)');
+      shieldBar.glow('');
+    }
     hpBar.update(s.hull.hp, s.hull.hpMax);
     shieldBar.update(s.hull.shield, s.hull.shieldCap);
     energyBar.update(s.hull.energy, s.hull.energyCap);
+    // 护盾值改变：按改变类型变色+同色光，宽度缓动到位后回本色（自动由 nextBarTint 过期触发）
+    const agTint = nextBarTint('ship:' + s.id, s.hull.shield, shieldTint(s));
+    if (agTint) {
+      shieldBar.setColor(agTint.color);
+      shieldBar.glow(agTint.glow);
+    }
     cardEl.classList.toggle('dead', !s.alive);
     cardEl.classList.toggle('selected', selectedId === s.id);
     // 临时单位存活剩余时间（秒）；非临时单位隐藏
@@ -322,14 +444,48 @@ function buildCommandZone() {
     if (updateCards) updateCards();
   });
   cmdPreview = el('span', { class: 'command-preview', text: '' });
+  // 共享护盾条行构造器（同盟 / 防爆 各一行，无则隐藏）
+  const makeRow = (nameKey, isBlast) => {
+    const fill = el('div', { class: isBlast ? 'command-alliance-fill is-blast' : 'command-alliance-fill' });
+    const num = el('span', { class: 'command-alliance-num', text: '' });
+    const row = el('div', { class: 'command-alliance-row hidden' }, [
+      el('span', { class: 'command-alliance-label', text: i18n.t(nameKey) }),
+      el('div', { class: 'command-alliance-track' }, [fill]),
+      num,
+    ]);
+    return { row, fill, num };
+  };
+  const al = makeRow('module.allianceShield', false);
+  cmdAlliance = al.row;
+  cmdAllianceFill = al.fill;
+  cmdAllianceNum = al.num;
+  const bp = makeRow('module.blastShield', true);
+  cmdBlast = bp.row;
+  cmdBlastFill = bp.fill;
+  cmdBlastNum = bp.num;
   const bar = el('div', { class: 'command-bar' }, [
     el('span', { class: 'command-label', text: i18n.t('battle.command.fleet') }),
     cmdSel,
     cmdPreview,
   ]);
-  const zone = el('div', { class: 'battle-zone command' }, [label, bar]);
+  const zone = el('div', { class: 'battle-zone command' }, [label, bar, cmdAlliance, cmdBlast]);
   refreshCommand();
   return { zone };
+}
+
+/** 渲染一行共享护盾条：pool 非空(有持续中护盾)才显示。 */
+function renderSharedRow(row, fill, num, pool) {
+  if (!row || !fill || !num) return;
+  if (pool && pool.max > 0) {
+    const pct = Math.max(0, Math.min(100, (pool.value / pool.max) * 100));
+    fill.style.width = pct.toFixed(1) + '%';
+    num.textContent = `${Math.round(pool.value)} / ${Math.round(pool.max)}`;
+    row.classList.remove('hidden');
+  } else {
+    fill.style.width = '0%';
+    num.textContent = '';
+    row.classList.add('hidden');
+  }
 }
 
 /** 刷新指挥栏：策略下拉值与当前命中目标预览；非对战中禁用 */
@@ -338,6 +494,8 @@ function refreshCommand() {
   if (!battle) {
     cmdPreview.textContent = '';
     cmdSel.disabled = true;
+    if (cmdAlliance) { if (cmdAllianceFill) cmdAllianceFill.style.width = '0%'; cmdAlliance.classList.add('hidden'); }
+    if (cmdBlast) { if (cmdBlastFill) cmdBlastFill.style.width = '0%'; cmdBlast.classList.add('hidden'); }
     return;
   }
   cmdSel.value = battle.allyPolicy;
@@ -346,6 +504,13 @@ function refreshCommand() {
   cmdPreview.replaceChildren(
     ...targetLabelNodes('battle.command.preview', t, 'battle.command.noTarget')
   );
+  // 同盟 / 防爆 共享层条：有对应持续中护盾才显示（各一行），无则隐藏
+  if (typeof battle.alliancePool === 'function') {
+    renderSharedRow(cmdAlliance, cmdAllianceFill, cmdAllianceNum, battle.alliancePool('ally'));
+  }
+  if (typeof battle.blastPool === 'function') {
+    renderSharedRow(cmdBlast, cmdBlastFill, cmdBlastNum, battle.blastPool('ally'));
+  }
 }
 
 function buildStage() {
@@ -576,6 +741,8 @@ function perActText(ship, inst) {
   if (fxType.includes('cool_first')) parts.push(i18n.t('battle.detail.statCoolFirst'));
   if ((fx.self_destruct_damage || 0) < 0) parts.push(i18n.t('battle.detail.statSelfDestruct'));
   if ((fx.blast_range || 0) > 0) parts.push(i18n.t('battle.detail.statBlast', { n: fx.blast_range }));
+  if (fxType.includes('invincible') && (fx.duration_ticks || 0) > 0)
+    parts.push(i18n.t('battle.detail.statInvincible', { n: fx.duration_ticks }));
   if ((fx.ramp_per_hit || 0) > 0) {
     const cap = (fx.max_damage || 0) > 0 ? fx.max_damage : fx.damage || 0;
     parts.push(i18n.t('battle.detail.statRamp', { r: fx.ramp_per_hit, c: Math.round(cap) }));
@@ -684,6 +851,8 @@ function moduleRows(ship) {
             cd: fx.cooldown_ticks ?? 1,
           });
     const contribEl = el('div', { class: 'mod-contrib', text: contribText(ship, inst) });
+    // 该模块的独立护盾池条（仅当模块当前持有独立池——时长型护盾激活中——时显示）
+    const poolMini = makeMiniPool();
 
     // —— 模块级目标（依据 modules.js 的 target 词条渲染：选择器与命中显示同用一套
     //    蓝=友方 / 红=敌方着色逻辑，不同模块仅候选范围 kinds 不同）——
@@ -782,6 +951,7 @@ function moduleRows(ship) {
       targetLine,
       targetCurEl,
       contribEl,
+      poolMini.el,
     ]);
 
     rows.push({
@@ -790,6 +960,7 @@ function moduleRows(ship) {
       toggleEl,
       chipEl,
       contribEl,
+      poolMini,
       targetPickEl,
       targetCurEl,
       targetSig: '',
@@ -862,7 +1033,12 @@ function buildDetail(ship) {
   const lifeNote = el('div', { class: 'detail-timer', text: '' }); // 临时单位存活剩余（非临时隐藏）
 
   const modsTitle = el('div', { class: 'detail-subtitle', text: i18n.t('battle.detail.modules') });
-  const modsList = el('div', { class: 'detail-mods' }, modRows.map((r) => r.block));
+  // 长期(本体)护盾池显示在所有模块详情信息的最前面
+  const longPoolBlock = longShieldBlock();
+  const modsList = el('div', { class: 'detail-mods' }, [
+    longPoolBlock.el,
+    ...modRows.map((r) => r.block),
+  ]);
 
   const targetLabel = el('div', { class: 'detail-subtitle', text: i18n.t('battle.detail.target') });
   const targetBar = el('div', { class: 'detail-target' });
@@ -900,6 +1076,21 @@ function buildDetail(ship) {
       }
       if (r.chipEl) r.chipEl.classList.toggle('off', r.inst.enabled === false);
       if (r.contribEl) r.contribEl.textContent = contribText(ship, r.inst);
+      // 模块自身独立护盾池条：仅时长型护盾模块显示（激活/破盾后都不隐藏，避免跳动）；
+      // 破盾后池已删，value 取 0、cap 仍按模块 cfg×系数给出（保持条幅不跳）。
+      if (r.poolMini) {
+        const fx = r.inst.cfg.effects || {};
+        const isDurShield = Number(fx.shield_cap_bonus || 0) > 0 && Number(fx.duration_ticks || 0) > 0;
+        if (isDurShield) {
+          const cap = modulePoolCapOf(ship, r.inst);
+          const pool = ship.hull.pools ? ship.hull.pools.get(r.inst.id) : null;
+          const value = pool ? pool.value : 0;
+          const mt = nextBarTint('mod:' + ship.id + ':' + r.inst.id, value, shieldTint(ship));
+          setMiniPool(r.poolMini, value, cap, mt);
+        } else {
+          setMiniPool(r.poolMini, 0, 0); // 非独立池模块（武器/常驻并入长期池）隐藏该条
+        }
+      }
       // 统一彩色目标按钮重绘（目标存活列表/选中变化时）
       if (r.targetPickEl) {
         const cand = candList(ship, r.inst.cfg.target);
@@ -948,6 +1139,12 @@ function buildDetail(ship) {
         r.targetCurEl.replaceChildren(...nodes);
       }
     }
+    // 长期(本体)护盾池：始终显示（常驻再生并入其中；值可为 0 也不隐藏避免跳动）
+    const basePool = ship.hull.pools ? ship.hull.pools.get('base') : null;
+    const longValue = basePool ? basePool.value : 0;
+    const longCap = basePool ? basePool.cap : 0;
+    const longTint = nextBarTint('long:' + ship.id, longValue, shieldTint(ship));
+    setMiniPool(longPoolBlock.pool, longValue, longCap, longTint);
     targetHint.textContent = targetHintText(ship);
   };
 

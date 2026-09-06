@@ -28,7 +28,16 @@
 import { bus } from '../core/eventBus.js';
 import { log, formatRich } from '../core/log.js';
 import { i18n } from '../i18n/index.js';
-import { createShip, installModule, coeff, recalcDerived } from '../entities/ship.js';
+import {
+  createShip,
+  installModule,
+  coeff,
+  recalcDerived,
+  fillShieldPools,
+  fillModuleShieldPool,
+  syncShieldSummary,
+  baseShieldPoolOf,
+} from '../entities/ship.js';
 
 const TPS = 20; // 1 秒 = 20 tick
 
@@ -74,25 +83,261 @@ function battleLog(key, params, colorKeys) {
 }
 
 /** 造成伤害：护盾先承伤，再扣血；目标死亡时记录战报 */
-function damageShip(target, amount) {
+/** 目标当前是否处于"无敌"：自身有某模块正处于激活的持续期内且其 effects.type 含 invincible。
+ * 无敌 = 免疫一切经 damageShip 结算的伤害（普通 + 爆炸波及）；自毁(self_destruct)为直接扣血，无法免疫。 */
+function invincibleNow(target) {
+  if (!target || !Array.isArray(target.modules)) return false;
+  for (const inst of target.modules) {
+    if (!inst || !(inst.durationLeft > 0)) continue;
+    const cfg = inst.cfg && inst.cfg.effects;
+    const t = (cfg && cfg.type) || [];
+    if (Array.isArray(t) && t.includes('invincible')) return true;
+  }
+  return false;
+}
+
+/* ---------- 护盾独立池 + 同盟/防爆共享吸收支持 ----------
+ * 承伤统一在各“护盾池”（见 ship.js 头部说明）上进行，本区 helpers 只改池值与闪标，
+ * 不直接写 hull.shield（汇总由 syncShieldSummary 每次刷新）。
+ *  - 自身吸收：目标自己的池按 时长型护盾模块池(激活序，先激活先用)→长期/本体池(最低优先级) 逐个扣减；
+ *    普通伤害跳过防爆池（绝不能吃防爆池）；爆炸伤害可再吃防爆模块池。
+ *  - 共享吸收：目标自身可吸池耗尽、伤害将扣血时，由友方各“共享模块池”
+ *    (type alliance/blastproof) 按激活顺序代吸；爆炸伤防爆池优先。
+ * 每 tick 由 createBattle.step 更新为当前双方编队；承伤时据此在“目标所属友方阵营”内找共享池。
+ */
+let activeAllies = [];
+let activeEnemies = [];
+const teamOf = (s) => (s.side === 'ally' ? activeAllies : activeEnemies);
+const isType = (fx, k) => Array.isArray(fx && fx.type) && fx.type.includes(k);
+
+/** 目标“自己的护盾池”按【使用顺序】列表：
+ *  - 时长型护盾模块池：按激活顺序(_shieldSeq 先激活先使用)；allowBp=false 时跳过防爆池（普通伤害不碰防爆）；
+ *  - 长期/本体池(并入常驻模块)排最末（最低优先级）。
+ *  仅列出值>0 的池。 */
+function ownShieldPools(target, allowBp) {
+  const pools = target && target.hull && target.hull.pools;
+  if (!(pools instanceof Map)) return [];
+  const list = [];
+  for (const inst of target.modules || []) {
+    const p = pools.get(inst.id);
+    if (!p || p.cap <= 0 || p.value <= 0) continue;
+    if (!allowBp && p.blastproof) continue;
+    list.push(p);
+  }
+  list.sort((a, b) => (a.inst._shieldSeq || 0) - (b.inst._shieldSeq || 0)); // 先激活先使用
+  const base = pools.get('base');
+  if (base && base.cap > 0 && base.value > 0) list.push(base); // 长期(本体)池：最低优先级、最后用
+  return list;
+}
+
+/** 目标自身池吸收 amount：按 时长型护盾池(激活序，先激活先用)→长期(本体)池 的顺序扣减并刷新汇总。
+ *  blast=true 时防爆模块池也可吸（爆炸伤；通常防爆池已在防爆拦截阶段优先被消耗）。
+ *  返回 { rest: 剩余量, takes: [{pool, take}] }，takes 供反射核算。 */
+function absorbOwnPools(target, amount, blast) {
+  const zero = { rest: amount, takes: [] };
+  if (amount <= 0 || !target) return zero;
+  let rest = amount;
+  const takes = [];
+  for (const p of ownShieldPools(target, blast)) {
+    if (rest <= 0) break;
+    const take = Math.min(p.value, rest);
+    p.value -= take;
+    rest -= take;
+    takes.push({ pool: p, take });
+  }
+  syncShieldSummary(target); // 汇总刷新（hull.shield = Σ 池值）
+  return { rest, takes };
+}
+
+/** 目标盾量增减（正=补盾、负=汲取），直接作用到“池”，顺序同吸收（本体长期池先→时长护盾池），
+ *  各自封顶自身 cap。补盾可把“共享池/防爆池”（施放者自己的时长模块池）一并补满——
+ *  与旧“总量向总上限回满”观感一致；汲取也可打到防爆池（旧聚合语义即如此，汲取不走 blastFloor）。
+ *  返回实际增减量（正=增加）。 */
+function poolShieldAdd(target, amt) {
+  const pools = target && target.hull && target.hull.pools;
+  if (!(pools instanceof Map) || amt === 0) return 0;
+  const order = [];
+  const base = pools.get('base');
+  if (base && base.cap > 0) order.push(base);
+  for (const inst of target.modules || []) {
+    const p = pools.get(inst.id);
+    if (p && p.cap > 0) order.push(p);
+  }
+  let left = amt;
+  if (left > 0) {
+    for (const p of order) {
+      if (left <= 0) break;
+      const room = p.cap - p.value;
+      if (room <= 0) continue;
+      const add = Math.min(room, left);
+      p.value += add;
+      left -= add;
+    }
+  } else {
+    for (const p of order) {
+      if (left >= 0) break;
+      const take = Math.min(p.value, -left);
+      p.value -= take;
+      left += take;
+    }
+  }
+  syncShieldSummary(target);
+  return amt - left; // 实际作用量（正=实际补入，负=实际汲取）
+}
+
+/** 友方共享吸收：target(某友方单位) 自身池耗尽、伤害将扣血时，由友方各同盟/防爆共享模块池
+ *  (施放者池) 代吸。blast=true 时(爆炸型伤害)：防爆池先吸、随后同盟池；否则只允许非防爆的同盟池。
+ *  施放者池被吸收时其护盾条相应闪标（同盟深蓝 _allyFlash、防爆橙 _bpFlash）。
+ *  返回 { rest: 仍未吸收量, bpAbsorbed: 进入防爆池的量 }。 */
+function absorbByAlliance(target, amount, blast) {
+  const zero = { rest: amount, bpAbsorbed: 0 };
+  if (amount <= 0) return zero;
+  const cands = [];
+  for (const O of teamOf(target)) {
+    if (!O || !O.alive) continue;
+    for (const p of O.hull.pools.values()) {
+      if (!p.inst) continue; // 本体池不参与共享
+      const isAl = p.alliance;
+      const isBp = p.blastproof;
+      if (!isAl && !isBp) continue;
+      if (isBp && !blast) continue; // 防爆池只吸爆炸型伤害
+      if (p.value <= 0) continue;
+      cands.push({ O, p, seq: p.inst._shieldSeq || 0, bp: isBp });
+    }
+  }
+  // 排序：爆炸伤 → 防爆池(isBp)先，再普通同盟池；普通伤 → 仅同盟池。同型按释放顺序。
+  cands.sort((a, b) => {
+    if (a.bp !== b.bp) return a.bp ? -1 : 1;
+    return a.seq - b.seq;
+  });
+  let rest = amount;
+  let bpAbsorbed = 0;
+  const touched = new Set();
+  for (const c of cands) {
+    if (rest <= 0) break;
+    const take = Math.min(c.p.value, rest);
+    c.p.value -= take;
+    touched.add(c.O);
+    if (c.bp) {
+      c.O._bpFlash = 40;   // 防爆层被吸收：护盾条橙色闪烁标记（≈2s）
+      bpAbsorbed += take;
+    } else {
+      c.O._allyFlash = 40; // 同盟层被吸收：护盾条深蓝闪烁标记（≈2s）
+    }
+    rest -= take;
+  }
+  for (const O of touched) syncShieldSummary(O); // 被吸方汇总刷新
+  return { rest, bpAbsorbed };
+}
+
+/** 防爆拦截（仅爆炸型伤害）：目标受防爆护盾保护时，先用友方防爆池抵挡本伤害（即使目标自带护盾），
+ *  让爆炸不对主要目标造成伤害。池按“释放顺序”逐池扣减并置施放者橙色闪标。
+ *  返回 { rest: 剩余量, drained: 进入防爆池的量 }。 */
+function drainBlastproof(target, amount) {
+  if (amount <= 0) return { rest: amount, drained: 0 };
+  const cands = [];
+  for (const O of teamOf(target)) {
+    if (!O || !O.alive) continue;
+    for (const p of O.hull.pools.values()) {
+      if (!p.inst || !p.blastproof || p.value <= 0) continue;
+      cands.push({ O, p, seq: p.inst._shieldSeq || 0 });
+    }
+  }
+  cands.sort((a, b) => a.seq - b.seq);
+  let rest = amount;
+  let drained = 0;
+  const touched = new Set();
+  for (const c of cands) {
+    if (rest <= 0) break;
+    const take = Math.min(c.p.value, rest);
+    c.p.value -= take;
+    touched.add(c.O);
+    c.O._bpFlash = 40; // 防爆层被拦截：护盾条橙色闪烁标记（≈2s）
+    drained += take;
+    rest -= take;
+  }
+  for (const O of touched) syncShieldSummary(O); // 被吸方汇总刷新
+  return { rest, drained };
+}
+
+/**
+ * 造成伤害（独立池模型）：按顺序在护盾池上结算，池尽后扣血；目标死亡时记录战报。
+ * attacker（可选）：本次攻击来源（反射护盾需据此返还）。noReflect：此次伤害不触发反射（用于返还伤害，避免双方反射死循环）。
+ * blast=true：爆炸型伤害——① 先由友方防爆池拦截；② 再按自身池吸（含防爆模块池）；
+ *            否则为普通伤害——自身池只吃 本体→非防爆模块池（绝不碰防爆池）。
+ * 若目标装有“反射护盾”(effects.shield_reflect>0 的模块池)，其模块池被消耗的部分按比例返还给 attacker。
+ */
+function damageShip(target, amount, attacker, noReflect, out, blast) {
+  if (invincibleNow(target)) return 0; // 无敌：不受伤害、不阵亡
   let dealt = 0;
   let rest = amount;
-  if (target.hull.shield > 0) {
-    const absorbed = Math.min(target.hull.shield, rest);
-    target.hull.shield -= absorbed;
-    dealt += absorbed;
-    rest -= absorbed;
+  let shieldAbsorbed = 0; // 自身池吸收总量（供反射判定）
+  const takes = [];       // 自身池逐池吸收明细（供反射核算）
+  // ① 防爆拦截（仅爆炸型）：受防爆护盾保护时先用友方防爆池挡（即使目标自带护盾，爆炸也不伤目标）
+  if (blast && rest > 0) {
+    const bp = drainBlastproof(target, rest);
+    const drained = rest - bp.rest;
+    if (drained > 0 && out) {
+      out.allyAbsorbed = (out.allyAbsorbed || 0) + drained;
+      out.bpAbsorbed = (out.bpAbsorbed || 0) + drained;
+    }
+    rest = bp.rest;
   }
+  // ② 自身护盾池承伤：普通伤 base→非防爆模块池（防爆存在不再禁吃本体/其它模块盾，
+  //    blastFloor 判定已移除）；爆炸伤可再吃防爆模块池（通常已在①被拦截耗尽）。
   if (rest > 0) {
-    target.hull.hp -= rest;
-    dealt += rest;
+    const own = absorbOwnPools(target, rest, !!blast);
+    const absorbed = rest - own.rest;
+    if (absorbed > 0) {
+      shieldAbsorbed = absorbed;
+      dealt += absorbed;
+      rest = own.rest;
+      for (const t of own.takes) takes.push(t);
+      target._dmgFlash = 40; // 普通护盾受击：护盾条白色闪烁（≈2s；反射/同盟/防爆等另有各自色，覆盖此白）
+    }
+  }
+  // ③ 自身池耗尽且伤害将扣血：友方同盟/防爆护盾(施放者共享模块池)代为吸收；不够的部分才真正扣血
+  const beforeAlly = rest;
+  const ar = rest > 0 ? absorbByAlliance(target, rest, !!blast) : { rest, bpAbsorbed: 0 };
+  const allyAbsorbed = beforeAlly - ar.rest;
+  if (out) {
+    out.allyAbsorbed = (out.allyAbsorbed || 0) + allyAbsorbed;
+    out.bpAbsorbed = (out.bpAbsorbed || 0) + ar.bpAbsorbed;
+  }
+  if (ar.rest > 0) {
+    target.hull.hp -= ar.rest;
+    dealt += ar.rest;
   }
   if (target.hull.hp <= 0 && target.alive) {
     target.hull.hp = 0;
     target.alive = false;
     battleLog('battle.log.destroyed', { ship: uTok(target) }, ['ship']);
   }
+  if (!noReflect && attacker && attacker !== target && shieldAbsorbed > 0) {
+    reflectShieldDamage(target, attacker, takes);
+  }
   return dealt;
+}
+
+/** 反射护盾（独立池模型）：把本次落在目标“反射护盾模块池”内被消耗的量按 shield_reflect
+ *  返还给攻击者。其它池被消耗不返还（takes 已按逐池吸收明细给出）。
+ *  返还伤害对 attacker 正常护盾→血结算，但 noReflect=true（不再引发二次反射）。 */
+function reflectShieldDamage(target, attacker, takes) {
+  let reflected = 0;
+  for (const t of takes) {
+    const inst = t.pool && t.pool.inst;
+    const fx = inst && inst.cfg && inst.cfg.effects;
+    if (!fx || (fx.shield_reflect || 0) <= 0) continue;
+    reflected += (fx.shield_reflect || 0) * t.take;
+  }
+  if (reflected <= 0) return;
+  target._reflectFlash = 40; // 反射闪光标记（≈2s，UI 据此闪烁护盾条黄色）
+  battleLog(
+    'battle.log.reflect',
+    { ship: uTok(target), attacker: uTok(attacker), dmg: Math.round(reflected) },
+    ['ship', 'attacker']
+  );
+  damageShip(attacker, reflected, null, true); // 返还（不二次反射）
 }
 
 /**
@@ -107,6 +352,7 @@ export function createBattle(preset) {
   let tickOff = null;
   let runTicks = 0; // 战斗已进行的 tick 数（running 起计）
   const seqCount = { ally: 0, enemy: 0 }; // 各阵营"出场序号"分配器：编号由出场顺序决定、不随队列变化
+  let shieldSeq = 0; // 护盾模块"激活顺序"分配器（时长型护盾激活即递增，先激活先使用）
 
   function spawnList(arr, side, list) {
     for (const cfg of list) {
@@ -116,9 +362,9 @@ export function createBattle(preset) {
         const spec = mod && typeof mod === 'object' ? mod : { moduleId: mod };
         installModule(ship, spec.moduleId ?? spec.id, spec.level ?? 1);
       }
-      // 开战护盾 = 护盾上限（含被动模块加成上限；时长型模块持续期外不贡献，
-      // 因 recalcDerived 只在持续期计入其上限加成，故此处即"满盾"）
-      ship.hull.shield = ship.hull.shieldCap;
+      // 开战满盾：把各护盾池（本体池 + 当前贡献模块池）补满到各自 cap；
+      // 汇总后 hull.shield = shieldCap（与旧“满盾登场”观感一致；时长型模块持续期外无池）
+      fillShieldPools(ship);
       seqCount[side] += 1;
       ship.order = seqCount[side]; // 出场序号（#编号），稳定不随队列/移除变化
       arr.push(ship);
@@ -324,20 +570,22 @@ export function createBattle(preset) {
 
   /** 重算目标三围上限 = 自身(基础+被动+自身时长加成) + Σ目标级 cap 增/减
    *  每次均从各自基础值(baseShieldCap/baseHpMax/baseEnergyCap)重算，
-   *  保证非累加：撤销旧影响后新施加不会在已减值上再叠。 */
+   *  保证非累加：撤销旧影响后新施加不会在已减值上再叠。
+   *  护盾叠加(shield_cap_target)记入“本体池”的 capExtra（随本体池容量由 recalcDerived
+   *  一并钳制/汇总）；血量/能量叠加仍直接改对应上限（无池概念）。 */
   function recomputeCap(target) {
-    recalcDerived(target); // 护盾上限 = 基础 + 自身被动/时长加成
-    target.hull.hpMax = target.hull.baseHpMax; // 先复位血量/能量上限到基准
-    target.hull.energyCap = target.hull.baseEnergyCap;
     const m = capOverlays.get(target.id);
     let sh = 0;
     let hp = 0;
     let en = 0;
     if (m) for (const v of m.values()) { sh += v.sh; hp += v.hp; en += v.en; }
-    if (sh !== 0) target.hull.shieldCap = Math.max(0, target.hull.shieldCap + sh);
+    const base = baseShieldPoolOf(target);
+    if (base) base.capExtra = sh; // 非累加：每次按目标级叠加总和重设
+    recalcDerived(target); // 护盾池同步（本体池=baseShieldCap+capExtra、各模块池）并刷新汇总
+    target.hull.hpMax = target.hull.baseHpMax; // 先复位血量/能量上限到基准
+    target.hull.energyCap = target.hull.baseEnergyCap;
     if (hp !== 0) target.hull.hpMax = Math.max(1, target.hull.hpMax + hp);
     if (en !== 0) target.hull.energyCap = Math.max(0, target.hull.energyCap + en);
-    target.hull.shield = Math.min(target.hull.shield, target.hull.shieldCap);
     target.hull.hp = Math.min(target.hull.hp, target.hull.hpMax);
     target.hull.energy = Math.min(target.hull.energy, target.hull.energyCap);
   }
@@ -512,7 +760,7 @@ export function createBattle(preset) {
       const lv = spec.level ? spec.level : (inst.level || 1);
       installModule(u, mid, lv, true); // force：不受该单位模块槽上限约束（cool_first 引信在模块安装时统一处理）
     }
-    u.hull.shield = u.hull.shieldCap; // 满盾登场（同 spawnList 逻辑）
+    fillShieldPools(u); // 满盾登场（同 spawnList 逻辑）：本体+模块各池补满
     // 继承模块所属船舰的自动策略与该船当前目标（仅非锁定单位；锁定单位目标由 boundId 固定）
     if (!boundId) {
       if (ship.policy) u.policy = ship.policy; // ship.policy 为空=跟随全队（召唤物同默认）
@@ -613,11 +861,15 @@ export function createBattle(preset) {
 
     ship.hull.energy -= cost;
     if ((fx.duration_ticks || 0) > 0) {
-      // 持续时间词条：先进入持续期并【先应用时长型加成（如护盾上限提升）】，
-      // 再执行瞬间效果词条（如 shield_gain 回盾按新上限结算）；持续结束后自动进冷却
+      // 持续时间词条：先进入持续期并【先应用时长型加成（生成该模块的护盾池）】，
+      // 再执行瞬间效果词条（如 shield_gain 补盾）；持续结束后自动进冷却
       inst.durationLeft = fx.duration_ticks;
       inst.cooldown = 0;
-      if ((fx.shield_cap_bonus || 0) > 0) recalcDerived(ship); // 上限先加
+      if ((fx.shield_cap_bonus || 0) > 0) {
+        recalcDerived(ship);              // 生成该模块的护盾池（空池，总上限即提高）
+        fillModuleShieldPool(ship, inst); // ★ 只把该模块自身池补满到其 cap；本体/其它模块池保持现值
+        inst._shieldSeq = ++shieldSeq;    // 记录激活顺序（先激活的先被使用）
+      }
     } else {
       inst.cooldown = fx.cooldown_ticks ?? 1;
     }
@@ -638,10 +890,7 @@ export function createBattle(preset) {
           const amt = fx[k] * co;
           const f = AMOUNT[k];
           if (f === 'shield') {
-            target.hull.shield =
-              amt > 0
-                ? Math.min(target.hull.shieldCap, target.hull.shield + amt)
-                : Math.max(0, target.hull.shield + amt);
+            poolShieldAdd(target, amt); // 目标级护盾量值词条 → 作用到“池”（正=补 本体→模块池，负=汲取）
           } else if (f === 'energy') {
             target.hull.energy =
               amt > 0
@@ -714,34 +963,51 @@ export function createBattle(preset) {
       }
     }
     const effDmg = effRaw * coeff(ship, inst.cfg.category);
+    const isBlastMod = isType(fx, 'blast'); // 爆炸型伤害（如火箭/导弹爆炸）
+    let primaryBpAbsorbed = 0;              // 主目标命中进入防爆池的总量（用于抑制 blast_range）
     for (const target of targets) {
       // —— 词条执行器：依据 effects 中的词条对每个选定目标同时生效 ——
       if ((fx.damage || 0) > 0) {
         const dmg = effDmg;
-        const dealt = damageShip(target, dmg);
-        dmgTotal += dealt;
-        battleLog(
-          'battle.log.fire',
-          {
-            actor: uTok(ship),
-            target: uTok(target),
-            dmg: Math.round(dealt),
-          },
-          ['actor', 'target']
-        );
+        const out = { allyAbsorbed: 0, bpAbsorbed: 0 };
+        const dealt = damageShip(target, dmg, ship, false, out, isBlastMod);
+        dmgTotal += dealt + out.allyAbsorbed;
+        primaryBpAbsorbed += out.bpAbsorbed;
+        if (out.allyAbsorbed > 0) {
+          // 命中同时打在目标与共享护盾层上：同时显示目标承伤与同盟/防爆承伤
+          const key = out.bpAbsorbed > 0 ? 'battle.log.fireBlastproof' : 'battle.log.fireAlliance';
+          battleLog(
+            key,
+            {
+              actor: uTok(ship),
+              target: uTok(target),
+              dmg: Math.round(dealt),
+              ally: Math.round(out.bpAbsorbed > 0 ? out.bpAbsorbed : out.allyAbsorbed),
+            },
+            ['actor', 'target']
+          );
+        } else {
+          battleLog(
+            'battle.log.fire',
+            { actor: uTok(ship), target: uTok(target), dmg: Math.round(dealt) },
+            ['actor', 'target']
+          );
+        }
       }
       if ((fx.shield_gain || 0) > 0) {
-        const before = target.hull.shield;
         const gain = fx.shield_gain * coeff(ship, inst.cfg.category);
-        target.hull.shield = Math.min(target.hull.shieldCap, before + gain);
-        shieldTotal += target.hull.shield - before;
+        // 补盾作用到池：本体池(封顶 baseShieldCap+叠加) → 各模块池（各自封顶），汇总随之刷新
+        const restored = poolShieldAdd(target, gain);
+        shieldTotal += restored;
+        if (restored > 0) target._healFlash = 40; // 回盾闪光标记（≈2s，UI 据此闪烁护盾条）
       }
       // 未来词条执行器在此追加（如 heal / energyDrain / shieldDrain …）
     }
     // —— 爆炸范围 blast_range：命中主目标后，对其所在队列"视觉顺序中的前后"各 blast_range 个位置内
     //    的存活单位同时造成同额爆炸伤害。目标在发射时锁定，爆炸不另行选目标、不随目标改变。 ——
+    //    防爆护盾：主目标命中被防爆池吸收时，blast_range 被抑制（不再波及相邻单位）。 ——
     const blastR = ((fx.blast_range || 0) | 0);
-    if (blastR > 0 && (fx.damage || 0) > 0) {
+    if (blastR > 0 && (fx.damage || 0) > 0 && !(isBlastMod && primaryBpAbsorbed > 0)) {
       const roster = ship.side === 'ally' ? enemies : allies; // 敌方队列（视觉顺序）
       const hitSet = new Set(targets.map((u) => u.id));       // 主目标已结算，不再重复受爆炸
       for (const primary of targets) {
@@ -751,13 +1017,29 @@ export function createBattle(preset) {
           for (const nb of [roster[idx - k], roster[idx + k]]) {
             if (!nb || !nb.alive || hitSet.has(nb.id)) continue;
             hitSet.add(nb.id);
-            const dealt = damageShip(nb, effDmg);
-            dmgTotal += dealt;
-            battleLog(
-              'battle.log.blast',
-              { actor: uTok(ship), target: uTok(nb), dmg: Math.round(dealt) },
-              ['actor', 'target']
-            );
+            const out = { allyAbsorbed: 0, bpAbsorbed: 0 };
+            const dealt = damageShip(nb, effDmg, ship, false, out, isBlastMod);
+            dmgTotal += dealt + out.allyAbsorbed;
+            if (out.allyAbsorbed > 0) {
+              const key =
+                out.bpAbsorbed > 0 ? 'battle.log.blastBlastproof' : 'battle.log.blastAlliance';
+              battleLog(
+                key,
+                {
+                  actor: uTok(ship),
+                  target: uTok(nb),
+                  dmg: Math.round(dealt),
+                  ally: Math.round(out.bpAbsorbed > 0 ? out.bpAbsorbed : out.allyAbsorbed),
+                },
+                ['actor', 'target']
+              );
+            } else {
+              battleLog(
+                'battle.log.blast',
+                { actor: uTok(ship), target: uTok(nb), dmg: Math.round(dealt) },
+                ['actor', 'target']
+              );
+            }
           }
         }
       }
@@ -849,12 +1131,50 @@ export function createBattle(preset) {
     }
   }
 
+  /** 破盾机制（独立池模型）：每个“时长型大护盾”模块（duration_ticks>0 且 shield_cap_bonus>0 且持续中）
+   *  贡献一个独立护盾池（cap = shield_cap_bonus × 护盾系数，与 recalcDerived 一致）。
+   *  - 该模块池被打空(pool.value ≤ 0) ⇔ “该护盾破盾”→ 立即结束其持续并进入冷却；
+   *    与其它护盾/本体池是否打空无关。
+   *  - no_break：破盾后仍保持激活（池打空也不提前结束，走自然持续到期），故不参与“破盾”判定。 */
+  function breakShieldOnDepletion(ship) {
+    if (!ship.alive) return;
+    const broken = [];
+    for (const inst of ship.modules) {
+      if (!inst.enabled || !(inst.durationLeft > 0)) continue;
+      const fx = inst.cfg.effects || {};
+      if (!((fx.duration_ticks || 0) > 0 && (fx.shield_cap_bonus || 0) > 0)) continue;
+      if (isType(fx, 'no_break')) continue;
+      const p = ship.hull.pools.get(inst.id);
+      if (p && p.value <= 1e-6) broken.push(inst); // 该模块池已被抽空 → 破盾
+    }
+    if (!broken.length) return;
+    for (const inst of broken) {
+      inst.durationLeft = 0;
+      inst.cooldown = inst.cfg.effects.cooldown_ticks ?? 1; // 破盾 → 进入冷却
+      battleLog(
+        'battle.log.shieldBreak',
+        { module: i18n.t(inst.cfg.nameKey), ship: uTok(ship) },
+        ['ship']
+      );
+    }
+    recalcDerived(ship); // 移除已破盾模块的池（值丢弃）并刷新汇总
+  }
+
   function step() {
     if (phase !== 'running') return;
     runTicks += 1;
+    activeAllies = allies; // 同盟护盾跨单位结算用的当前阵营引用
+    activeEnemies = enemies;
     dropDeadTargets();
     cleanDeadEffects();
     const alive = [...allies, ...enemies].filter((s) => s.alive);
+    for (const s of alive) {
+      if (s._healFlash > 0) s._healFlash -= 1;   // 回盾闪光逐 tick 递减
+      if (s._reflectFlash > 0) s._reflectFlash -= 1; // 反射闪光逐 tick 递减
+      if (s._allyFlash > 0) s._allyFlash -= 1;   // 同盟层被吸收闪光逐 tick 递减
+      if (s._bpFlash > 0) s._bpFlash -= 1;       // 防爆层被拦截/吸收闪光逐 tick 递减
+      if (s._dmgFlash > 0) s._dmgFlash -= 1;     // 普通护盾受击闪光逐 tick 递减
+    }
     for (const s of alive) moduleCycleTick(s);
     for (const s of alive) energyRegenTick(s);
     // 累计各模块有效贡献窗口（先于激活，含当前 tick）
@@ -883,6 +1203,7 @@ export function createBattle(preset) {
         if (!u.alive) removeSummoned(side, u);
       }
     }
+    for (const s of alive) breakShieldOnDepletion(s); // 破盾检测（护盾耗尽即提前结束护盾持续）
     checkEnd();
   }
 
@@ -891,6 +1212,22 @@ export function createBattle(preset) {
     const anyEnemy = enemies.some((s) => s.alive);
     if (!anyEnemy) settle('win');
     else if (!anyAlly) settle('lose');
+  }
+
+  /** 汇总某阵营符合 pred 的“共享护盾池”（模块池，非本体）{value,max}：逐池累加池值/池容量。 */
+  function poolTotalFor(side, pred) {
+    let value = 0;
+    let max = 0;
+    for (const u of sidesOf(side)) {
+      if (!u.alive) continue;
+      for (const p of u.hull.pools.values()) {
+        if (!p.inst) continue; // 本体池不参与共享统计
+        if (!pred(p)) continue;
+        value += p.value;
+        max += p.cap;
+      }
+    }
+    return { value, max };
   }
 
   return {
@@ -910,6 +1247,16 @@ export function createBattle(preset) {
     },
     /** 全部存活单位（含双方） */
     units() { return [...allies, ...enemies]; },
+    /** 某阵营同盟共享池的总盾量/上限（只统计非防爆 alliance && !blastproof 的模块池）。 */
+    alliancePool(side) {
+      return poolTotalFor(side, (p) => p.alliance && !p.blastproof);
+    },
+    alliancePoolTotal(side) { return this.alliancePool(side).value; },
+    /** 某阵营防爆共享池的总盾量/上限（只统计 blastproof 的模块池）。 */
+    blastPool(side) {
+      return poolTotalFor(side, (p) => p.blastproof);
+    },
+    blastPoolTotal(side) { return this.blastPool(side).value; },
     moduleTargetList,
     shipEffectiveTarget,
     fleetPreview,

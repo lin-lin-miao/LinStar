@@ -19,8 +19,14 @@ export function bar(labelText, colorVar) {
     fill.style.width = `${pct.toFixed(1)}%`;
     text.textContent = `${Math.ceil(v)}/${Math.ceil(m)}`;
   }
+  function setColor(colorVar) {
+    fill.style.background = colorVar;
+  }
+  function glow(css) {
+    fill.style.boxShadow = css || '';
+  }
 
-  return { el: rootEl, update };
+  return { el: rootEl, update, setColor, glow };
 }
 
 export default bar;
