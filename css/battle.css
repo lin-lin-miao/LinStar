@@ -167,7 +167,12 @@
 .unit-card.selected {
   box-shadow: 0 0 0 2px var(--accent), 0 0 16px rgba(110, 203, 245, 0.35);
 }
+/* 无敌的泛白光晕改由护盾条(bar-glow)承载，此处不再对整卡加辉光 */
 .unit-card.dead { opacity: 0.4; cursor: default; }
+
+/* 护盾条“变色”特效（去掉闪烁）：护盾值改变时由 JS 把护盾条换成对应类型的颜色并加同色光晕，
+   条宽与颜色/光晕均以缓动过渡到位；不再使用离散的 2s 闪烁动画。 */
+/* （旧 .bar.*-flash 类与 shieldFlash 关键帧已废弃移除；类型色由 shieldTint 直接写入内联样式） */
 
 /* 图标区 */
 .unit-icon-zone {
@@ -214,7 +219,15 @@
   background: rgba(255, 255, 255, 0.07);
   overflow: hidden;
 }
-.bar-fill { height: 100%; border-radius: 4px; transition: width 0.08s linear; }
+.bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  /* 护盾值变化：条宽与颜色/光晕均以缓动过渡到位（去闪烁） */
+  transition:
+    width 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.35s ease,
+    box-shadow 0.35s ease;
+}
 
 /* 模块图标区 */
 .unit-modules { display: flex; gap: 4px; justify-content: center; margin-top: 1px; }
@@ -460,6 +473,41 @@
   padding: 2px 6px;
 }
 .command-preview { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+/* 指挥栏：同盟护盾共享层条（单独一行；无同盟护盾时隐藏） */
+.command-alliance-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+.command-alliance-row.hidden { display: none; }
+.command-alliance-label { font-size: 12px; color: #a5e8ff; white-space: nowrap; }
+.command-alliance-track {
+  position: relative;
+  flex: 1 1 160px;
+  max-width: 260px;
+  height: 10px;
+  background: rgba(79, 195, 247, 0.15);
+  border: 1px solid rgba(79, 195, 247, 0.4);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.command-alliance-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #1d4ed8, #2563eb);
+  border-radius: 999px;
+  transition: width 0.15s linear;
+}
+.command-alliance-fill.is-blast {
+  background: linear-gradient(90deg, #f59e0b, #fb923c); /* 防爆护盾条：橙色 */
+}
+.command-alliance-num {
+  font-size: 12px;
+  color: #a5e8ff;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .mod-status { margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
 
 /* 模块行操作控件（启停 / 齿轮 AI 预留） */
@@ -569,3 +617,37 @@
 .settle-panel .result-desc { margin: 0; color: var(--text-dim); font-size: 12px; }
 .settle-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn.ghost { background: transparent; }
+
+/* 详情/长期护盾池 迷你护盾条 */
+.pool-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 4px 34px; /* 缩进到模块名下方 */
+}
+.pool-mini-track {
+  position: relative;
+  flex: 0 1 120px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.pool-mini-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #67e8f9, #22d3ee);
+  border-radius: 999px;
+  transition:
+    width 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.35s ease,
+    box-shadow 0.35s ease;
+}
+.pool-mini-num {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.detail-long-pool { border-bottom: 1px dashed var(--border); padding: 2px 0 6px; margin-bottom: 4px; }
+.detail-long-pool .pool-mini { margin-left: 0; }
+.detail-long-pool .pool-mini-fill { background: linear-gradient(90deg, #a5f3fc, #67e8f9); }

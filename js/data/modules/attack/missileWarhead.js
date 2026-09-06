@@ -17,7 +17,7 @@ export default {
   category: 'attack',
   target: { kinds: ['enemy'], countMode: 'single', maxCount: 1 },
   effects: {
-    type: ['cool_first'],         // cool_first：部署即进入冷却（引信倒计时），不先触发；到点引爆
+    type: ['cool_first', 'blast'], // cool_first：引信倒计时；blast：爆炸型伤害（可被防爆护盾抵挡）
     damage: 140,                   // Lv1 占位：对锁定目标的大量伤害
     blast_range: 1,                // ★ 爆炸范围词条：队列前后各 1 个位置内的存活单位同时受同额爆炸伤害
     self_destruct_damage: -1000000, // 触发后扣除自身全部生命（自毁）；占位大负值保证死亡
