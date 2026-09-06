@@ -12,17 +12,17 @@
  * 铁律：模块的功能与数值一律由用户人工设定；数值只在各模块文件里维护。
  * 注：regenShield/rampCannon 曾仅作测试，已按用户要求移除注册(文件留存)，不再重做。
  */
-import cannon from './modules/cannon.js';
-import concussionCannon from './modules/concussionCannon.js';
-import heavyCannon from './modules/heavyCannon.js';
-import laser from './modules/laser.js';
-import dualLaser from './modules/dualLaser.js';
-import denseBarrage from './modules/denseBarrage.js';
-import laserDroneSpawn from './modules/laserDroneSpawn.js';
-import rocketLauncher from './modules/rocketLauncher.js';
-import rocketWarhead from './modules/rocketWarhead.js';
-import missileLauncher from './modules/missileLauncher.js';
-import missileWarhead from './modules/missileWarhead.js';
+import cannon from './modules/attack/cannon.js';
+import concussionCannon from './modules/attack/concussionCannon.js';
+import heavyCannon from './modules/attack/heavyCannon.js';
+import laser from './modules/attack/laser.js';
+import dualLaser from './modules/attack/dualLaser.js';
+import denseBarrage from './modules/attack/denseBarrage.js';
+import laserDroneSpawn from './modules/drone/laserDroneSpawn.js';
+import rocketLauncher from './modules/attack/rocketLauncher.js';
+import rocketWarhead from './modules/attack/rocketWarhead.js';
+import missileLauncher from './modules/attack/missileLauncher.js';
+import missileWarhead from './modules/attack/missileWarhead.js';
 
 export const MODULES = {
   cannon,
