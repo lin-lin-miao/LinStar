@@ -575,6 +575,7 @@ function perActText(ship, inst) {
   const fxType = Array.isArray(fx.type) ? fx.type : fx.type ? [fx.type] : [];
   if (fxType.includes('cool_first')) parts.push(i18n.t('battle.detail.statCoolFirst'));
   if ((fx.self_destruct_damage || 0) < 0) parts.push(i18n.t('battle.detail.statSelfDestruct'));
+  if ((fx.blast_range || 0) > 0) parts.push(i18n.t('battle.detail.statBlast', { n: fx.blast_range }));
   if ((fx.ramp_per_hit || 0) > 0) {
     const cap = (fx.max_damage || 0) > 0 ? fx.max_damage : fx.damage || 0;
     parts.push(i18n.t('battle.detail.statRamp', { r: fx.ramp_per_hit, c: Math.round(cap) }));

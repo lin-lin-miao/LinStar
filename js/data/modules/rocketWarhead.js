@@ -11,6 +11,7 @@ export default {
   id: 'rocketWarhead',
   nameKey: 'module.rocketWarhead', // i18n -> 火箭爆炸（内部，通常只作为火箭的携带模组出现）
   name: '火箭爆炸',
+  icon: 'assets/img/爆炸.svg',
   picker: false,                    // 不出现在演练编队可选模块清单
   category: 'attack',
   target: { kinds: ['enemy'], countMode: 'single', maxCount: 1 },

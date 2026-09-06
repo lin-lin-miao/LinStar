@@ -38,9 +38,11 @@ export default {
   'ship.mining': '采矿船',
   'ship.drone': '无人机',
   'ship.rocket': '火箭',
+  'ship.missile': '导弹',
 
   /* 模块 */
   'module.cannon': '火炮',
+  'module.concussionCannon': '震荡炮',
   'module.heavyCannon': '大型火炮',
   'module.laser': '激光',
   'module.dualLaser': '双向激光',
@@ -48,6 +50,8 @@ export default {
   'module.laserDroneSpawn': '激光无人机',
   'module.rocketLauncher': '火箭发射器',
   'module.rocketWarhead': '火箭爆炸',
+  'module.missileLauncher': '导弹发射器',
+  'module.missileWarhead': '导弹爆炸',
   'module.regenShield': '再生护盾',
   'module.shieldSuppressor': '护盾抑制器',
 
@@ -92,6 +96,7 @@ export default {
   'battle.log.summon': '{ship} 召唤了 {unit}',
   'battle.log.tempExpired': '{ship} 到达存在时间自动消失',
   'battle.log.selfDestruct': '{ship} 引爆自毁',
+  'battle.log.blast': '{actor} 爆炸波及 {target}，造成 {dmg} 伤害',
   'battle.log.destroyed': '{ship} 被击毁',
   'battle.result.win.title': '胜利',
   'battle.result.win.desc': '敌方战斗单位已被全歼',
@@ -155,6 +160,7 @@ export default {
   'battle.detail.statRamp': '逐步伤害：每次激活+{r}（上限 {c}）',
   'battle.detail.statCoolFirst': '部署后先冷却再触发',
   'battle.detail.statSelfDestruct': '引爆后自毁',
+  'battle.detail.statBlast': '爆炸范围：队列前后 {n}',
   'battle.detail.statRegen': '恢复 {n}/次',
   'battle.detail.statCap': '护盾上限+{n}',
   'battle.detail.statShieldT': '目标护盾 {v}',

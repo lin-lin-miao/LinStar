@@ -13,6 +13,7 @@
  * 注：regenShield/rampCannon 曾仅作测试，已按用户要求移除注册(文件留存)，不再重做。
  */
 import cannon from './modules/cannon.js';
+import concussionCannon from './modules/concussionCannon.js';
 import heavyCannon from './modules/heavyCannon.js';
 import laser from './modules/laser.js';
 import dualLaser from './modules/dualLaser.js';
@@ -20,9 +21,12 @@ import denseBarrage from './modules/denseBarrage.js';
 import laserDroneSpawn from './modules/laserDroneSpawn.js';
 import rocketLauncher from './modules/rocketLauncher.js';
 import rocketWarhead from './modules/rocketWarhead.js';
+import missileLauncher from './modules/missileLauncher.js';
+import missileWarhead from './modules/missileWarhead.js';
 
 export const MODULES = {
   cannon,
+  concussionCannon,  // 攻击 · 震荡炮（爆炸范围 blast_range）
   heavyCannon,
   laser,
   dualLaser,
@@ -30,6 +34,8 @@ export const MODULES = {
   laserDroneSpawn,
   rocketLauncher,   // 攻击 · 召唤一次性火箭（C06）
   rocketWarhead,    // 内部：火箭携带的一次性弹药（picker:false，不进入编队可选）
+  missileLauncher,  // 攻击 · 召唤导弹（爆炸范围 blast_range）
+  missileWarhead,   // 内部：导弹携带的爆炸弹头（picker:false，不进入编队可选）
 };
 
 /** 模块类别展示顺序（后续 UI/筛选用）：攻击/护盾/功能/运输/采矿/无人机 */

@@ -738,6 +738,30 @@ export function createBattle(preset) {
       }
       // 未来词条执行器在此追加（如 heal / energyDrain / shieldDrain …）
     }
+    // —— 爆炸范围 blast_range：命中主目标后，对其所在队列"视觉顺序中的前后"各 blast_range 个位置内
+    //    的存活单位同时造成同额爆炸伤害。目标在发射时锁定，爆炸不另行选目标、不随目标改变。 ——
+    const blastR = ((fx.blast_range || 0) | 0);
+    if (blastR > 0 && (fx.damage || 0) > 0) {
+      const roster = ship.side === 'ally' ? enemies : allies; // 敌方队列（视觉顺序）
+      const hitSet = new Set(targets.map((u) => u.id));       // 主目标已结算，不再重复受爆炸
+      for (const primary of targets) {
+        const idx = roster.findIndex((u) => u.id === primary.id);
+        if (idx < 0) continue;
+        for (let k = 1; k <= blastR; k += 1) {
+          for (const nb of [roster[idx - k], roster[idx + k]]) {
+            if (!nb || !nb.alive || hitSet.has(nb.id)) continue;
+            hitSet.add(nb.id);
+            const dealt = damageShip(nb, effDmg);
+            dmgTotal += dealt;
+            battleLog(
+              'battle.log.blast',
+              { actor: uTok(ship), target: uTok(nb), dmg: Math.round(dealt) },
+              ['actor', 'target']
+            );
+          }
+        }
+      }
+    }
     // —— 自毁词条 self_destruct_damage：对所属单位自身血量"正加负减"（负值即扣光机体死亡）；
     //    始终触发（锁定目标即使已阵亡也照常引爆），且置于对目标造成伤害之后。 ——
     if (isSuicide && ship.alive) {

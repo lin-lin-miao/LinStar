@@ -38,9 +38,11 @@ export default {
   'ship.mining': 'Mining Ship',
   'ship.drone': 'Drone',
   'ship.rocket': 'Rocket',
+  'ship.missile': 'Missile',
 
   /* Modules */
   'module.cannon': 'Cannon',
+  'module.concussionCannon': 'Concussion Cannon',
   'module.heavyCannon': 'Heavy Cannon',
   'module.laser': 'Laser',
   'module.dualLaser': 'Twin Laser',
@@ -48,6 +50,8 @@ export default {
   'module.laserDroneSpawn': 'Laser Drone',
   'module.rocketLauncher': 'Rocket Launcher',
   'module.rocketWarhead': 'Rocket Blast',
+  'module.missileLauncher': 'Missile Launcher',
+  'module.missileWarhead': 'Missile Blast',
   'module.regenShield': 'Regenerative Shield',
   'module.shieldSuppressor': 'Shield Suppressor',
 
@@ -91,6 +95,7 @@ export default {
   'battle.log.fire': '{actor} fires at {target}, dealing {dmg} damage',
   'battle.log.summon': '{ship} summoned {unit}',
   'battle.log.selfDestruct': '{ship} self-destructed',
+  'battle.log.blast': '{actor} blast hits {target} for {dmg}',
   'battle.log.tempExpired': '{ship} expired and vanished',
   'battle.log.destroyed': '{ship} destroyed',
   'battle.result.win.title': 'Victory',
@@ -155,6 +160,7 @@ export default {
   'battle.detail.statRamp': 'Ramp +{r}/hit (cap {c})',
   'battle.detail.statCoolFirst': 'Cools first after deploy',
   'battle.detail.statSelfDestruct': 'Self-destructs after firing',
+  'battle.detail.statBlast': 'Blast: {n} front/back in queue',
   'battle.detail.statRegen': 'Restore {n}/activation',
   'battle.detail.statCap': 'Shield cap +{n}',
   'battle.detail.statShieldT': 'Target shield {v}',

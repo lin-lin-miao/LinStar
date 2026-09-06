@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-30 -30 160 160" width="100%" height="100%">
+    <!-- 整个震荡炮组合向右倾斜45度 -->
+    <g transform="rotate(45 50 50)">
+        
+        <!-- ==================== 火炮部分 ==================== -->
+        <g fill="none" stroke="#FF3B30" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <!-- 炮管主体 -->
+            <rect x="42" y="25" width="16" height="45" />
+            
+            <!-- 炮口（分段设计，体现科技感） -->
+            <path d="M40 25 H60 V15 H40 Z" />
+            <path d="M40 15 H60" />
+
+            <!-- 底座（发射/能量控制部分） -->
+            <path d="M35 70 H65 V90 H35 Z" />
+            <line x1="45" y1="80" x2="55" y2="80" />
+
+            <!-- 炮管散热/磁轨细节 -->
+            <line x1="42" y1="40" x2="58" y2="40" />
+            <line x1="42" y1="55" x2="58" y2="55" />
+        </g>
+
+        <!-- ==================== 爆炸部分 ==================== -->
+        <!-- 整体向上平移30个单位，正好位于炮口处 -->
+        <g fill="none" stroke="#FF3B30" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" transform="translate(0, -30)">
+            
+            <!-- 中心点（实心红点，填充炮口） -->
+            <circle cx="50" cy="50" r="4" fill="#FF3B30" stroke="none" />
+
+            <!-- 8条内辐条（从中心向外放射） -->
+            <line x1="50" y1="42" x2="50" y2="22" />
+            <line x1="50" y1="42" x2="50" y2="22" transform="rotate(45 50 50)" />
+            <line x1="50" y1="42" x2="50" y2="22" transform="rotate(90 50 50)" />
+            <line x1="50" y1="42" x2="50" y2="22" transform="rotate(135 50 50)" />
+            <line x1="50" y1="42" x2="50" y2="22" transform="rotate(180 50 50)" />
+            <line x1="50" y1="42" x2="50" y2="22" transform="rotate(225 50 50)" />
+            <line x1="50" y1="42" x2="50" y2="22" transform="rotate(270 50 50)" />
+            <line x1="50" y1="42" x2="50" y2="22" transform="rotate(315 50 50)" />
+
+            <!-- 8条外辐条（末端尖锐，增强爆破感） -->
+            <line x1="50" y1="18" x2="50" y2="12" />
+            <line x1="50" y1="18" x2="50" y2="12" transform="rotate(45 50 50)" />
+            <line x1="50" y1="18" x2="50" y2="12" transform="rotate(90 50 50)" />
+            <line x1="50" y1="18" x2="50" y2="12" transform="rotate(135 50 50)" />
+            <line x1="50" y1="18" x2="50" y2="12" transform="rotate(180 50 50)" />
+            <line x1="50" y1="18" x2="50" y2="12" transform="rotate(225 50 50)" />
+            <line x1="50" y1="18" x2="50" y2="12" transform="rotate(270 50 50)" />
+            <line x1="50" y1="18" x2="50" y2="12" transform="rotate(315 50 50)" />
+            
+        </g>
+        
+    </g>
+</svg>

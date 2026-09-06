@@ -14,7 +14,7 @@ export default {
   category: 'attack',
   target: { kinds: ['enemy'], countMode: 'multi', maxCount: 1 }, // 用于在召唤时解析锁定目标
   effects: {
-    type: ['summon', 'per_target'], // per_target：召唤数量 = 当前解析到的目标数（每目标一枚，各自锁定目标）
+    type: ['cool_first','summon', 'per_target'], // per_target：召唤数量 = 当前解析到的目标数（每目标一枚，各自锁定目标）
     summon: {
       type: 'drone',                // 复用通用召唤模板
       bind_target: true,            // 火箭锁定发射器当前目标，召唤后不可改
@@ -35,6 +35,6 @@ export default {
   levels: [
     { level: 5, target: { maxCount: 2 }, effects: { summon: { lifespan_ticks: 420}, cooldown_ticks: 140, energy_cost: 36 } },
     { level: 10, target: { maxCount: 3 }, effects: { summon: { lifespan_ticks: 440}, cooldown_ticks: 125, energy_cost: 30 } },
-    { level: 16, target: { maxCount: 4 }, effects: { summon: { lifespan_ticks: 460}, cooldown_ticks: 110, energy_cost: 24 } },
+    { level: 16, target: { maxCount: 4 }, effects: { summon: { lifespan_ticks: 460}, cooldown_ticks: 100, energy_cost: 24 } },
   ],
 };
