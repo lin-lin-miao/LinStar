@@ -23,7 +23,7 @@ export default {
     ramp_per_hit: 2,    // Lv1 占位：每名敌方提供的增量
     max_damage: 30,     // Lv1 占位：封顶
     cooldown_ticks: 20, // 各级沿用 Lv1
-    energy_cost: 4,     // 各级沿用 Lv1
+    energy_cost: 20,     // 各级沿用 Lv1
   },
   maxLevel: 16,
   levels: [

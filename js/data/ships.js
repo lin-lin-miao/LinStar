@@ -18,7 +18,7 @@ export const SHIPS = {
     slots: 3,                 // 1 级可装模块数 = 3
     base: {
       hp: 120,                // 血量上限
-      shieldCap: 40,          // 基础护盾上限
+      shieldCap: 50,          // 基础护盾上限
       energyCap: 1000,         // 能量上限
       energyRegen: 20,         // 基础能量回复 / 秒
     },
@@ -38,7 +38,7 @@ export const SHIPS = {
     slots: 3,                 // 1 级可装模块数 = 3
     base: {
       hp: 120,                // 血量上限
-      shieldCap: 40,          // 基础护盾上限
+      shieldCap: 50,          // 基础护盾上限
       energyCap: 100,         // 能量上限
       energyRegen: 5,         // 基础能量回复 / 秒
     },
@@ -58,7 +58,7 @@ export const SHIPS = {
     slots: 3,                 // 1 级可装模块数 = 3
     base: {
       hp: 120,                // 血量上限
-      shieldCap: 40,          // 基础护盾上限
+      shieldCap: 50,          // 基础护盾上限
       energyCap: 100,         // 能量上限
       energyRegen: 5,         // 基础能量回复 / 秒
     },

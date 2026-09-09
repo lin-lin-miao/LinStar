@@ -18,26 +18,26 @@ export default {
   },
   effects: {
     type: ['projectile'], // 特殊钩子标记（机制）
-    damage: 14,           // Lv1 占位
+    damage: 18,           // Lv1 占位
     cooldown_ticks: 20,   // 各级沿用 Lv1（如需随级变请在 levels 覆盖）
-    energy_cost: 6,
+    energy_cost: 15,
   },
   maxLevel: 16,
   levels: [
-    { level: 2, effects: { damage: 17 } },
-    { level: 3, effects: { damage: 20 } },
-    { level: 4, effects: { damage: 23 } },
-    { level: 5, effects: { damage: 26 } },
-    { level: 6, effects: { damage: 30 } },
-    { level: 7, effects: { damage: 34 } },
-    { level: 8, effects: { damage: 38 } },
-    { level: 9, effects: { damage: 42 } },
-    { level: 10, effects: { damage: 46 } },
-    { level: 11, effects: { damage: 51 } },
-    { level: 12, effects: { damage: 56 } },
-    { level: 13, effects: { damage: 61 } },
-    { level: 14, effects: { damage: 66 } },
-    { level: 15, effects: { damage: 72 } },
-    { level: 16, effects: { damage: 78 } },
+    { level: 2, effects: { damage: 21 } },
+    { level: 3, effects: { damage: 26 } },
+    { level: 4, effects: { damage: 32 } },
+    { level: 5, effects: { damage: 39 } },
+    { level: 6, effects: { damage: 47 } },
+    { level: 7, effects: { damage: 56 } },
+    { level: 8, effects: { damage: 66 } },
+    { level: 9, effects: { damage: 77 } },
+    { level: 10, effects: { damage: 89 } },
+    { level: 11, effects: { damage: 102 } },
+    { level: 12, effects: { damage: 116 } },
+    { level: 13, effects: { damage: 131 } },
+    { level: 14, effects: { damage: 147 } },
+    { level: 15, effects: { damage: 164 } },
+    { level: 16, effects: { damage: 182 } },
   ],
 };

@@ -21,26 +21,26 @@ export default {
     type: ['beam'], // 特殊钩子标记（机制）
     damage: 2,          // Lv1 占位：初始单发伤害
     ramp_per_hit: 1,    // Lv1 占位：每击增量
-    max_damage: 22,     // Lv1 占位：逐击增长封顶
+    max_damage: 45,     // Lv1 占位：逐击增长封顶
     cooldown_ticks: 15,  // 高频（各级沿用 Lv1，如需随级变请在 levels 覆盖）
-    energy_cost: 1,
+    energy_cost: 10,
   },
   maxLevel: 16,
   levels: [
-    { level: 2, effects: { damage: 3, ramp_per_hit: 1, max_damage: 30 } },
-    { level: 3, effects: { damage: 4, ramp_per_hit: 1, max_damage: 38 } },
-    { level: 4, effects: { damage: 5, ramp_per_hit: 1, max_damage: 46 } },
-    { level: 5, effects: { damage: 6, ramp_per_hit: 2, max_damage: 58 } },
-    { level: 6, effects: { damage: 7, ramp_per_hit: 2, max_damage: 70 } },
-    { level: 7, effects: { damage: 8, ramp_per_hit: 2, max_damage: 82 } },
-    { level: 8, effects: { damage: 9, ramp_per_hit: 2, max_damage: 94 } },
-    { level: 9, effects: { damage: 10, ramp_per_hit: 3, max_damage: 110 } },
-    { level: 10, effects: { damage: 12, ramp_per_hit: 3, max_damage: 126 } },
-    { level: 11, effects: { damage: 14, ramp_per_hit: 3, max_damage: 142 } },
-    { level: 12, effects: { damage: 16, ramp_per_hit: 3, max_damage: 158 } },
-    { level: 13, effects: { damage: 18, ramp_per_hit: 4, max_damage: 180 } },
-    { level: 14, effects: { damage: 20, ramp_per_hit: 4, max_damage: 200 } },
-    { level: 15, effects: { damage: 23, ramp_per_hit: 4, max_damage: 220 } },
-    { level: 16, effects: { damage: 26, ramp_per_hit: 5, max_damage: 240 } },
+    { level: 2, effects: { damage: 4, ramp_per_hit: 1, max_damage: 50 } },
+    { level: 3, effects: { damage: 6, ramp_per_hit: 2, max_damage: 65 } },
+    { level: 4, effects: { damage: 9, ramp_per_hit: 2, max_damage: 80 } },
+    { level: 5, effects: { damage: 12, ramp_per_hit: 3, max_damage: 95 } },
+    { level: 6, effects: { damage: 16, ramp_per_hit: 3, max_damage: 115 } },
+    { level: 7, effects: { damage: 20, ramp_per_hit: 4, max_damage: 140 } },
+    { level: 8, effects: { damage: 25, ramp_per_hit: 4, max_damage: 165 } },
+    { level: 9, effects: { damage: 30, ramp_per_hit: 5, max_damage: 190 } },
+    { level: 10, effects: { damage: 36, ramp_per_hit: 5, max_damage: 220 } },
+    { level: 11, effects: { damage: 42, ramp_per_hit: 6, max_damage: 255 } },
+    { level: 12, effects: { damage: 49, ramp_per_hit: 6, max_damage: 290 } },
+    { level: 13, effects: { damage: 56, ramp_per_hit: 7, max_damage: 325 } },
+    { level: 14, effects: { damage: 74, ramp_per_hit: 7, max_damage: 365 } },
+    { level: 15, effects: { damage: 92, ramp_per_hit: 8, max_damage: 410 } },
+    { level: 16, effects: { damage: 101, ramp_per_hit: 8, max_damage: 455 } },
   ],
 };

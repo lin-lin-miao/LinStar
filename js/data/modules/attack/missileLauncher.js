@@ -29,12 +29,12 @@ export default {
       temp: true,
     },
     cooldown_ticks: 220,            // 导弹发射间隔(tick)占位：高于火箭
-    energy_cost: 60,                // 每次召唤能耗占位：高于火箭
+    energy_cost: 500,                // 每次召唤能耗占位：高于火箭
   },
   maxLevel: 16,
   levels: [
-    { level: 5, effects: { summon: { lifespan_ticks: 420 }, cooldown_ticks: 200, energy_cost: 54 } },
-    { level: 10, effects: { summon: { lifespan_ticks: 440 }, cooldown_ticks: 180, energy_cost: 48 } },
-    { level: 16, effects: { summon: { lifespan_ticks: 460 }, cooldown_ticks: 160, energy_cost: 42 } },
+    { level: 5, effects: { summon: { lifespan_ticks: 420 }, cooldown_ticks: 200, energy_cost: 550 } },
+    { level: 10, effects: { summon: { lifespan_ticks: 440 }, cooldown_ticks: 180, energy_cost: 600 } },
+    { level: 16, effects: { summon: { lifespan_ticks: 460 }, cooldown_ticks: 160, energy_cost: 650 } },
   ],
 };

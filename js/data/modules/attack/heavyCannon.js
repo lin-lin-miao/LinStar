@@ -20,7 +20,7 @@ export default {
     type: ['projectile'], // 特殊钩子标记（机制）
     damage: 10,            // Lv1 占位：单目标伤害，低于火炮(14)
     cooldown_ticks: 20,   // 各级沿用 Lv1（如需随级变请在 levels 覆盖）
-    energy_cost: 8,
+    energy_cost: 10,
   },
   maxLevel: 16,
   levels: [

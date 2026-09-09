@@ -19,25 +19,25 @@ export default {
   },
   effects: {
     shield_cap_bonus: 100,
-    shield_gain: 2,      // Lv1 占位：每次激活回自身盾量
+    shield_gain: 2,      // Lv1 占位：每次激活回自身盾量0.08
     cooldown_ticks: 25,   // 激活间隔(tick)占位（各级沿用 Lv1）
-    energy_cost: 30,      // 每次激活能耗占位（各级沿用 Lv1）
+    energy_cost: 8,      // 每次激活能耗占位（各级沿用 Lv1）
   },
   maxLevel: 16,
   levels: [
     { level: 2, effects: { shield_gain: 3, shield_cap_bonus: 125 } },
     { level: 3, effects: { shield_gain: 4, shield_cap_bonus: 150 } },
-    { level: 4, effects: { shield_gain: 5, shield_cap_bonus: 175 } },
-    { level: 5, effects: { shield_gain: 6, shield_cap_bonus: 200 } },
-    { level: 6, effects: { shield_gain: 7, shield_cap_bonus: 225 } },
-    { level: 7, effects: { shield_gain: 9, shield_cap_bonus: 250 } },
-    { level: 8, effects: { shield_gain: 11, shield_cap_bonus: 275 } },
-    { level: 9, effects: { shield_gain: 13, shield_cap_bonus: 300, energy_cost: 50 } },
-    { level: 10, effects: { shield_gain: 15, shield_cap_bonus: 325, cooldown_ticks: 20 } },
-    { level: 11, effects: { shield_gain: 17, shield_cap_bonus: 350 } },
-    { level: 12, effects: { shield_gain: 19, shield_cap_bonus: 375 } },
-    { level: 13, effects: { shield_gain: 21, shield_cap_bonus: 400 } },
-    { level: 14, effects: { shield_gain: 24, shield_cap_bonus: 425 } },
+    { level: 4, effects: { shield_gain: 5, shield_cap_bonus: 175, energy_cost: 10 } },
+    { level: 5, effects: { shield_gain: 6, shield_cap_bonus: 200, cooldown_ticks: 20 } },
+    { level: 6, effects: { shield_gain: 7, shield_cap_bonus: 225, energy_cost: 15 } },
+    { level: 7, effects: { shield_gain: 9, shield_cap_bonus: 250, energy_cost: 17 } },
+    { level: 8, effects: { shield_gain: 11, shield_cap_bonus: 275, energy_cost: 20 } },
+    { level: 9, effects: { shield_gain: 13, shield_cap_bonus: 300, energy_cost: 25 } },
+    { level: 10, effects: { shield_gain: 15, shield_cap_bonus: 325, energy_cost: 30 } },
+    { level: 11, effects: { shield_gain: 17, shield_cap_bonus: 350, energy_cost: 35 } },
+    { level: 12, effects: { shield_gain: 19, shield_cap_bonus: 375, energy_cost: 40 } },
+    { level: 13, effects: { shield_gain: 21, shield_cap_bonus: 400, energy_cost: 45 } },
+    { level: 14, effects: { shield_gain: 24, shield_cap_bonus: 425, energy_cost: 50 } },
     { level: 15, effects: { shield_gain: 27, shield_cap_bonus: 450 } },
     { level: 16, effects: { shield_gain: 30, shield_cap_bonus: 500 } },
   ],

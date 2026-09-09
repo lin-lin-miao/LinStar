@@ -20,29 +20,29 @@ export default {
     maxCount: 1,
   },
   effects: {
-    type: ['alliance'], // 同盟护盾；破盾后仍保持激活（层打空不提前结束，走自然持续）
+    type: ['alliance','no_break'], // 同盟护盾；破盾后仍保持激活（层打空不提前结束，走自然持续）
     shield_cap_bonus: 150,   // Lv1 占位：共享层护盾量（< 硬化护盾 Lv1=200）
-    duration_ticks: 200,     // 持续(tick)占位：比硬化护盾更长
-    cooldown_ticks: 200,     // 持续结束后冷却(tick)占位
-    energy_cost: 60,         // 每次开启能耗占位
+    duration_ticks: 400,     // 持续(tick)占位：比硬化护盾更长
+    cooldown_ticks: 20,     // 持续结束后冷却(tick)占位
+    energy_cost: 500,         // 每次开启能耗占位
   },
   maxLevel: 16,
   // 护盾量略低于硬化护盾（逐级，Lv16=900 < 硬化 Lv16=950）；持续时长比硬化护盾各等级更长。
   levels: [
-    { level: 2, effects: { shield_cap_bonus: 200, duration_ticks: 225 } },
-    { level: 3, effects: { shield_cap_bonus: 250, duration_ticks: 250  } },
-    { level: 4, effects: { shield_cap_bonus: 300, duration_ticks: 275  } },
-    { level: 5, effects: { shield_cap_bonus: 350, duration_ticks: 300  } },
-    { level: 6, effects: { shield_cap_bonus: 400, duration_ticks: 325  } },
-    { level: 7, effects: { shield_cap_bonus: 450, duration_ticks: 350  } },
-    { level: 8, effects: { shield_cap_bonus: 500, duration_ticks: 375  } },
-    { level: 9, effects: { shield_cap_bonus: 550, duration_ticks: 400  } },
-    { level: 10, effects: { shield_cap_bonus: 600, duration_ticks: 425  } },
-    { level: 11, effects: { shield_cap_bonus: 650, duration_ticks: 450  } },
-    { level: 12, effects: { shield_cap_bonus: 700, duration_ticks: 475  } },
-    { level: 13, effects: { shield_cap_bonus: 750, duration_ticks: 500  } },
-    { level: 14, effects: { shield_cap_bonus: 800, duration_ticks: 525  } },
-    { level: 15, effects: { shield_cap_bonus: 850, duration_ticks: 550  } },
-    { level: 16, effects: { shield_cap_bonus: 900, duration_ticks: 575  } },
+    { level: 2, effects: { shield_cap_bonus: 200} },
+    { level: 3, effects: { shield_cap_bonus: 250} },
+    { level: 4, effects: { shield_cap_bonus: 300} },
+    { level: 5, effects: { shield_cap_bonus: 350} },
+    { level: 6, effects: { shield_cap_bonus: 400} },
+    { level: 7, effects: { shield_cap_bonus: 450} },
+    { level: 8, effects: { shield_cap_bonus: 500} },
+    { level: 9, effects: { shield_cap_bonus: 550} },
+    { level: 10, effects: { shield_cap_bonus: 600} },
+    { level: 11, effects: { shield_cap_bonus: 650} },
+    { level: 12, effects: { shield_cap_bonus: 700} },
+    { level: 13, effects: { shield_cap_bonus: 750} },
+    { level: 14, effects: { shield_cap_bonus: 800} },
+    { level: 15, effects: { shield_cap_bonus: 850} },
+    { level: 16, effects: { shield_cap_bonus: 900} },
   ],
 };

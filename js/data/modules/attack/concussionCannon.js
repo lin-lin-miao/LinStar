@@ -20,7 +20,7 @@ export default {
     damage: 9,            // Lv1 占位：单体数值低于同级火炮
     blast_range: 3,       // 爆炸范围：队列前后各 1 个位置的存活单位同时受伤害
     cooldown_ticks: 30,   // 各级沿用 Lv1（如需随级变请在 levels 覆盖）
-    energy_cost: 8,
+    energy_cost: 35,
   },
   maxLevel: 16,
   levels: [

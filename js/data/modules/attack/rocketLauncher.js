@@ -14,7 +14,7 @@ export default {
   category: 'attack',
   target: { kinds: ['enemy'], countMode: 'multi', maxCount: 1 }, // 用于在召唤时解析锁定目标
   effects: {
-    type: ['cool_first','summon', 'per_target'], // per_target：召唤数量 = 当前解析到的目标数（每目标一枚，各自锁定目标）
+    type: ['cool_first', 'summon', 'per_target'], // per_target：召唤数量 = 当前解析到的目标数（每目标一枚，各自锁定目标）
     summon: {
       type: 'drone',                // 复用通用召唤模板
       bind_target: true,            // 火箭锁定发射器当前目标，召唤后不可改
@@ -29,12 +29,12 @@ export default {
       temp: true,
     },
     cooldown_ticks: 150,            // 火箭发射间隔(tick)占位（各级沿用 Lv1）
-    energy_cost: 40,                // 每次召唤能耗占位（各级沿用 Lv1）
+    energy_cost: 250,                // 每次召唤能耗占位（各级沿用 Lv1）
   },
   maxLevel: 16,
   levels: [
-    { level: 5, target: { maxCount: 2 }, effects: { summon: { lifespan_ticks: 420}, cooldown_ticks: 140, energy_cost: 36 } },
-    { level: 10, target: { maxCount: 3 }, effects: { summon: { lifespan_ticks: 440}, cooldown_ticks: 125, energy_cost: 30 } },
-    { level: 16, target: { maxCount: 4 }, effects: { summon: { lifespan_ticks: 460}, cooldown_ticks: 100, energy_cost: 24 } },
+    { level: 5, target: { maxCount: 2 }, effects: { summon: { lifespan_ticks: 420 }, cooldown_ticks: 140, energy_cost: 270 } },
+    { level: 10, target: { maxCount: 3 }, effects: { summon: { lifespan_ticks: 440 }, cooldown_ticks: 125, energy_cost: 280 } },
+    { level: 16, target: { maxCount: 4 }, effects: { summon: { lifespan_ticks: 460 }, cooldown_ticks: 100 } },
   ],
 };

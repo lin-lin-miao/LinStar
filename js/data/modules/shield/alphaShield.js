@@ -21,7 +21,7 @@ export default {
     shield_gain: 100,
     duration_ticks: 100,  // 无敌持续(tick)：Lv1 = 100
     cooldown_ticks: 300,  // 无敌结束后进入冷却(tick)占位
-    energy_cost: 50,      // 每次开启能耗占位
+    energy_cost: 300,      // 每次开启能耗占位
   },
   maxLevel: 16,
   // 无敌持续逐级递增 5~10 tick，满级(Lv16)=200 tick；冷却/能耗各级沿用 Lv1。

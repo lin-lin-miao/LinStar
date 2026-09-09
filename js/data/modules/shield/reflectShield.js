@@ -23,8 +23,8 @@ export default {
     shield_cap_bonus: 120, // Lv1 占位：本层护盾量（< 硬化护盾 Lv1=200）
     shield_reflect: 0.5,     // 反射系数：1 = 全反射
     duration_ticks: 80,    // 持续(tick)占位（< 硬化护盾 Lv1=125）
-    cooldown_ticks: 160,   // 冷却(tick)占位
-    energy_cost: 40,       // 开启能耗占位
+    cooldown_ticks: 260,   // 冷却(tick)占位
+    energy_cost: 350,       // 开启能耗占位
   },
   maxLevel: 16,
   // 护盾量逐级 +40（< 硬化护盾每级 +50），各级沿用 Lv1 的持续/冷却/能耗/反射系数。

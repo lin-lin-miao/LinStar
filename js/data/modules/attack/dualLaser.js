@@ -25,7 +25,7 @@ export default {
     ramp_per_hit: 2,    // Lv1 占位：每击增量（高于激光）
     max_damage: 26,     // Lv1 占位：逐击封顶（高于激光同档）
     cooldown_ticks: 15, // 各级沿用 Lv1
-    energy_cost: 2,     // 双光束（各级沿用 Lv1）
+    energy_cost: 8,     // 双光束（各级沿用 Lv1）
   },
   maxLevel: 16,
   levels: [
