@@ -111,6 +111,14 @@ function segAbs(s) {
   if (s.k === 'mod') return modTok(s.inst);
   return i18n.t('battle.abs.' + s.k); // base/alliance/blastproof/hull
 }
+/** 单位标签判定（供目标词条 exclude 排除；可扩展）：
+ *  projectile = 召唤弹体类单位（火箭/导弹弹体，由召唤模块 summon.projectile 标记）。 */
+function unitHasTag(u, tag) {
+  if (!u) return false;
+  if (tag === 'projectile') return !!u.isProjectile;
+  return false;
+}
+
 /** 把 表头模板 + 逐吸收段模板 拼成一行并落日志（多段各自经 formatRich，再串联 msg/rich） */
 function emitHitLog(headKey, headParams, seg, dtypeTag) {
   const dtype = i18n.t('battle.dmgType.' + dtypeTag);
@@ -477,8 +485,10 @@ export function createBattle(preset) {
     }
     if (kinds.includes('any')) pool.push(...[...allies, ...enemies]); // 敌我任意（含自身）
     const uniq = [];
+    const excl = Array.isArray(tgt.exclude) ? tgt.exclude : []; // 目标排除标签（如 projectile=召唤弹体）
     for (const u of pool) {
       if (!u.alive) continue;
+      if (excl.length && excl.some((t) => unitHasTag(u, t))) continue;
       if (!uniq.some((x) => x.id === u.id)) uniq.push(u);
     }
     if (!uniq.length) return [];
@@ -732,6 +742,7 @@ export function createBattle(preset) {
     u.summonMod = inst.moduleId; // 用于按召唤模块统计在场存活上限（不同召唤模块互不挤占）
     if (isTemp) u.tempLeft = (sum.lifespan_ticks || 0) > 0 ? sum.lifespan_ticks : 60;
     u.summonIcon = A.icon || inst.cfg.icon || ''; // 召唤单位图标：attrs.icon 优先，其次模块 icon
+    if (sum.projectile) u.isProjectile = true; // 弹体类召唤单位（火箭/导弹）：可被目标词条 exclude 排除
     u.tempNoIcon = !u.summonIcon;                   // 无图标 → 单位降级 ▲
     // 显示名：模块给召唤单位显式指定名称词条(attrs.nameKey)则用之；
     // 模块未指定时才覆写为所属召唤模块名（模板 ship.drone 词条仅作缺省安全回退）。

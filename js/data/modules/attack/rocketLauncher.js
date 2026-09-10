@@ -12,12 +12,13 @@ export default {
   name: '火箭发射器',
   icon: 'assets/img/火箭发射器.svg',
   category: 'attack',
-  target: { kinds: ['enemy'], countMode: 'multi', maxCount: 1 }, // 用于在召唤时解析锁定目标
+  target: { kinds: ['enemy'], countMode: 'multi', maxCount: 1, exclude: ['projectile'] }, // 用于在召唤时解析锁定目标（不以召唤弹体类单位为目标）
   effects: {
     type: ['cool_first', 'summon', 'per_target'], // per_target：召唤数量 = 当前解析到的目标数（每目标一枚，各自锁定目标）
     summon: {
       type: 'drone',                // 复用通用召唤模板
       bind_target: true,            // 火箭锁定发射器当前目标，召唤后不可改
+      projectile: true,             // 本召唤体为「弹体类单位」（其他发射器不得以其为目标）
       modules: [{ moduleId: 'rocketWarhead' }], // 携带一次性弹药（等级=召唤模块等级）
       attrs: {
         nameKey: 'ship.rocket',     // 显示名 -> 火箭

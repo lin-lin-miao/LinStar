@@ -12,12 +12,13 @@ export default {
   name: '导弹发射器',
   icon: 'assets/img/导弹.svg',
   category: 'attack',
-  target: { kinds: ['enemy'], countMode: 'single', maxCount: 1 }, // 发射时解析并锁定单一目标
+  target: { kinds: ['enemy'], countMode: 'single', maxCount: 1, exclude: ['projectile'] }, // 发射时解析并锁定单一目标（不以召唤弹体类单位为目标）
   effects: {
     type: ['summon','cool_first'],               // 召唤钩子
     summon: {
       type: 'drone',                // 复用通用召唤模板
       bind_target: true,            // 导弹锁定发射器目标，召唤后不可改
+      projectile: true,             // 本召唤体为「弹体类单位」（其他发射器不得以其为目标）
       modules: [{ moduleId: 'missileWarhead' }], // 携带"导弹弹头"（等级=召唤模块等级）
       attrs: {
         nameKey: 'ship.missile',    // 显示名 -> 导弹
