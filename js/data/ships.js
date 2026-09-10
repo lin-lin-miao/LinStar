@@ -64,10 +64,10 @@ export const SHIPS = {
     },
     coefficients: {
       attack: 0.5,            // 攻击类模块效果系数
-      shield: 1,              // 护盾类模块效果系数（Q1 待确认）
-      function: 1,            // 功能类模块效果系数（Q1 待确认）
+      shield: 1,              // 护盾类模块效果系数
+      function: 1,            // 功能类模块效果系数
       transport: 0.5,         // 运输类模块效果系数
-      mining: 1,              // 采矿类模块效果系数（本职，修正后 =1）
+      mining: 1,              // 采矿类模块效果系数
     },
   },
 

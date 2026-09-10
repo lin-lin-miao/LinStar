@@ -18,14 +18,179 @@
  *     - 激活时长型大护盾 → fillModuleShieldPool 只把该模块自己的池补满；
  *     - 持续结束/停用/破盾/移除 → 该池整体消失（值丢弃），本体与其它模块池不受影响；
  *     - 满盾（战斗开场/召唤登场）→ fillShieldPools 把全部池补满。
+ *
+ * ★ 三套“乘性/加速”别混（详情见本文件 coeff() / damageTakeMul() / hastenTicksOf() 的注释）：
+ *   - `coeff(ship, category)`：**类别系数**（`(基础 + Σ加性) × Π乘性`，按 category 精确匹配）；
+ *   - `damageTakeMul(ship)`：**受伤减免系数**（`ship.damageTakeMul`，缺省 1）——作用于**该单位受到的一切伤害**
+ *     （血量/护盾），唯一结算点在 battle.js `applyHit` 入口；不分类别、不参与护盾池/非伤害量值。
+ *   - `hastenTicksOf(ship)`：**时间加速**（`ship.hastenTicks`，缺省 0，多来源**取最大值**）——把该单位
+ *     每 tick 的计时推进量变为 `1 + 它`（模块持续/冷却、临时单位存在时间）。
  */
 import { SHIPS } from '../data/ships.js';
 import { uid } from '../core/utils.js';
 import { createModuleInstance } from './module.js';
 
-/** 该船对某模块类别的加成系数（缺失类别按 1） */
+/** 该船对某模块类别的**有效系数** = （船型基础系数 + 该类别上的全部**加性修饰**）× 该类别上的全部**乘性修饰**
+ *  （缺失类别基础按 1）。加性/乘性两表都按 category 精确匹配 → 只影响对应类别。
+ *  ★ 唯一口径：战斗结算（battle.js `maybeActivate` 的伤害/效果量）、护盾池容量（modulePoolCapOf）
+ *    与 UI 明细（battleView `perActText`）都必须走本函数，避免“两套口径”。 */
 export function coeff(ship, category) {
-  return ship.coefficients[category] ?? 1;
+  const mods = ship.coeffMods;
+  const muls = ship.coeffMulMods;
+  const hasAdd = mods instanceof Map && mods.size > 0;
+  const hasMul = muls instanceof Map && muls.size > 0;
+  if (!hasAdd && !hasMul) return ship.coefficients[category] ?? 1; // 零开销快路径
+  return coeffParts(ship, category).value;
+}
+
+/** `coeff()` 的内部实现（同一个算式，供 `coeff()` 与 UI 分项展示共用，**不重复计算逻辑**）。 */
+function coeffParts(ship, category) {
+  const base = ship.coefficients[category] ?? 1;
+  let add = 0;
+  if (ship.coeffMods instanceof Map) {
+    for (const m of ship.coeffMods.values()) if (m.category === category) add += m.add;
+  }
+  let mul = 1;
+  if (ship.coeffMulMods instanceof Map) {
+    for (const m of ship.coeffMulMods.values()) if (m.category === category) mul *= m.mul;
+  }
+  return { base, add, mul, value: (base + add) * mul };
+}
+
+/** **分项明细**（UI 系数栏用）：`{ base, add, mul, value }` ——
+ *  `value` 与 `coeff()` 完全同源（同一次算式），故 UI 只需展示、**不得**在调用处重算。
+ *  `add`＝该类别加性修饰合计（0 表示无），`mul`＝该类别乘性修饰连乘（1 表示无）。 */
+export function coeffDetail(ship, category) {
+  return coeffParts(ship, category);
+}
+
+/** 写入/覆盖一条**加性**类别系数修饰（来源 key 通常＝模块实例 id）。
+ *  同一 key **覆盖式**写入（非累加）；不同 key 之间**叠加**（由 coeff() 求和）。
+ *  与护盾池/时长逻辑完全无关：不参与 syncShieldPools，也不会被时长到期/破盾清掉。 */
+export function setCoeffMod(ship, key, category, add) {
+  if (!ship || !key || !category) return;
+  if (!(ship.coeffMods instanceof Map)) ship.coeffMods = new Map();
+  const cur = ship.coeffMods.get(key);
+  if (cur && cur.category === category && cur.add === add) return; // 无变化
+  ship.coeffMods.set(key, { category, add });
+}
+
+/** 撤销某来源（模块实例 id）的**加性**类别系数修饰 */
+export function clearCoeffMod(ship, key) {
+  if (ship && ship.coeffMods instanceof Map) ship.coeffMods.delete(key);
+}
+
+/** 写入/覆盖一条**乘性**类别系数修饰（来源 key 通常＝模块实例 id；`mul` 如 0.95 = ×0.95）。
+ *  同一 key 覆盖式写入；不同 key 之间**相乘**（由 coeff() 连乘）。乘性表独立于加性表，互不覆盖。 */
+export function setCoeffMulMod(ship, key, category, mul) {
+  if (!ship || !key || !category) return;
+  if (!(ship.coeffMulMods instanceof Map)) ship.coeffMulMods = new Map();
+  const cur = ship.coeffMulMods.get(key);
+  if (cur && cur.category === category && cur.mul === mul) return; // 无变化
+  ship.coeffMulMods.set(key, { category, mul });
+}
+
+/** 撤销某来源（模块实例 id）的**乘性**类别系数修饰 */
+export function clearCoeffMulMod(ship, key) {
+  if (ship && ship.coeffMulMods instanceof Map) ship.coeffMulMods.delete(key);
+}
+
+/** 一次性撤销某来源的**全部**系数修饰（加性 + 乘性）：
+ *  用在“时长到期 / 条件失效 / 模块停用 / 携带者阵亡 / 移出场景”等既有撤销路径上。 */
+export function clearCoeffMods(ship, key) {
+  clearCoeffMod(ship, key);
+  clearCoeffMulMod(ship, key);
+}
+
+/* ---------- 受伤减免系数（`damage_coeff_mul` 系列词条 · 受击向）----------
+ * ★ 与类别系数**不同**：受伤减免不区分类别，作用对象是“该单位**受到的**一切伤害”——
+ *   主目标命中 / 爆炸波及 / 反射返程 / 负值扣血·削盾量值等，**所有来源**的伤害在落地时都乘它。
+ *   **唯一结算点**：battle.js `applyHit(target, amount, …)` 的**入口**（在吸入护盾/舰体之前）：
+ *   `amount * damageTakeMul(target)` —— 因此出伤侧无需逐点相乘。
+ *   **豁免**：自毁 `self_destruct_damage`（自伤，走独立路径）、能量削减（`energy_target` 负值）、
+ *   上限类 `*_cap_target`（控制效果，不是血/盾伤害）。
+ *   `0.95` = 只承受 95% 伤害（即减免 5%）。
+ *   结构：`ship.damageTakeMulMods: Map<来源key, mul>`（key＝模块实例 id，覆盖式；不同 key 之间**相乘**），
+ *   `ship.damageTakeMul` 为其连乘结果（每次写入/撤销后由 refreshDamageTakeMul 重算，缺省 1）。
+ *   不参与 `coeff()`（不影响护盾池容量、也不影响护盾/能量等非伤害量值）。 */
+function refreshDamageTakeMul(ship) {
+  let mul = 1;
+  if (ship && ship.damageTakeMulMods instanceof Map) {
+    for (const v of ship.damageTakeMulMods.values()) mul *= v;
+  }
+  if (ship) ship.damageTakeMul = mul;
+  return mul;
+}
+
+/** 该单位当前的**受伤减免系数**（缺省 1；`applyHit` 入口必须乘它）——唯一口径，UI 明细同源。 */
+export function damageTakeMul(ship) {
+  if (!ship) return 1;
+  return typeof ship.damageTakeMul === 'number' ? ship.damageTakeMul : 1;
+}
+
+/** 写入/覆盖一条受伤减免系数（来源 key 通常＝模块实例 id；`mul` 如 0.95 = 只承受 95%） */
+export function setDamageTakeMulMod(ship, key, mul) {
+  if (!ship || !key) return;
+  if (!(ship.damageTakeMulMods instanceof Map)) ship.damageTakeMulMods = new Map();
+  if (ship.damageTakeMulMods.get(key) === mul) return; // 无变化
+  ship.damageTakeMulMods.set(key, mul);
+  refreshDamageTakeMul(ship);
+}
+
+/** 撤销某来源的受伤减免系数 */
+export function clearDamageTakeMulMod(ship, key) {
+  if (ship && ship.damageTakeMulMods instanceof Map && ship.damageTakeMulMods.has(key)) {
+    ship.damageTakeMulMods.delete(key);
+    refreshDamageTakeMul(ship);
+  }
+}
+
+/** 一次性撤销某来源的**全部**系数修饰 + 受伤减免 + 时间加速（撤销路径统一入口） */
+export function clearAllSourceMods(ship, key) {
+  clearCoeffMod(ship, key);
+  clearCoeffMulMod(ship, key);
+  clearDamageTakeMulMod(ship, key);
+  clearHastenMod(ship, key);
+}
+
+/* ---------- 时间加速（`hasten_ticks` 词条 · 多来源**取最大值**，非叠加）----------
+ * ★ 语义：该单位的**计时器推进量** = `1 + hastenTicks(ship)` —— 即每 tick 额外多推进 `hastenTicks` tick，
+ *   作用于三处**递减**（均见 battle.js）：
+ *     · 模块**持续时间** `inst.durationLeft`；· 模块**冷却** `inst.cooldown`；· 临时单位**存在时间** `u.tempLeft`。
+ *   ★ **多来源不叠加、仅取最大值**：`ship.hastenMods: Map<来源key, ticks>`，派生值
+ *   `ship.hastenTicks = max(各来源值)`（缺省 0）——与“加性叠加 / 乘性连乘”两类系数修饰表**刻意区分**
+ *   （防止两个加速模块叠成 4×/8×）。撤销某个来源后按**剩余来源重新取 max**。
+ *   ★ 与 `coeff()`/`damageTakeMul()` 都无关：不分类别、不影响伤害与护盾池。 */
+function refreshHastenTicks(ship) {
+  let max = 0;
+  if (ship && ship.hastenMods instanceof Map) {
+    for (const v of ship.hastenMods.values()) if (v > max) max = v;
+  }
+  if (ship) ship.hastenTicks = max;
+  return max;
+}
+
+/** 该单位当前的**时间加速 tick 数**（缺省 0）——唯一口径：battle.js 计时推进与 UI 系数栏同源。 */
+export function hastenTicksOf(ship) {
+  if (!ship) return 0;
+  return typeof ship.hastenTicks === 'number' ? ship.hastenTicks : 0;
+}
+
+/** 写入/覆盖一条时间加速来源（来源 key 通常＝模块实例 id；`ticks` 为额外推进的 tick 数） */
+export function setHastenMod(ship, key, ticks) {
+  if (!ship || !key) return;
+  if (!(ship.hastenMods instanceof Map)) ship.hastenMods = new Map();
+  if (ship.hastenMods.get(key) === ticks) return; // 无变化
+  ship.hastenMods.set(key, ticks);
+  refreshHastenTicks(ship);
+}
+
+/** 撤销某来源的时间加速（其余来源仍在 → 派生值按剩余来源重新取 max） */
+export function clearHastenMod(ship, key) {
+  if (ship && ship.hastenMods instanceof Map && ship.hastenMods.has(key)) {
+    ship.hastenMods.delete(key);
+    refreshHastenTicks(ship);
+  }
 }
 
 /** 本体池在 ship.hull.pools 中的固定 key */
@@ -199,6 +364,12 @@ export function createShip(typeId, side = 'ally', overrides = null) {
     typeId,
     nameKey: type.nameKey,
     coefficients: Object.assign({}, type.coefficients),
+    coeffMods: new Map(),    // 类别系数**加性**修饰（来源 key → {category, add}）；由 coeff() 求和
+    coeffMulMods: new Map(), // 类别系数**乘性**修饰（来源 key → {category, mul}）；由 coeff() 连乘
+    damageTakeMulMods: new Map(), // **受伤减免**修饰（来源 key → mul，不分类别）；damageTakeMul = 各来源连乘
+    damageTakeMul: 1,             // 受伤减免系数（缺省 1）：该单位受到的伤害统一乘它（自毁/能量削减除外）
+    hastenMods: new Map(),        // **时间加速**来源表（来源 key → 额外推进 tick 数）；hastenTicks = 各来源**最大值**
+    hastenTicks: 0,               // 时间加速（缺省 0）：计时推进量 = 1 + 它（持续/冷却/临时存在时间）
     modules: [],
     hull: {
       hp: type.base.hp,

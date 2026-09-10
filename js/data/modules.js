@@ -29,6 +29,10 @@ import hardShield from './modules/shield/hardShield.js';
 import reflectShield from './modules/shield/reflectShield.js';
 import allianceShield from './modules/shield/allianceShield.js';
 import blastShield from './modules/shield/blastShield.js';
+import emp from './modules/function/emp.js';
+import singleHanded from './modules/function/singleHanded.js';
+import impregnable from './modules/function/impregnable.js';
+import timeWarp from './modules/function/timeWarp.js';
 
 export const MODULES = {
   cannon,
@@ -48,6 +52,10 @@ export const MODULES = {
   reflectShield,    // 护盾 · 反射护盾（自身层被击时按系数返还）
   allianceShield,   // 护盾 · 同盟护盾（跨友方共享层）
   blastShield,      // 护盾 · 防爆护盾（跨友方共享层 · 只挡爆炸型伤害）
+  emp,              // 功能 · 电磁脉冲（自身/目标/波及：清空能量上限并持续一段时间）
+  singleHanded,     // 功能 · 单枪匹马（条件型自身增益：友方只剩自己时加法提升自身攻击系数）
+  impregnable,      // 功能 · 固若金汤（时长型：强制选定目标攻击自己 + 自身受伤减免）
+  timeWarp,         // 功能 · 时间扭曲（时长型：目标+波及+自身 时间加速，多来源取最大值）
 };
 
 /** 模块类别展示顺序（后续 UI/筛选用）：攻击/护盾/功能/运输/采矿/无人机 */

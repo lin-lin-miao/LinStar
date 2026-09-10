@@ -248,7 +248,7 @@
 }
 .module-chip.attack { color: #ff9da6; border-color: rgba(255, 93, 108, 0.6); }
 .module-chip.shield { color: #9adcff; border-color: rgba(79, 195, 247, 0.6); }
-.module-chip.function { color: #e3c8ff; border-color: rgba(157, 123, 255, 0.6); }
+.module-chip.function { color: #7ee29a; border-color: rgba(126, 226, 154, 0.6); } /* 功能＝绿（与战报模块名绿同族） */
 .module-chip.transport { color: #ffe9a8; border-color: rgba(255, 224, 102, 0.55); }
 .module-chip.mining { color: #b7f0c8; border-color: rgba(74, 222, 128, 0.55); }
 .module-chip.drone { color: #ffd1a8; border-color: rgba(251, 146, 60, 0.55); }
@@ -363,6 +363,43 @@
   margin: 6px 0 2px;
 }
 .detail-subtitle:first-of-type { margin-top: 2px; }
+/* 单位系数栏（详情页 · 模块字段之前）：**可折叠（默认折叠）+ 第一行 7 项 +「其它系数」单独一行**
+   · `.detail-coeffs`＝整体内容块（纵向两行，折叠时整块隐藏）；`.coeff-line`＝其中一行（flex-wrap 兜底防溢出）；
+   · 每项 `white-space: nowrap` → 单个「名称 数值」不会被拆开；容器 `min-width: 0` 允许在窄栏内收缩。 */
+.detail-fold {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+}
+.detail-fold:hover { color: var(--text); }
+.detail-fold:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.detail-fold .fold-arrow {
+  display: inline-block;
+  width: 10px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+.detail-fold.open .fold-arrow { color: var(--accent); }
+.detail-coeffs {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: 11px;
+  padding: 2px 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-coeffs.hidden { display: none; }
+.coeff-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0; }
+/* 「其它系数」单独一行：允许其数值文本在行内换行（预留项未来可能较长），仍不溢出面板 */
+.coeff-line-extra .coeff-item { white-space: normal; flex-wrap: wrap; }
+.coeff-item { display: flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.coeff-name { color: var(--text-dim); }
+.coeff-val { font-variant-numeric: tabular-nums; }
 .detail-mods { display: flex; flex-direction: column; gap: 2px; }
 .mod-row {
   display: flex;
@@ -405,8 +442,11 @@
   max-width: 220px;
 }
 .mod-target-info { color: var(--text-dim); font-size: 11px; opacity: 0.9; }
-.mod-target-ctl { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.mod-target-ctl { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .mod-target-multi { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+/* 激活锁定提示（`lock_target_on_activate`）：目标已锁定 / 新选择下次激活生效 */
+.mod-target-lock { color: var(--text-dim); font-size: 11px; opacity: 0.9; }
+.target-lock { color: #ffd48a; }
 .mod-target-cur {
   padding-left: 30px;
   font-size: 11px;

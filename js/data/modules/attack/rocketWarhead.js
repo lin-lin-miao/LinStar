@@ -20,7 +20,7 @@ export default {
     damage: 120,                   // Lv1 占位：命中锁定目标的大量伤害
     self_destruct_damage: -1000000, // 触发后扣除自身全部生命（自毁）；占位大负值保证死亡
     cooldown_ticks: 60,            // 引信时长(tick)占位：部署后 3s 引爆
-    energy_cost: 0,                // 自毁不耗能
+    energy_cost: 10,                // 自毁不耗能
   },
   maxLevel: 16,
   levels: [

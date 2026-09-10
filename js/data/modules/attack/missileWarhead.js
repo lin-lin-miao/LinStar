@@ -22,7 +22,7 @@ export default {
     blast_range: 1,                // ★ 爆炸范围词条：队列前后各 1 个位置内的存活单位同时受同额爆炸伤害
     self_destruct_damage: -1000000, // 触发后扣除自身全部生命（自毁）；占位大负值保证死亡
     cooldown_ticks: 60,            // 引信时长(tick)占位：部署后 3s 引爆
-    energy_cost: 0,                // 自毁不耗能
+    energy_cost: 10,                // 自毁不耗能
   },
   maxLevel: 16,
   levels: [

@@ -13,7 +13,7 @@ import { SHIPS } from '../data/ships.js';
 import { MODULES } from '../data/modules.js';
 import { createBattle, TARGET_POLICIES } from '../systems/battle.js';
 import { moduleMaxLevel } from '../entities/module.js';
-import { modulePoolCapOf } from '../entities/ship.js';
+import { modulePoolCapOf, coeff, coeffDetail, damageTakeMul, hastenTicksOf } from '../entities/ship.js';
 import { bar } from './widgets.js';
 import { router } from './router.js';
 import { log, formatRich } from '../core/log.js';
@@ -179,15 +179,44 @@ function baseName(ship) {
 
 /* ===== effects 词条能力检测（与引擎同一套判定：有词条才有效果） ===== */
 function fxHas(fx, key) { return Number(fx[key] || 0) > 0; }
-/** 带符号数值显示：正 +n / 负 −n / 0 */
+/** 带符号数值显示：正 +n / 负 −n / 0（整数口径，用于伤害/护盾量等） */
 function fmtSigned(v) {
   const n = Math.round(Math.abs(v));
   return v > 0 ? `+${n}` : v < 0 ? `−${n}` : '0';
+}
+/** 带符号**小数值**显示（保留小数、去掉尾随 0）：+0.2 / −0.05 / 0
+ *  —— 系数类词条（如 `attack_coeff_add`）是小数，用 `fmtSigned` 会被取整成 “+0”。 */
+function fmtSignedNum(v, digits = 2) {
+  if (!v) return '0';
+  const n = Number(Math.abs(v).toFixed(digits));
+  return v > 0 ? `+${n}` : `−${n}`;
+}
+/** 乘性系数的显示（×0.95）：去除尾随 0，保留小数 */
+function fmtCoeffMul(v) {
+  const n = Number(Number(v).toFixed(3));
+  return String(n);
+}
+/** “上限被清空”的展示阈值：上限类词条给到**极大负值**（如 EMP 的 `-1000000`）在引擎里
+ *  ＝“把该上限压到 0”（引擎按目标基准重算后 clamp 至 0，当前值随之 clamp）。
+ *  纯**展示层**规则（不改任何计算）：≤ 本阈值即显示“清空 XX 上限”，
+ *  避免把占位大负值当成真实数字展示；对任意上限词条通用。 */
+const CAP_CLEAR_MAX = -1000;
+/** 上限类词条文本：大负值 → “清空”分支；否则常规带符号数值 */
+function capTermText(key, clearKey, v) {
+  if (v <= CAP_CLEAR_MAX) return i18n.t(`battle.detail.${clearKey}`);
+  return i18n.t(`battle.detail.${key}`, { v: fmtSigned(v) });
 }
 /** 输出型（造成伤害等）：有 damage 词条 */
 function isWeapon(fx) { return fxHas(fx, 'damage'); }
 /** 纯回复型：有 shield_gain 且无 damage */
 function isShieldRestore(fx) { return fxHas(fx, 'shield_gain') && !fxHas(fx, 'damage'); }
+/** 状态型模块的 `type` 条件标签（与引擎一致：`battle.js` 按这些标签跳过“激活-触发”流程）。
+ *  ⚠ 只用于**静态展示口径**（如“无激活周期”）；动态“当前是否生效”一律读引擎判据 stateModuleState()。 */
+const STATE_TAGS = ['solo'];
+function isStateModuleFx(fx) {
+  const t = Array.isArray(fx && fx.type) ? fx.type : fx && fx.type ? [fx.type] : [];
+  return STATE_TAGS.some((k) => t.includes(k));
+}
 /** 目标词条是否仅作用于自身（self only） */
 function rowSelfOnly(inst) {
   const k = (inst.cfg.target || {}).kinds;
@@ -312,6 +341,14 @@ function buildShipCard(ship) {
       if (off) {
         c.el.classList.remove('cooling', 'ready', 'active');
         c.badge.style.display = 'none';
+        continue;
+      }
+      // 状态型模块（条件型自身增益）：生效 → 发光；未满足 → 不加就绪脉动（避免“脉动=就绪”的误导）
+      const stState = stateModuleState(c.inst);
+      if (stState !== null) {
+        c.el.classList.toggle('active', stState);
+        c.el.classList.remove('cooling', 'ready');
+        c.badge.style.display = 'none'; // 状态型无倒计时徽标
         continue;
       }
       if ((fx.duration_ticks || 0) > 0) {
@@ -729,15 +766,25 @@ function selectUnit(id) {
   updateCards?.();
 }
 
-/** 每次激活的基础效果文本（词条驱动，按船类系数折算后的每次量） */
+/** 每次激活的基础效果文本（词条驱动，按船类系数折算后的每次量）
+ *  ★ 系数一律走 `coeff(ship, category)`（船型基础 + 运行期加性修饰），与战斗结算同一口径。
+ *  ★ `damage_coeff_mul`（受伤减免）是**受击向**词条：它作用于**承受方**，不进本行的“每次造成量”；
+ *    其效果由结算期实际伤害（统计/战报）体现，本行只按配置值显示该词条本身（见下方 statDamageCoeffMul）。 */
 function perActText(ship, inst) {
   const fx = inst.cfg.effects;
-  const coef = SHIPS[ship.typeId]?.coefficients?.[fx.category] ?? 1;
+  const coef = coeff(ship, fx.category);
   const parts = [];
+  if ((fx.attack_coeff_add || 0) !== 0) {
+    // ★ 展示**该等级解析后的配置值**（`inst.cfg.effects` 已按 level 合并），不是运行期生效值；
+    //   “是否生效”由状态行/芯片 class 表达（同一判据 `stateModuleState`），两者不混淆。
+    parts.push(i18n.t('battle.detail.statAttackCoeff', { v: fmtSignedNum(fx.attack_coeff_add) }));
+  }
   if (fxHas(fx, 'damage')) {
     parts.push(i18n.t('battle.detail.statDamage', { n: Math.round(fx.damage * coef) }));
   }
   const fxType = Array.isArray(fx.type) ? fx.type : fx.type ? [fx.type] : [];
+  const tgtKinds = (inst.cfg.target && inst.cfg.target.kinds) || [];
+  if (isStateModuleFx(fx)) parts.push(i18n.t('battle.detail.statSolo'));
   if (fxType.includes('cool_first')) parts.push(i18n.t('battle.detail.statCoolFirst'));
   if ((fx.self_destruct_damage || 0) < 0) parts.push(i18n.t('battle.detail.statSelfDestruct'));
   if ((fx.blast_range || 0) > 0) parts.push(i18n.t('battle.detail.statBlast', { n: fx.blast_range }));
@@ -746,6 +793,10 @@ function perActText(ship, inst) {
   if ((fx.ramp_per_hit || 0) > 0) {
     const cap = (fx.max_damage || 0) > 0 ? fx.max_damage : fx.damage || 0;
     parts.push(i18n.t('battle.detail.statRamp', { r: fx.ramp_per_hit, c: Math.round(cap) }));
+  }
+  if ((fx.hasten_ticks || 0) > 0) {
+    // 时间加速：**不经类别系数缩放**（整数 tick 语义，与引擎一致）
+    parts.push(i18n.t('battle.detail.statHasten', { n: fx.hasten_ticks | 0 }));
   }
   if (fxHas(fx, 'shield_gain')) {
     parts.push(i18n.t('battle.detail.statRegen', { n: Math.round(fx.shield_gain * coef) }));
@@ -757,19 +808,45 @@ function perActText(ship, inst) {
     parts.push(i18n.t('battle.detail.statShieldT', { v: fmtSigned(fx.shield_gain_target * coef) }));
   }
   if ((fx.shield_cap_target || 0) !== 0) {
-    parts.push(i18n.t('battle.detail.statCapT', { v: fmtSigned(fx.shield_cap_target * coef) }));
+    parts.push(capTermText('statCapT', 'statCapClear', fx.shield_cap_target * coef));
   }
   const tgtMeta = [
-    ['hp_target', 'statHpT'],
-    ['hp_cap_target', 'statHpCapT'],
-    ['energy_target', 'statEnergyT'],
-    ['energy_cap_target', 'statEnergyCapT'],
+    ['hp_target', 'statHpT', null],
+    ['hp_cap_target', 'statHpCapT', 'statHpCapClear'],
+    ['energy_target', 'statEnergyT', null],
+    ['energy_cap_target', 'statEnergyCapT', 'statEnergyCapClear'],
   ];
-  for (const [k, key] of tgtMeta) {
-    if ((fx[k] || 0) !== 0) {
-      parts.push(i18n.t(`battle.detail.${key}`, { v: fmtSigned(fx[k] * coef) }));
-    }
+  for (const [k, key, clearKey] of tgtMeta) {
+    const raw = fx[k] || 0;
+    if (raw === 0) continue;
+    const v = raw * coef;
+    if (clearKey) parts.push(capTermText(key, clearKey, v));
+    else parts.push(i18n.t(`battle.detail.${key}`, { v: fmtSigned(v) }));
   }
+  if ((fx.damage_coeff_mul || 0) > 0 && fx.damage_coeff_mul !== 1) {
+    // 受伤减免系数（受击向，如 ×0.95 = 只承受 95% 伤害）：作用于**承受方**，展示等级解析后的配置值
+    parts.push(i18n.t('battle.detail.statDamageCoeffMul', { v: fmtCoeffMul(fx.damage_coeff_mul) }));
+  }
+  // —— 目标级系数修饰词条（`*_target` 后缀）：作用于**解析出的目标**（非自身） ——
+  if ((fx.attack_coeff_add_target || 0) !== 0) {
+    parts.push(
+      i18n.t('battle.detail.statAttackCoeffT', { v: fmtSignedNum(fx.attack_coeff_add_target) })
+    );
+  }
+  if ((fx.damage_coeff_mul_target || 0) > 0 && fx.damage_coeff_mul_target !== 1) {
+    parts.push(
+      i18n.t('battle.detail.statDamageCoeffMulT', { v: fmtCoeffMul(fx.damage_coeff_mul_target) })
+    );
+  }
+  // `force_target_self` 现在是 `type` 标签（不是 effects 词条）→ 按标签显示
+  if (fxType.includes('force_target_self')) parts.push(i18n.t('battle.detail.statForceTarget'));
+  // ★ 目标类 `type` 标签（同样按标签显示，UI 不硬编码模块 id）
+  if (fxType.includes('include_self')) parts.push(i18n.t('battle.detail.statIncludeSelf'));
+  // `prefer_self`：仅当自身确实在候选池中（kinds 允许 self/any）时才有意义
+  if (fxType.includes('prefer_self') && (tgtKinds.includes('self') || tgtKinds.includes('any'))) {
+    parts.push(i18n.t('battle.detail.statPreferSelf'));
+  }
+  if (fxType.includes('lock_target_on_activate')) parts.push(i18n.t('battle.detail.statLockTarget'));
   if (fx.duration_ticks > 0) {
     parts.push(i18n.t('battle.detail.statDuration', { n: fx.duration_ticks }));
   }
@@ -839,8 +916,9 @@ function moduleRows(ship) {
     const statusEl = el('span', { class: 'mod-status' });
     const metaEl = el('span', { class: 'mod-effect', text: perActText(ship, inst) });
     const dur = fx.duration_ticks || 0;
-    const costText =
-      dur > 0
+    const costText = isStateModuleFx(fx)
+      ? i18n.t('battle.detail.stateCost') // 状态型：无激活周期（不显示“能量/冷却 每 Nt”这种误导信息）
+      : dur > 0
         ? i18n.t('battle.detail.costCycleDur', {
             n: fx.energy_cost || 0,
             d: dur,
@@ -930,6 +1008,10 @@ function moduleRows(ship) {
       controls.append(toggleEl, gearEl);
     }
 
+    // ★ 激活锁定提示（`lock_target_on_activate` 标签）：锁定中目标不可改，
+    //   玩家点选的目标只**记录**、下一次激活才采用 —— 文案由引擎判据 `moduleTargetLocked` 决定
+    const lockNoteEl = el('span', { class: 'mod-target-lock' });
+
     const row = el('div', { class: 'mod-row' }, [
       chipEl,
       el('span', { class: 'mod-name', text: i18n.t(inst.cfg.nameKey) }),
@@ -943,7 +1025,7 @@ function moduleRows(ship) {
     const targetLine = widget || targetCurEl
       ? el('div', { class: 'mod-target-line' }, [
           el('span', { class: 'mod-target-cap', text: i18n.t('battle.detail.moduleTarget') }),
-          el('span', { class: 'mod-target-ctl' }, [widget]),
+          el('span', { class: 'mod-target-ctl' }, [widget, lockNoteEl]),
         ])
       : null;
     const block = el('div', { class: 'mod-block' }, [
@@ -963,6 +1045,7 @@ function moduleRows(ship) {
       poolMini,
       targetPickEl,
       targetCurEl,
+      lockNoteEl,
       targetSig: '',
       inst,
     });
@@ -975,8 +1058,19 @@ function moduleRows(ship) {
   return rows;
 }
 
+/** 状态型模块（`type` 含 `solo` 等条件标签）的**引擎判据**（唯一口径，UI 绝不自算条件）：
+ *  true = 生效中；false = 条件未满足；null = 非状态型模块 / 战斗未进行中（走原有状态逻辑）。 */
+function stateModuleState(inst) {
+  if (!battle || typeof battle.moduleEffective !== 'function') return null;
+  return battle.moduleEffective(inst);
+}
+
 function modStatusText(ship, inst) {
   if (inst.enabled === false) return i18n.t('battle.detail.disabled');
+  // 状态型模块（条件型自身增益）：以引擎结算落地的生效标志为唯一判据
+  const st = stateModuleState(inst);
+  if (st === true) return i18n.t('battle.detail.stateActive');
+  if (st === false) return i18n.t('battle.detail.stateInactive');
   const fx = inst.cfg.effects;
   if ((fx.duration_ticks || 0) > 0) {
     // 时长型：优先展示 持续中 → 到期冷却 → 就绪/能量不足
@@ -1006,6 +1100,100 @@ function modStatusText(ship, inst) {
     : i18n.t('battle.detail.noEnergy');
 }
 
+/* ===== 单位系数栏（详情页 · 位于“模块字段”之前 · **可折叠、默认折叠**） =====
+ * 展示该单位的**各种系数**，数值**一律取自引擎导出函数**（不在 UI 重算任何逻辑）：
+ *   · 类别系数（attack/shield/function/transport/mining/drone…）：`coeffDetail(ship, category)`
+ *     —— 与战斗结算的 `coeff()` **同一次算式**（同一函数返回 base/add/mul/value 分项），
+ *     故“实际值”永远等于引擎所用值。
+ *   · **其它系数**（预留，**单独一行**）：`coeffDetail(...).mul` 汇总（类别系数乘性；当前无词条映射 → 显示“无”）。
+ *   · **受伤减免**：`damageTakeMul(ship)`（受击向，唯一读口径）→ 显示 `×值`。
+ *   · **时间流速**：`hastenTicksOf(ship)`（唯一读口径）→ 显示 `×(1 + N)`（1＝正常流速）。
+ * 每 tick 由 `refreshStats` 重算一次，故运行期修饰（加性/减免/加速）即时反映。
+ * ★ 版式：**第一行＝7 项**（类别系数 + 受伤减免 + 时间流速，`flex-wrap` 兜底防溢出），
+ *   **「其它系数」单独一行一格**（预留项不与常用项混排）→ 均不溢出/不挤压后续区域。
+ * ★ 文案：**只放数值，不放任何解释性说明**（基础值、口径、预留说明一律不显示；含义在字段文档里）。
+ * ★ 折叠：**默认折叠**（面板每次重建都是折叠态 → “首次进入必定折叠”；展开态在一次选中期间由
+ *   `refreshStats` 保住，不因每 tick 刷新而回弹）；点击标题行任意处或回车/空格切换。 */
+function buildCoeffSection(ship) {
+  const item = (label, read) => {
+    const val = el('span', { class: 'coeff-val' });
+    const block = el('span', { class: 'coeff-item' }, [
+      el('span', { class: 'coeff-name', text: label }),
+      val,
+    ]);
+    return { block, val, read };
+  };
+  const items = [];
+  for (const cat of Object.keys(ship.coefficients || {})) {
+    items.push(
+      item(i18n.t(`battle.coeff.${cat}`), () => {
+        const d = coeffDetail(ship, cat); // ★ 引擎函数：base / add / mul / value 同源
+        return fmtCoeffMul(d.value); // 只显示实际值（不加“基础值”等说明）
+      })
+    );
+  }
+  // 受伤减免（受击向）：唯一读口径 damageTakeMul
+  items.push(item(i18n.t('battle.coeff.takeMul'), () => `×${fmtCoeffMul(damageTakeMul(ship))}`));
+  // 时间流速：唯一读口径 hastenTicksOf（0 = 正常流速 ×1；N → 每 tick 推进 1+N）
+  items.push(
+    item(i18n.t('battle.coeff.hasten'), () => {
+      const n = hastenTicksOf(ship);
+      return n > 0 ? `×${fmtCoeffMul(1 + n)}` : `×${fmtCoeffMul(1)}`;
+    })
+  );
+  // ★「其它系数」（**预留**）：**单独一行/单独一格**（不挤进上面那行）—— 逐类别列出乘性连乘值，无映射时显示“无”
+  const extraItem = item(i18n.t('battle.coeff.mulRow'), () => {
+    const parts = [];
+    for (const cat of Object.keys(ship.coefficients || {})) {
+      const d = coeffDetail(ship, cat);
+      if (d.mul !== 1) parts.push(`${i18n.t(`battle.coeff.${cat}`)} ×${fmtCoeffMul(d.mul)}`);
+    }
+    return parts.length ? parts.join('、') : i18n.t('battle.coeff.none');
+  });
+  items.push(extraItem);
+
+  const refresh = () => {
+    for (const it of items) it.val.textContent = it.read();
+  };
+  refresh();
+  // ★ 版式：**第一行＝7 项**（类别系数 + 受伤减免 + 时间流速），**第二行＝「其它系数」单独一格**；
+  //   两行同属这一个可折叠内容块（折叠/默认折叠行为不变）；`flex-wrap` 兜底 → 不溢出、不挤压模块字段区。
+  const body = el('div', { class: 'detail-coeffs' }, [
+    el('div', { class: 'coeff-line' }, items.slice(0, -1).map((it) => it.block)),
+    el('div', { class: 'coeff-line coeff-line-extra' }, [extraItem.block]),
+  ]);
+
+  // —— 可折叠标题行（默认折叠；点击/回车/空格切换）——
+  const arrow = el('span', { class: 'fold-arrow', text: '▸' });
+  const titleEl = el(
+    'div',
+    {
+      class: 'detail-subtitle detail-fold',
+      role: 'button',
+      tabindex: '0',
+      'aria-expanded': 'false',
+    },
+    [arrow, el('span', { text: i18n.t('battle.detail.coeffs') })]
+  );
+  const setOpen = (open) => {
+    body.classList.toggle('hidden', !open); // 默认折叠：初始即 hidden
+    arrow.textContent = open ? '▾' : '▸';
+    titleEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    titleEl.classList.toggle('open', open);
+  };
+  const toggle = () => setOpen(body.classList.contains('hidden'));
+  titleEl.addEventListener('click', toggle);
+  titleEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  setOpen(false); // ★ 首次进入必须折叠
+
+  return { titleEl, bodyEl: body, refresh };
+}
+
 function buildDetail(ship) {
   const tagKey = ship.side === 'ally' ? 'battle.side.ally' : 'battle.side.enemy';
   const type = SHIPS[ship.typeId];
@@ -1032,6 +1220,9 @@ function buildDetail(ship) {
 
   const lifeNote = el('div', { class: 'detail-timer', text: '' }); // 临时单位存活剩余（非临时隐藏）
 
+  // ★ 单位系数栏：置于“模块字段”之前（**可折叠、默认折叠**：类别系数 / 受伤减免 / 时间流速 / 其它系数）
+  const coeffSec = buildCoeffSection(ship);
+
   const modsTitle = el('div', { class: 'detail-subtitle', text: i18n.t('battle.detail.modules') });
   // 长期(本体)护盾池显示在所有模块详情信息的最前面
   const longPoolBlock = longShieldBlock();
@@ -1047,6 +1238,8 @@ function buildDetail(ship) {
   const topRow = el('div', { class: 'detail-top' }, [head, statLine, lifeNote]);
   const panelEl = el('div', { class: 'detail-inner' }, [
     topRow,
+    coeffSec.titleEl,
+    coeffSec.bodyEl,
     modsTitle,
     modsList,
     targetLabel,
@@ -1061,6 +1254,7 @@ function buildDetail(ship) {
     stats.hp.textContent = `${Math.ceil(ship.hull.hp)} / ${ship.hull.hpMax}`;
     stats.shield.textContent = `${Math.ceil(ship.hull.shield)} / ${ship.hull.shieldCap}（+${shipHullRegenText(ship, 'shield')}/s）`;
     stats.energy.textContent = `${Math.floor(ship.hull.energy)} / ${ship.hull.energyCap}（+${ship.energyRegenPerSec}/s）`;
+    coeffSec.refresh(); // 单位系数栏：每 tick 按引擎函数重算（运行期修饰即时反映）
     if (ship.temp && ship.alive && typeof ship.tempLeft === 'number') {
       lifeNote.style.display = '';
       lifeNote.textContent = i18n.t('battle.lifeLeft', { n: Math.max(0, Math.ceil(ship.tempLeft / SEC_TICKS)) });
@@ -1074,7 +1268,15 @@ function buildDetail(ship) {
           ? i18n.t('battle.detail.disable')
           : i18n.t('battle.detail.enable');
       }
-      if (r.chipEl) r.chipEl.classList.toggle('off', r.inst.enabled === false);
+      if (r.chipEl) {
+        r.chipEl.classList.toggle('off', r.inst.enabled === false);
+        // 状态型模块：生效 → 发光；未满足 → 不加就绪脉动（同一判据，见 modStatusText）
+        const stState = stateModuleState(r.inst);
+        if (stState !== null) {
+          r.chipEl.classList.toggle('active', stState);
+          r.chipEl.classList.remove('cooling', 'ready');
+        }
+      }
       if (r.contribEl) r.contribEl.textContent = contribText(ship, r.inst);
       // 模块自身独立护盾池条：仅时长型护盾模块显示（激活/破盾后都不隐藏，避免跳动）；
       // 破盾后池已删，value 取 0、cap 仍按模块 cfg×系数给出（保持条幅不跳）。
@@ -1118,12 +1320,27 @@ function buildDetail(ship) {
       // 实时命中目标行（与选择器同一套着色：友方蓝 / 敌方红）
       if (r.targetCurEl && battle && !rowSelfOnly(r.inst)) {
         const list = battle.moduleTargetList(ship, r.inst);
+        // ★ 激活锁定（`lock_target_on_activate`）：引擎判据（UI 不自算）
+        const locked =
+          typeof battle.moduleTargetLocked === 'function' && battle.moduleTargetLocked(r.inst);
         const manual =
           r.inst.target && (r.inst.target.mode === 'unit' || r.inst.target.mode === 'units');
+        // 锁定提示：本次持续期不切换目标；有手动选择时额外说明“下次激活生效”
+        if (r.lockNoteEl) {
+          r.lockNoteEl.textContent = locked
+            ? manual
+              ? i18n.t('battle.detail.targetLockPending')
+              : i18n.t('battle.detail.lockNote')
+            : '';
+        }
         const nodes = [];
         if (list.length) {
           nodes.push(document.createTextNode(i18n.t('battle.detail.targetCurPrefix')));
-          if (manual) {
+          if (locked) {
+            // 锁定中：先把“已锁定”说清，再列出锁定的目标名
+            nodes.push(el('span', { class: 'target-lock', text: i18n.t('battle.detail.lockTag') }));
+            nodes.push(document.createTextNode(' '));
+          } else if (manual) {
             nodes.push(
               el('span', { class: 'target-manual', text: i18n.t('battle.detail.manualTag') })
             );
@@ -1134,7 +1351,11 @@ function buildDetail(ship) {
             nodes.push(unitNameSpan(u));
           });
         } else {
-          nodes.push(document.createTextNode(i18n.t('battle.detail.curNone')));
+          nodes.push(
+            document.createTextNode(
+              locked ? i18n.t('battle.detail.targetLockedGone') : i18n.t('battle.detail.curNone')
+            )
+          );
         }
         r.targetCurEl.replaceChildren(...nodes);
       }
@@ -1225,6 +1446,13 @@ function buildDetail(ship) {
       );
       const name = b && b.alive ? baseName(b) : i18n.t('battle.detail.lockGone');
       return i18n.t('battle.detail.targetLocked', { name });
+    }
+    // 被强制攻击（`force_target_self` 来源栈）：目标链被外部夺走，提示里明确说明（不改写 targetId）
+    if (s.forcedTargetId) {
+      const f = (s.side === 'ally' ? battle?.enemies : battle?.allies)?.find(
+        (x) => x.id === s.forcedTargetId && x.alive
+      );
+      if (f) return i18n.t('battle.detail.targetForced', { name: baseName(f) });
     }
     if (s.side === 'ally') {
       if (s.targetId) {
