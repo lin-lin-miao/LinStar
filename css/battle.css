@@ -578,6 +578,8 @@
 /* 战报单位名着色：敌方红 / 我方蓝 */
 .log-unit-name.side-ally { color: #9adcff; }
 .log-unit-name.side-enemy { color: #ff8a94; }
+/* 战报模块名：绿色（武器/被吸收护盾/反射模块） */
+.log-module-name { color: #7ee29a; }
 /* 临时单位存活剩余时间（单位卡 & 详情） */
 .unit-timer { font-size: 10px; color: #ffd24a; text-align: center; min-height: 12px; }
 .detail-timer { font-size: 11px; color: #ffd24a; padding: 2px 0 0; }

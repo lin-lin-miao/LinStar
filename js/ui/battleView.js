@@ -1583,15 +1583,19 @@ function bindGlobalListeners() {
       class: `log-line${line.msg.includes('击毁') || line.msg.includes('destroyed') ? ' destroy' : ''}`,
     });
     if (Array.isArray(line.rich) && line.rich.length) {
-      // 分段渲染：敌方单位名红 / 我方单位名蓝
+      // 分段渲染：敌方单位名红 / 我方单位名蓝 / 模块名绿
       for (const seg of line.rich) {
-        if (seg && typeof seg === 'object' && seg.side) {
+        if (seg && typeof seg === 'object' && seg.mod) {
+          entry.appendChild(el('span', { class: 'log-module-name', text: seg.label }));
+        } else if (seg && typeof seg === 'object' && seg.side) {
           entry.appendChild(
             el('span', {
               class: `log-unit-name ${seg.side === 'ally' ? 'side-ally' : 'side-enemy'}`,
               text: seg.label,
             })
           );
+        } else if (seg && typeof seg === 'object' && typeof seg.label === 'string') {
+          entry.appendChild(document.createTextNode(seg.label));
         } else {
           entry.appendChild(document.createTextNode(typeof seg === 'string' ? seg : ''));
         }

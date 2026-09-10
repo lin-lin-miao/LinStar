@@ -41,6 +41,7 @@ export const log = {
 
 /** 把 i18n 模板串按 {占位符} 拆段；colorKeys 里指定为“着色单位名”的参数，
  * 其值应为 { side:'ally'|'enemy', label:'显示名' }，段里标记 side 供渲染上色。
+ * 值为 { mod:true, label:'模块名' } 的参数恒渲染为“模块名”（绿字），无需在 colorKeys 列出。
  * 返回 { msg: 纯文本, rich: 着色段数组 }。 */
 export function formatRich(key, params, colorKeys) {
   const text = i18n.t(key);
@@ -60,9 +61,24 @@ export function formatRich(key, params, colorKeys) {
     last = re.lastIndex;
     const k = m[1];
     const v = params ? params[k] : undefined;
-    if (colorSet.has(k) && v && typeof v === 'object' && v.side) {
-      msg += v.label;
-      rich.push({ label: v.label, side: v.side });
+    if (v && typeof v === 'object') {
+      if (v.mod) {
+        // 模块名（绿字，与阵营无关）：恒绿渲染
+        msg += v.label;
+        rich.push({ label: v.label, mod: true });
+      } else if (colorSet.has(k) && v.side) {
+        // 阵营单位名（敌方红 / 我方蓝）
+        msg += v.label;
+        rich.push({ label: v.label, side: v.side });
+      } else if (typeof v.label === 'string') {
+        // 其它带 label 的对象 → 按纯文本
+        msg += v.label;
+        rich.push(v.label);
+      } else {
+        const s = String(v);
+        msg += s;
+        rich.push(s);
+      }
     } else {
       const s = v === undefined ? m[0] : String(v);
       msg += s;

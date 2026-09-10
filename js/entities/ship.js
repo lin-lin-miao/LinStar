@@ -36,6 +36,7 @@ export const BASE_POOL_KEY = 'base';
 function contributingShieldFx(inst) {
   const fx = inst && inst.cfg && inst.cfg.effects;
   if (!fx || !inst.enabled) return null;
+  if (inst._shieldSpent) return null; // 已耗尽(no_break 层被打空)：不再贡献独立池/并入 cap
   if ((fx.shield_cap_bonus || 0) <= 0) return null;
   if ((fx.duration_ticks || 0) > 0 && inst.durationLeft <= 0) return null; // 持续期外不生效
   return fx;
