@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 绿色简约线条，无填充背景，电磁脉冲图标 -->
+    <g fill="none" stroke="#00FF88" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+
+        <!-- 中心闪电符号 -->
+        <path d="M 53 20 L 42 50 L 50 50 L 45 80 L 58 44 L 50 44 Z" />
+
+        <!-- 一层脉冲弧（半径32，四段对称，对角留有缺口） -->
+        <g>
+            <path d="M 72.63 27.37 A 32 32 0 0 1 27.37 27.37" />
+            <path d="M 72.63 27.37 A 32 32 0 0 1 27.37 27.37" transform="rotate(90 50 50)" />
+            <path d="M 72.63 27.37 A 32 32 0 0 1 27.37 27.37" transform="rotate(180 50 50)" />
+            <path d="M 72.63 27.37 A 32 32 0 0 1 27.37 27.37" transform="rotate(270 50 50)" />
+        </g>
+
+    </g>
+</svg>

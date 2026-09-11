@@ -70,6 +70,11 @@ export function createModuleInstance(moduleId, level = 1) {
     cfg: resolved,
     cooldown: startCd,  // 剩余冷却 tick 数（无 duration 模块：激活后即开始；有 duration：持续时间结束后开始）
     durationLeft: 0, // ★ 持续时间词条 effects.duration_ticks 的剩余 tick（>0 = 效果持续中）
+    // ★ 计时器**已推进 tick 数**（每 tick 恒 +1，见 battle.js advanceModuleState）：
+    //   剩余 = 需求量 − 已推进；需求量 = timeScaled(基础量, 单位时间系数)（系数中途变化时按已推进数反推，
+    //   故“剩余”总是随需求量同向变化；计时器每次**启动/重置**时已推进数归 0）。
+    cdElapsed: 0,   // 本次冷却已推进的 tick 数
+    durElapsed: 0,  // 本次持续期已推进的 tick 数
     enabled: true, // 模块开关（玩家可在详情面板停用/启用；停用时不结算、不耗能）
     // 模块级目标（可选目标的模块使用，如单体/有限目标武器）：
     //   { mode:'follow' } = 默认，跟随上游（所属船的目标）

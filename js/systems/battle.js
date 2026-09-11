@@ -11,7 +11,8 @@
  *       **记录数组**（伤害命中 / 上限修改 / 到期撤销 / 能量 / 非伤害数值 / 临时寿命）。
  *     结算步骤（迭代记录数组，跨单位统一顺序）：
  *       步骤 1 计时推进（模块私有计时器，其唯一跨单位影响“到期撤销/恢复”已记为意图）；
- *       步骤 2 上限与系数统一落地（到期撤销 + capOps + 系数修饰 coeffOps + 时间加速 hastenOps，**先于伤害结算**）；
+ *       步骤 2 上限与系数统一落地（到期撤销 + capOps + 系数修饰 coeffOps + 时间系数 timeOps
+ *              + 潜行标记 stealthOps，**先于伤害结算**）；
  *       步骤 2b 强制目标统一落地（forceOps：把选定目标压入施放者的强制来源栈，只改目标指向）；
  *       步骤 3 能量统一落地（回充 → 模块消耗 → energy_target 量值）；
  *       步骤 4 护盾/模块池填充/血量/自毁/临时寿命统一落地。
@@ -32,17 +33,53 @@
  *     prefer_self（`type` 标签）→ **优先自己**：自身可作为目标时，默认解析优先取自己（手动选择优先于它）
  *     lock_target_on_activate（`type` 标签）→ **激活后锁定目标**：持续期内目标固定为激活瞬间的解析结果，
  *       优先级高于强制目标与手动目标；持续期内玩家点选的目标只记录、下次激活才采用
+ *     delayed_trigger（`type` 标签）→ **后触发**：效果**不在激活时产生**，而是把「作用集合 + 出伤数值」
+ *       冻结在激活瞬间（`effectSetOf` → `inst._delayedRefs`），在**持续期到期结算的瞬间**才产生
+ *       （Pass1 到期分支 `fireDelayedEffect` 按既有伤害记账写入目标 `__pending.dmg`）→ 走既有
+ *       命中/护盾/防爆/溅射抑制/判死/战报链路，不新增伤害体系；提前结束持续期（停用/阵亡/离场）不触发
+ *     hp_below_activate（词条，如 `0.2`）→ **低血触发门控**：仅当 `hull.hp / hull.hpMax ≤ 阈值` 时可激活；
+ *       激活即打**结构标记** `inst._firedOnce`（Pass1 零数值变化），血量**回升过阈值**才清标记
+ *       → 同一低血区间只触发一次，血量回升后可再次触发
+ *     stealth（`type` 标签）→ **潜行**：把作用集合（`effectSetOf`：目标 ∪ 波及 ∪ `include_self` 自身）
+ *       内的单位标记为“**不能成为主要攻击目标**”（`ship.stealthMods` + `ship.isStealth`，**零数值变化**）；
+ *       仍受 `blast_range` 溅射、仍受既已锁定的目标（`lockTargetId` / `lock_target_on_activate`）约束；
+ *       目标解析过滤的**唯一口径**＝`stealthBlocksTargeting`（`moduleTargetList` 与 `shipEffectiveTarget`
+ *       同口径）；Pass1 只记账（`__pending.stealthOps`）→ **结算步骤 2** 与 capOps/coeffOps/timeOps 同批落地
+ *       → 从**下一 tick 的目标解析**起体现；需搭配 `duration_ticks`（到期/停用/阵亡/移出场景/重新激活前撤销）
  *     attack_coeff_add → 类别系数**加性**修饰（**自身**词条，走 coeff() 唯一口径）
+ *     hp_cap_bonus / energy_cap_bonus / energy_regen_bonus / shield_coeff_add / shield_cap_bonus →
+ *       **自身【常驻静态加成】**（**增幅器类**，一律**无 `_target` 后缀** = 硬作用于模块所属自身）：
+ *       血量上限 / 能量上限 / 能量恢复 / 类别系数加性 / 护盾容量。**无冷却、无持续、无耗能、不激活**——
+ *       由**派生重算**落地（安装即生效、停用即失效），**不进** Pass1/Pass2 任何记账、**不产生战报**，
+ *       故对 tick 而言零数值变化。唯一落地口径＝`ship.js syncSelfStatics`（三围上限与能量恢复：
+ *       `基准 + Σ自身常驻×类别系数 + Σ目标级 cap 叠加`；类别系数加性写既有 `coeffMods`）与护盾池
+ *       `permanentBonus`（护盾容量）；战斗内启停模块走 `recomputeCap`（合并目标级叠加，非累加），
+ *       绝不复位到裸基准。常驻判据＝模块启用中 且 **无 `duration_ticks`**（与护盾池 permanentBonus 分支同源）。
+ *     hp_regen_per_death → **按上一 tick 阵亡数回血**（**自身**词条，如「回收利用」）：
+ *       恢复量 = `词条值 × 类别系数 × 上一 tick 阵亡数`（全场双方合计、**排除召唤/临时单位**，
+ *       判据 `summonMod || isSummon`，与 soloConditionHolds 同一口径）。阵亡数由各判死点唯一出口
+ *       `onDeath()` 累加 `deathsThisTick`、**tick 收尾**提交为 `lastTickDeaths`（Pass1 只读快照 →
+ *       同一 tick 内无“死→回血”反馈环、遍历顺序无关、镜像对等）。回血为**真实 hp 恢复**：
+ *       Pass1 只记 `__pending.hpDeltas`（带 `regen:true`），**结算步骤 4c** 与 `hp_target` 同批
+ *       `applyHpTo`（钳制到 `hpMax`、正值不乘受伤减免）；`0 阵亡` → 不记账、零数值变化；
+ *       仅“**实际回血 > 0**”时记 1 条低频战报 `battle.log.recycleRegen`（带模块拥有者）。
  *     damage_coeff_mul → **受伤减免系数**（**自身**词条，受击向）：该单位**受到的**一切伤害在落地时乘它
  *       （0.95 = 只承受 95%；唯一结算点＝`applyHit` 入口，故主目标命中/爆炸波及/反射返程等
  *       所有来源自动一并减免）；**豁免**：自毁 `self_destruct_damage`、能量削减、上限类 `*_cap_target`
  *     attack_coeff_add_target / damage_coeff_mul_target → 同上但作用于**每个解析目标**（目标级词条）
- *     hasten_ticks → **时间加速**（**多来源取最大值**，非叠加）：把作用对象的计时推进量变为
- *       `1 + hasten_ticks`，即每 tick 多推进 N tick → 模块**冷却**、模块**持续时间**、临时单位**存在时间**
- *       都递减得更快。作用集合＝目标选择器解析结果 ∪ `blast_range` 波及 ∪ `include_self` 标签补入的自身
+ *     time_coeff → **时间系数**（影响“**需求量**”，★ **不改每 tick 推进量**：每 tick 恒推进 1 tick）：
+ *       作用对象的各类计时器需求量变为 `timeScaled(基础量, 系数)` ＝ `max(0, round(基础量 × (1 + 系数)))`，
+ *       计时器**剩余 = 需求量 − 已推进 tick 数**（每个计时器各自记 `elapsed`，每 tick 恒 +1）→
+ *       模块**冷却**、模块**持续时间**、临时单位**存在时间**都按新需求量走完。
+ *       · 系数**为负＝加速**（`-0.1` → 需求量 ×0.9，更快走完；由「时间扭曲」模块给出）；
+ *       · 系数**为正＝放缓**（`+0.1` → 需求量 ×1.1，更慢走完；由「放缓时间」模块给出）。
+ *       作用集合＝目标选择器解析结果 ∪ `blast_range` 波及 ∪ `include_self` 标签补入的自身
  *       （与上限词条共用 `effectSetOf`）；Pass2 结算阶段落地 → **下一 tick 起**生效。
- *       **战报低频**：仅在“从无→有”记 1 条 `hastenStart`、“从有→无”记 1 条 `hastenEnd`（同一模块
- *       同 tick 内到期并重新激活则整体静默），**不逐次激活播报**。
+ *       ★ 系数在计时**中途**落地/撤销时，按已推进 tick 数反推剩余 → 总是“新需求 − 已推进”，
+ *         需求变小剩余必变小（不会出现错向）；已推进的进度绝不回退。
+ *       **战报低频**：仅在“从无→有”记 1 条（负系数＝`hastenStart`、正系数＝`slowStart`）、
+ *       “从有→无”记 1 条（`hastenEnd`/`slowEnd`）（同一模块同 tick 内到期并重新激活则整体静默），
+ *       **不逐次激活播报**。
  *     （后续词条如 heal / energyDrain 在此同一框架追加执行器）
  *   effects.type 仅用于"特殊模块的特殊效果"标记，且为【列表参数】，
  *   未来一个模块可同时携带多个特殊效果（type: ['...', '...']）。
@@ -54,6 +91,9 @@
  *   解析链（单模块优先级，★ 唯一口径，与 `shipEffectiveTarget` 同源）：
  *     锁定单位 > 激活锁定(`lock_target_on_activate`·持续期内) > 强制目标 > 模块手动选择(单/多，互斥)
  *     > 优先自己(`prefer_self`) > 船指定目标 > 自动粘性 > 全队策略自动补足
+ *   ★ **潜行过滤**（`type` 标签 `stealth`，唯一口径 `stealthBlocksTargeting`）：上述链中
+ *     **除“锁定单位 / 激活锁定”外的全部来源**（强制目标 / 手动选择 / 优先自己 / 船指定目标 /
+ *     自动粘性 / 全队策略）**一律跳过潜行单位**；`blast_range` 溅射**不受影响**。
  *   目标不足/无目标 → 本次不激活。
  *
  * 契约：开始广播 combat:state{active:true}；结算完成广播 active:false（自动落档）。
@@ -73,11 +113,25 @@ import {
   damageTakeMul,
   setDamageTakeMulMod,
   clearDamageTakeMulMod,
-  hastenTicksOf,
-  setHastenMod,
-  clearHastenMod,
+  // ★ 时间系的**唯一读口径/换算**都在 ship.js：`timeCoeffOf()`（单位时间系数）、
+  //   `timeScaled(need, coeff)`（需求量整数化）；系数**来源读写**走 setTimeCoeffMod/clearTimeCoeffMod。
+  setTimeCoeffMod,
+  clearTimeCoeffMod,
+  timeCoeffOf,
+  timeScaled,
+  // ★ 潜行（`type` 标签 `stealth`）的**唯一读口径** `isStealthed()` 与来源读写
+  //   `setStealthMod/clearStealthMod` 都在 ship.js；引擎只做目标解析过滤，不复制判定逻辑。
+  setStealthMod,
+  clearStealthMod,
+  isStealthed,
   clearAllSourceMods,
   recalcDerived,
+  // ★ 自身【常驻静态加成】的唯一落地口径（增幅器类词条 hp_cap_bonus / energy_cap_bonus /
+  //   energy_regen_bonus / X_coeff_add、以及护盾容量）：三围上限 = 基准 + Σ自身常驻 + Σ目标级叠加，
+  //   类别系数加性写既有 coeffMods，统一在 ship.js `syncSelfStatics` 落地；
+  //   战斗层只把 capOverlays 的聚合值传入（见 recomputeCap），不复制公式。
+  syncSelfStatics,
+  fillHullVitals,
   fillShieldPools,
   fillModuleShieldPool,
   syncShieldSummary,
@@ -388,6 +442,17 @@ export function createBattle(preset) {
   let shieldSeq = 0; // 护盾模块"激活顺序"分配器（时长型护盾激活即递增，先激活先使用）
   let reflectQueue = []; // 本 tick 反射返程记账：{ owner, attacker, mod, amount }，待"武器/爆炸命中全部结算完"后统一补打回并成句
 
+  /* ---------- 死亡计数（"回收利用" 等按阵亡数结算的词条用）----------
+   * ★ 口径：**全场（双方合计）**、**排除召唤/临时单位**（判据 `summonMod || isSummon`，与
+   *   `soloConditionHolds` 的"召唤物不计入"完全同判据、不新造字段）、**按上一 tick 结算**。
+   * ★ "上一 tick"语义（沿用既有"上一 tick 快照"范式，如 `_takeMulTick`/`_timeCoeffTick`）：
+   *   - 判死发生在结算阶段（Phase 4c/4d/4e/B/B2）→ 各判死点经唯一出口 `onDeath()` 累加 `deathsThisTick`；
+   *   - **tick 收尾**（Phase C 之后）把 `deathsThisTick` 提交为 `lastTickDeaths` 再清零；
+   *   - Pass1 只读 `lastTickDeaths`（本 tick 内恒定）→ **同一 tick 内没有任何"死→回血"反馈环**，
+   *     与遍历顺序无关、双方镜像对等；本 tick 新发生的死亡要等到**下一 tick** 才计入。 */
+  let deathsThisTick = 0; // 本 tick 已判死的"非召唤"单位数（结算阶段累加，tick 收尾提交）
+  let lastTickDeaths = 0; // **上一 tick** 的死亡数（Pass1 唯一读口径；tick 收尾赋值）
+
   /** 开战/召唤即满盾就位：把单位“自带持续护盾”（时长型护盾模块，duration_ticks>0 且
    *  shield_cap_bonus>0）视为已在首个可行动 tick 就位满盾——按 spawnList/doSummon 已用的
    *  fillShieldPools/满盾逻辑，把该模块池补满。复用机制，不逐 tick 白送盾（仅登场一次）。
@@ -401,8 +466,8 @@ export function createBattle(preset) {
       if (!fx) continue;
       if (!((fx.duration_ticks || 0) > 0 && (fx.shield_cap_bonus || 0) > 0)) continue; // 仅持续护盾
       if (inst.durationLeft > 0) continue; // 已在持续期
-      inst.durationLeft = fx.duration_ticks;
-      inst.cooldown = 0;
+      startDuration(inst, timeCoeffOf(ship)); // 进入持续期：需求量按当前时间系数整数化、已推进归 0
+      clearCooldown(inst);
       inst._shieldSpent = false; // 首次激活/重新激活：确保不残留"已耗尽"标记
       recalcDerived(ship);              // 生成该模块的护盾池（空池）
       fillModuleShieldPool(ship, inst); // ★ 只把该模块自身池补满到 cap
@@ -423,6 +488,7 @@ export function createBattle(preset) {
       // 开战满盾：把各护盾池（本体池 + 当前贡献模块池）补满到各自 cap；
       // 汇总后 hull.shield = shieldCap（与旧“满盾登场”观感一致；时长型模块持续期外无池）
       fillShieldPools(ship);
+      fillHullVitals(ship); // 满血/满能量登场（与满盾同体例；本体三围已含自身常驻加成）
       seedSpawnShields(ship); // 自带持续护盾首 tick 即满盾就位
       seqCount[side] += 1;
       ship.order = seqCount[side]; // 出场序号（#编号），稳定不随队列/移除变化
@@ -458,7 +524,12 @@ export function createBattle(preset) {
     const s = createShip(typeId, side, overrides || null);
     s.isSummon = true;           // 召唤单位标记（目标队列视为队首；渲染仍排在列尾）
     s.temp = !!temp;             // 是否为临时单位（由召唤配置决定）
-    if (s.temp) s.tempLeft = 0;  // 剩余存在 tick（仅临时单位使用）
+    if (s.temp) {
+      // 剩余存在 tick / 基础需求量 / 已推进 tick 数（仅临时单位使用；真正起点由 doSummon 的 startLife 写入）
+      s.tempLeft = 0;
+      s.tempLifeNeed = 0;
+      s.tempLifeElapsed = 0;
+    }
     seqCount[side] += 1;
     s.order = seqCount[side];    // #编号由出场顺序决定（整队统一递增）
     sidesOf(side).push(s);       // 排在列尾（显示在主力之后）；目标顺序由 orderedFoes 另行处理
@@ -468,11 +539,12 @@ export function createBattle(preset) {
   /** 把临时单位移出场景，并清理其各模块对本场其它单位施加的影响 */
   function removeSummoned(side, u) {
     for (const inst of u.modules) {
-      if (inst.durationLeft > 0) inst.durationLeft = 0;
+      if (inst.durationLeft > 0) endDuration(inst); // 移出场景：结束持续期（剩余/已推进一并归 0）
       dropSourceMods(inst);
       clearAllSourceMods(u, inst.id); // 移出场景 → 回退其施放方自身获得的修饰（系数加/乘 + 受伤减免）
       releaseCoeffRefs(inst); // 移出场景 → 撤销其施加在各被作用单位上的目标级修饰
-      releaseHasten(inst); // 移出场景 → 撤销其施加在各被作用单位上的时间加速
+      releaseTime(inst); // 移出场景 → 撤销其施加在各被作用单位上的时间系数
+      releaseStealth(inst); // 移出场景 → 撤销其施加在各被作用单位上的潜行标记
       inst._coeffAdd = 0;
       inst._coeffMul = 1;
       inst._takeMul = 1;
@@ -507,6 +579,9 @@ export function createBattle(preset) {
    *      **锁定单位(`lockTargetId`) > 激活锁定(`lock_target_on_activate`·持续期内) > 强制目标 >
    *        模块手动目标 > 优先自己(`prefer_self`) > 船 `targetId` > 自动粘性 > 全队策略/阵营顺序**
    *    （实现：给候选池打优先级桶后稳定排序，三个 countMode 分支同取这一条链）
+   *  - ★ **潜行过滤**（`type` 标签 `stealth`，唯一口径 `stealthBlocksTargeting`）：在**两个锁定分支之后**
+   *    过滤候选池 —— 锁定单位/激活锁定**豁免**，其余来源（含**玩家手动选定**）一律跳过潜行单位；
+   *    过滤后为空 → 返回 []（按既有规则**不激活**）。
    *  - countMode：single=1 / multi=min(maxCount, 可用) / all=全部；空目标池 → 无目标 []
    */
   function moduleTargetList(ship, inst) {
@@ -561,8 +636,15 @@ export function createBattle(preset) {
     //    船 `targetId` > 自动粘性 > 自然顺序（全队策略/阵营顺序）
     //    实现：对候选池每个单位打**优先级桶**（rank），桶内保持自然顺序 → 一次稳定排序得出结果；
     //    `all`/`multi`/`single` 三个分支都从这同一条有序链上取（`single` 取首位、`multi` 取前 N、`all` 取全部）。
+    // ★ **潜行过滤（`type` 标签 `stealth`，唯一口径 `stealthBlocksTargeting`）**：
+    //   放在**锁定分支之后** —— 上方的“锁定单位 / 激活锁定”属**激活瞬间已锁定**的目标，
+    //   **豁免**本判据（潜行不推翻既有锁定）；其余全部来源（强制目标 / 模块手动目标 / 优先自己 /
+    //   船 `targetId` / 自动粘性 / 全队策略）**一律跳过潜行单位**。
+    //   若过滤后无可用目标 → 返回空（**按既有规则不激活**，不报错）。
+    const selectable = uniq.filter((u) => !stealthBlocksTargeting(ship, u));
+    if (!selectable.length) return [];
     const forced = forcedTopUnit(ship);
-    const forcedIn = forced && uniq.some((u) => u.id === forced.id) ? forced : null;
+    const forcedIn = forced && selectable.some((u) => u.id === forced.id) ? forced : null;
     const selIds = new Set(
       inst.target && inst.target.mode === 'units' ? inst.target.ids || [] : []
     );
@@ -581,7 +663,7 @@ export function createBattle(preset) {
       if (stickIds.has(u.id)) return 4;
       return 5;
     };
-    const ordered = uniq
+    const ordered = selectable
       .map((u, i) => ({ u, i }))
       .sort((a, b) => rankOf(a.u) - rankOf(b.u) || a.i - b.i)
       .map((x) => x.u);
@@ -606,10 +688,39 @@ export function createBattle(preset) {
     );
   }
 
+  /* ---------- 潜行（`type` 标签 `stealth` · 目标选择向）----------
+   * ★ 语义：被标记单位**不得被选为主要攻击目标**（其它单位的目标解析一律跳过它）。
+   *   下列**唯一口径** `stealthBlocksTargeting` 同时被 `moduleTargetList`（模块目标优先级链）与
+   *   `shipEffectiveTarget`（船级主要目标）使用 —— 两处同口径，避免“显示能打、实际不打”。
+   * ★ **豁免（仍受“目标锁定”影响）**：`lockTargetId`（一次性火箭/导弹弹体）与
+   *   `lock_target_on_activate` 的锁定集合 `inst._lockIds`（**激活瞬间已锁定**的目标）在各自分支
+   *   **直接返回**、不经过本判据 → 潜行**不影响**这些既有锁定（潜行是“事后生效”，不推翻锁定）。
+   * ★ **不影响溅射**：`blast_range` 波及（`effectSetOf` 与 `maybeActivate` 的爆炸循环）**不走**本判据，
+   *   潜行单位照常被波及；`applyHit` 侧也没有任何潜行减免 —— “仍会受到溅射影响”由此天然成立。
+   * ★ **不影响友方/自身**：潜行只挡“把对方当敌人打”，支援类模块（buff/回盾/时间系）解析到
+   *   潜行单位（友军或自己）照常成立；自身永远可选（自指模块不受影响）。
+   * ★ 读**tick 起始快照** `u._stealthTick`（Pass1 单位开头写入，见 `pass1Unit`；新召单位在
+   *   `doSummon` 生成时写入）：本 tick 全体单位的目标解析按同一份 tick 起始状态进行；
+   *   本 tick 结算阶段落地的潜行从**下一 tick 的目标解析**起体现（与系数/时间系数同一时序范式）。 */
+  function tickStealthed(u) {
+    if (u && typeof u._stealthTick === 'boolean') return u._stealthTick;
+    return isStealthed(u); // 快照缺失（战斗外/异常路径）→ 唯一读口径现算兜底
+  }
+  /** u 是否因**潜行**而不可被 ship 选为“主要攻击目标”（潜行的**唯一判定口径**，UI 同源） */
+  function stealthBlocksTargeting(ship, u) {
+    if (!ship || !u) return false;
+    if (u.id === ship.id) return false; // 自身永远可选（自指/自身单体模块不受潜行影响）
+    const foes = ship.side === 'ally' ? enemies : allies;
+    if (!foes.includes(u)) return false; // 只挡“对敌”目标：友方/支援类目标不受潜行影响
+    return tickStealthed(u);
+  }
+
   /** 船的"当前实际目标"（供 UI 显示单位主要目标/提示）：
    *  ★ 优先级链与 `moduleTargetList` **同口径**（船级视角）：
    *    **锁定单位 > 激活锁定(`lock_target_on_activate`·首个锁定中的攻敌模块) > 强制目标 >
    *      船手动目标 `targetId` > 首个能攻击敌方的模块的实时解析结果 > 全队策略队首**。
+   *  ★ **潜行过滤同口径**（`stealthBlocksTargeting`）：**锁定单位与激活锁定豁免**，其余来源
+   *    （强制目标 / 船 `targetId` / 模块解析结果 / 全队策略队首）一律跳过潜行单位。
    *  （模块内部的手动目标/`prefer_self` 由 `moduleTargetList` 自己按完整链解析，此处不再重复。）
    *  `shipEffectiveTarget` 是**船级“主要攻击目标”显示**：只返回**敌方**单位 ——
    *  支援类模块（如时间扭曲选中友军/自己）不得把船的主要目标显示成友方。 */
@@ -628,10 +739,11 @@ export function createBattle(preset) {
       }
     }
     const forced = forcedTopUnit(ship); // 被强制时 UI 与战斗解析必须显示同一目标
-    if (forced) return forced;
+    // ★ 潜行同口径：被强制指向的单位若已潜行 → 不可作为主要攻击目标（继续下探正常链）
+    if (forced && !stealthBlocksTargeting(ship, forced)) return forced;
     if (ship.targetId) {
       const u = foes.find((f) => f.id === ship.targetId && f.alive);
-      if (u) return u;
+      if (u && !stealthBlocksTargeting(ship, u)) return u; // ★ 潜行 → 跳过，继续下探（targetId 本身不改写）
     }
     if (ship.modules && ship.modules.length) {
       for (const inst of ship.modules) {
@@ -647,13 +759,14 @@ export function createBattle(preset) {
         if (u) return u;
       }
     }
-    return orderedFoes(foes, policyOf(ship))[0] || null;
+    // ★ 全队策略队首：同样跳过潜行单位（潜行不可作为主要攻击目标）
+    return orderedFoes(foes, policyOf(ship)).find((f) => !stealthBlocksTargeting(ship, f)) || null;
   }
 
-  /** 阵营策略预览：该阵营当前全队首个命中目标 */
+  /** 阵营策略预览：该阵营当前全队首个命中目标（★ 同口径跳过潜行单位） */
   function fleetPreview(side) {
     const foes = side === 'ally' ? enemies : allies;
-    return orderedFoes(foes, policies[side])[0] || null;
+    return orderedFoes(foes, policies[side]).find((u) => !tickStealthed(u)) || null;
   }
 
   /** ★ **共享的“作用集合（effect set）”计算** —— 供**上限类词条**与**时间加速**等
@@ -711,8 +824,12 @@ export function createBattle(preset) {
   const AMOUNT = { shield_gain_target: 'shield', hp_target: 'hp', energy_target: 'energy' };
   const CAPFIELD = { shield_cap_target: 'sh', hp_cap_target: 'hp', energy_cap_target: 'en' };
   /** 类别系数加性修饰词条 → 系数类别（可扩展：加性增益词条名 → `coeff()` 的 category）
-   *  如 `attack_coeff_add: 0.2` = **自身** attack 系数 +0.2（base 1.0 → 1.2）。 */
-  const COEFF_ADD = { attack_coeff_add: 'attack' };
+   *  如 `attack_coeff_add: 0.2` = **自身** attack 系数 +0.2（base 1.0 → 1.2）；
+   *  `shield_coeff_add: 0.1` = **自身** shield 系数 +0.1（作用于护盾池容量，见 modulePoolCapOf）。
+   *  ★ 本表服务于**结算阶段**的条件型/时长型路径（`coeffOps` → `applyCoeffOp`）；
+   *    **常驻**（`passive`，无 `duration_ticks`）的同类词条由 ship.js `syncStaticCoeffs` 直接写
+   *    同一张 `coeffMods` 表（安装/启停时），二者共用 `setCoeffMod` 与 `clearAllSourceMods` 撤销入口。 */
+  const COEFF_ADD = { attack_coeff_add: 'attack', shield_coeff_add: 'shield' };
   /** 类别系数**乘性**修饰词条 → 系数类别（**预留扩展点，当前无任何词条映射**）。
    *  ★ 注意：`damage_coeff_mul` **不属于**本表 —— 它是**受伤减免系数**（见 DAMAGE_TAKE_MUL），
    *    作用于该单位**受到的**一切伤害、不参与 `coeff()`；本乘性表仅保留给未来“按类别乘性”的词条。 */
@@ -727,10 +844,11 @@ export function createBattle(preset) {
   const DAMAGE_TAKE_MUL = { damage_coeff_mul: true };
   /** **受伤减免**词条（目标级，`_target` 后缀）：对每个解析目标写其自身的受伤减免 */
   const DAMAGE_TAKE_MUL_T = { damage_coeff_mul_target: true };
-  /** **时间加速**词条 → 作用对象上的 `ship.hastenMods`（来源 key → 额外推进 tick 数）。
-   *  ★ 与上面两张表**不同**：多来源**取最大值**（`ship.hastenTicks = max`），**不叠加、不连乘**。
-   *  ★ 与 `coeff()`/`damageTakeMul()` 都无关：不改伤害、不改护盾池，只改**计时推进量**（1 + N）。 */
-  const HASTEN = { hasten_ticks: true };
+  /** **时间系数**词条 → 作用对象上的 `ship.timeCoeffMods`（来源 key → 系数，负=加速 / 正=放缓）。
+   *  ★ 语义＝乘在“**需求量**”上（`timeScaled(基础量, 系数)`），**不改每 tick 推进量**（恒为 1）；
+   *    多来源组合规则见 ship.js `refreshTimeCoeff()`（当前＝**加性求和**）。
+   *  ★ 与 `coeff()`/`damageTakeMul()` 都无关：不改伤害、不改护盾池，只改**计时器的需求量**。 */
+  const TIME = { time_coeff: true };
   /** 读回某单位当前已落地的某来源系数修饰值（用于**逐目标**记录的幂等判定：
    *  `_coeffAdd/_coeffMul` 只能记“自身”一条，逐目标必须从表回读）。 */
   function appliedCoeff(ship, key, category, mode) {
@@ -752,11 +870,14 @@ export function createBattle(preset) {
     return null;
   }
 
-  /** 重算目标三围上限 = 自身(基础+被动+自身时长加成) + Σ目标级 cap 增/减
+  /** 重算目标三围上限 = 自身(基础 + **常驻静态加成**) + Σ目标级 cap 增/减
    *  每次均从各自基础值(baseShieldCap/baseHpMax/baseEnergyCap)重算，
    *  保证非累加：撤销旧影响后新施加不会在已减值上再叠。
    *  护盾叠加(shield_cap_target)记入“本体池”的 capExtra（随本体池容量由 recalcDerived
-   *  一并钳制/汇总）；血量/能量叠加仍直接改对应上限（无池概念）。
+   *  一并钳制/汇总）；血量/能量上限、能量恢复与**类别系数加性**（`X_coeff_add`）由 ship.js
+   *  **唯一口径 `syncSelfStatics`** 落地（`基准 + Σ自身常驻词条 + 本次传入的目标级叠加`；
+   *  系数加性写既有 `coeffMods`），本函数**不再自行复位到基准**
+   *  —— 否则会把增幅器类常驻加成（`hp_cap_bonus`/`energy_cap_bonus`/`energy_regen_bonus`）一并抹掉。
    *  ★ 关键：此处只改本体池的 capExtra，绝不触碰护盾【池值】，
    *    且必须让 recalcDerived 以“正确 permanentBonus”统一重算 cap——
    *    若改用 baseShieldPoolOf(其内部 ensureBasePool(…,undefined)) 会把常驻护盾
@@ -776,12 +897,9 @@ export function createBattle(preset) {
     }
     if (base) base.capExtra = sh; // 非累加：仅重设目标级叠加，不动池值
     recalcDerived(target); // 护盾池同步（本体池=baseShieldCap+capExtra+permanentBonus、各模块池）并刷新汇总
-    target.hull.hpMax = target.hull.baseHpMax; // 先复位血量/能量上限到基准
-    target.hull.energyCap = target.hull.baseEnergyCap;
-    if (hp !== 0) target.hull.hpMax = Math.max(1, target.hull.hpMax + hp);
-    if (en !== 0) target.hull.energyCap = Math.max(0, target.hull.energyCap + en);
-    target.hull.hp = Math.min(target.hull.hp, target.hull.hpMax);
-    target.hull.energy = Math.min(target.hull.energy, target.hull.energyCap);
+    // ★ 自身常驻静态加成（系数加性 / 三围上限 / 能量恢复）与目标级叠加**合并重算**（唯一口径在 ship.js
+    //   `syncSelfStatics`；非累加）；当前值只做钳制、不补齐（与护盾池“只加容量不白送”同口径）。
+    syncSelfStatics(target, hp, en);
   }
 
   /** 设置/覆盖本模块对某目标某一 cap(sh/hp/en) 的增/减并立即生效 */
@@ -805,19 +923,24 @@ export function createBattle(preset) {
     if (touched) for (const s of [...allies, ...enemies]) recomputeCap(s);
   }
 
-  /** 启用/停用模块（处理自身被动重算 + 移除其目标级 cap 影响） */
+  /** 启用/停用模块（处理自身被动重算 + 移除其目标级 cap 影响）
+   *  ★ 启停会改变【自身常驻静态加成】的合计（增幅器类词条：上限/能量恢复/类别系数加性）
+   *    → 必须走 `recomputeCap`（= 护盾池重算 + 唯一口径 `syncSelfStatics`），而**不能**只调
+   *    `recalcDerived`：后者不重算三围上限与系数，且若自行复位到基准会把该单位身上**仍在生效的
+   *    目标级 cap 叠加**（如电磁脉冲）一并抹掉。`recomputeCap` 会把两者合并重算，非累加、口径唯一。 */
   function enableModule(inst) {
     inst.enabled = true;
     const o = ownerOf(inst);
-    if (o) recalcDerived(o); // 重新计入自身被动加成
+    if (o) recomputeCap(o); // 重新计入自身常驻加成（含血量/能量上限、能量恢复）
   }
   function disableModule(inst) {
     inst.enabled = false;
     if (inst._ramp) inst._ramp = { key: '', count: 0 }; // 停用 → 逐步伤害成长归零
     dropSourceMods(inst); // 移除其施加在其它单位上的护盾上限影响
-    // 时间加速的撤销置于“施放方是否还在”判空**之前**：其作用集合挂在 `inst._hastenRefs` 上、
-    // 与被作用单位是否会随施放方一起离开无关，放前面可避免无主模块留下永不撤销的加速。
-    releaseHasten(inst); // 停用 → 撤销其施加在各被作用单位上的时间加速
+    // 时间系（时间系数）的撤销置于“施放方是否还在”判空**之前**：其作用集合挂在 `inst._timeRefs` 上、
+    // 与被作用单位是否会随施放方一起离开无关，放前面可避免无主模块留下永不撤销的时间系数。
+    releaseTime(inst); // 停用 → 撤销其施加在各被作用单位上的时间系数
+    releaseStealth(inst); // 停用 → 撤销其施加在各被作用单位上的潜行标记
     const o = ownerOf(inst);
     if (!o) return;
     clearAllSourceMods(o, inst.id); // 停用 → 回退其施加在自身的修饰（系数加/乘 + 受伤减免）
@@ -827,10 +950,10 @@ export function createBattle(preset) {
     inst._takeMul = 1;
     releaseForced(inst); // 停用 → 解除其施加的强制目标（被强制者按其来源栈回落/回到正常优先级）
     if (inst.durationLeft > 0) {
-      inst.durationLeft = 0;
-      inst.cooldown = inst.cfg.effects.cooldown_ticks ?? 1;
+      endDuration(inst); // 停用 → 结束持续期（剩余/已推进一并归 0）
+      startCooldown(inst, timeCoeffOf(o)); // 并进入冷却（需求量按当前时间系数、已推进归 0）
     }
-    recalcDerived(o); // 结束自身被动/自身时长加成
+    recomputeCap(o); // 结束自身常驻/自身时长加成（口径同 enableModule）
   }
 
   /** 进入战斗（开始 tick 结算） */
@@ -838,6 +961,8 @@ export function createBattle(preset) {
     if (phase !== 'idle') return;
     phase = 'running';
     result = null;
+    deathsThisTick = 0; // 死亡计数从零起（首 tick 的"上一 tick 死亡数"＝0 → 不触发任何按阵亡数的词条）
+    lastTickDeaths = 0;
     tickOff = bus.on('tick', step);
     bus.emit('combat:state', { active: true });
     log.add(i18n.t('battle.log.start'), 'battle');
@@ -933,7 +1058,9 @@ export function createBattle(preset) {
     const isTemp = !(sum.temp === false);
     const u = spawnSummoned(sum.type, side, ov, isTemp);
     u.summonMod = inst.moduleId; // 用于按召唤模块统计在场存活上限（不同召唤模块互不挤占）
-    if (isTemp) u.tempLeft = (sum.lifespan_ticks || 0) > 0 ? sum.lifespan_ticks : 60;
+    // 临时单位存在时间：基础需求量（未缩放）记在 `tempLifeNeed` 上，需求量按**当时**时间系数整数化，
+    // 已推进 tick 数归 0（见 startLife / applyTempTick）。
+    if (isTemp) startLife(u, (sum.lifespan_ticks || 0) > 0 ? sum.lifespan_ticks : 60, timeCoeffOf(u));
     u.summonIcon = A.icon || inst.cfg.icon || ''; // 召唤单位图标：attrs.icon 优先，其次模块 icon
     if (sum.projectile) u.isProjectile = true; // 弹体类召唤单位（火箭/导弹）：可被目标词条 exclude 排除
     u.tempNoIcon = !u.summonIcon;                   // 无图标 → 单位降级 ▲
@@ -954,9 +1081,11 @@ export function createBattle(preset) {
       installModule(u, mid, lv, true); // force：不受该单位模块槽上限约束（cool_first 引信在模块安装时统一处理）
     }
     fillShieldPools(u); // 满盾登场（同 spawnList 逻辑）：本体+模块各池补满
+    fillHullVitals(u);  // 满血/满能量登场（同 spawnList 逻辑）：三围已含自身常驻加成（installModule 时重算）
     seedSpawnShields(u); // 自带持续护盾首 tick 即满盾就位
     u._takeMulTick = damageTakeMul(u); // 本 tick 受伤减免快照（新召单位不在本 tick 的 Pass1 名单里）
-    u._hastenTick = 1 + hastenTicksOf(u); // 同上：本 tick 计时推进量快照（新召单位同理）
+    u._timeCoeffTick = timeCoeffOf(u); // 同上：本 tick 单位时间系数快照（新召单位同理）
+    u._stealthTick = isStealthed(u);   // 同上：本 tick 潜行快照（新召单位同理；唯一读口径 isStealthed）
     // 继承模块所属船舰的自动策略与该船当前目标（仅非锁定单位；锁定单位目标由 boundId 固定）
     if (!boundId) {
       if (ship.policy) u.policy = ship.policy; // ship.policy 为空=跟随全队（召唤物同默认）
@@ -972,7 +1101,7 @@ export function createBattle(preset) {
     } else {
       inst._stick = [boundId]; // 发射器持续瞄准同一锁定目标（存活时）
     }
-    inst.cooldown = fx.cooldown_ticks ?? 1;
+    startCooldown(inst, tickTimeCoeff(ship)); // 召唤后进入冷却（需求量按当前时间系数、已推进归 0）
     battleLog(
       'battle.log.summon',
       {
@@ -1010,8 +1139,9 @@ export function createBattle(preset) {
     for (const k of Object.keys(DAMAGE_TAKE_MUL_T)) if ((fx[k] || 0) > 0) return true;
     // `force_target_self` 为 `type` 标签（不是词条）：按标签恒可影响（作用集合由目标选择器给出）
     if (isType(fx, 'force_target_self')) return true;
-    // 时间加速词条（`hasten_ticks`）：恒可影响（作用集合＝目标 ∪ 波及 ∪ 自身，见 effectSetOf）
-    for (const k of Object.keys(HASTEN)) if ((fx[k] || 0) > 0) return true;
+    // 时间系数词条（`time_coeff`）：恒可影响（作用集合＝目标 ∪ 波及 ∪ 自身，见 effectSetOf）
+    //  ★ 系数可正可负（加速/放缓皆是有效效果），故判定用 `!== 0` 而非 `> 0`。
+    for (const k of Object.keys(TIME)) if ((fx[k] || 0) !== 0) return true;
     // `shield_gain` 为**自身词条** → 按施放方自身是否缺盾判定（不再看目标）
     if ((fx.shield_gain || 0) > 0 && ship && ship.hull.shield < ship.hull.shieldCap) {
       return true;
@@ -1032,7 +1162,10 @@ export function createBattle(preset) {
    *                  `shield_gain`＝**自身词条**：记在施放方自己的 pending 上，即作用于自身），
    *                  每条 { inst, amount }，用于 Pass2 顺序 poolShieldAdd。
    *   energyDeltas:  对本单位能量的直接增/减序列（energy_target），每条 { inst, amount }。
-   *   hpDeltas:      对本单位血量的直接增/减序列（hp_target），负可致死，每条 { inst, amount }。
+   *   hpDeltas:      对本单位血量的直接增/减序列（`hp_target`），负可致死，每条 { inst, amount }。
+   *                  ★ 常驻被动「回收利用」的按阵亡回血（`hp_regen_per_death`）**复用本序列**
+   *                  （每条另带 `regen:true` 仅用于结算阶段记低频战报）：Pass1 只读上一 tick 阵亡数
+   *                  快照 `lastTickDeaths` 记账，结算步骤 4c 与 hp_target 同批 `applyHpTo` 落地。
    *   selfDestruct:  { inst, amount }｜null —— self_destruct_damage（对本单位自身直接扣/回血，致死记 selfDestruct）。
    *   capOps:        本 tick 由本单位模块产生的“上限修改意图”（Pass1 只记账，结算步骤 2 统一落地）：
    *                   { inst, actor, ops:[[field, value]…], targets:[单位引用…], paralyze:bool }。
@@ -1052,9 +1185,14 @@ export function createBattle(preset) {
    *                   `want`=期望生效（状态型读 tick 起始条件；时长型激活时恒 true、到期时由 expiries 撤销）。
    *   forceOps:      本 tick 的**强制目标意图**（`type` 标签 `force_target_self` 激活时记账，结算步骤 2b 落地）：
    *                   每条 { inst, actor, targets:[单位引用…] } —— 把各目标压入“强制来源栈”（施放者＝actor）。
-   *   hastenOps:     本 tick 的**时间加速意图**（`hasten_ticks` 激活时记账，结算步骤 2 与上限/系数同批落地）：
-   *                   每条 { inst, targets:[单位引用…]（＝effectSetOf 的作用集合）, ticks } —— 写各单位的
-   *                   `ship.hastenMods`（多来源**取最大值**），供其**下一 tick 起**的计时推进（1 + N）使用。 */
+   *   timeOps:       本 tick 的**时间系数意图**（`time_coeff` 激活时记账，结算步骤 2 与上限/系数同批落地）：
+   *                   每条 { inst, targets:[单位引用…]（＝effectSetOf 的作用集合）, coeff } —— 写各单位的
+   *                   `ship.timeCoeffMods`（多来源组合规则见 ship.js refreshTimeCoeff），
+   *                   供其**下一 tick 起**的计时器需求量（timeScaled）使用。
+   *   stealthOps:    本 tick 的**潜行意图**（`type` 标签 `stealth` 激活时记账，结算步骤 2 与
+   *                   上限/系数/时间系数同批落地）：每条 { inst, targets:[单位引用…]（＝effectSetOf 的作用集合） }
+   *                   —— 给各单位的 `ship.stealthMods` 打来源 key（潜行＝不可作为主要攻击目标），
+   *                   供其**下一 tick 起**的目标解析（`stealthBlocksTargeting`）使用；**零数值变化**。 */
   function freshPending() {
     return {
       dmg: [],
@@ -1070,7 +1208,8 @@ export function createBattle(preset) {
       tempTick: false,
       coeffOps: [],
       forceOps: [],
-      hastenOps: [],
+      timeOps: [],
+      stealthOps: [],
     };
   }
   /** 惰性取某单位 pending（召唤新单位当 tick 被锁定命中时也能挂账） */
@@ -1078,6 +1217,87 @@ export function createBattle(preset) {
     if (!u) return null;
     if (!u.__pending) u.__pending = freshPending();
     return u.__pending;
+  }
+
+  /* ---------- 计时器通用口径（★ 每 tick 恒推进 1 tick；时间系数只改“需求量”）----------
+   * 每个计时器各自记录**已推进 tick 数**（模块：`inst.durElapsed`/`inst.cdElapsed`；临时单位：`u.tempLifeElapsed`），
+   * **剩余 = 需求量 − 已推进**，其中 `需求量 = timeScaled(基础量, 单位时间系数)`（整数 tick，见 ship.js）。
+   * 因此系数在计时**中途**落地/撤销时也能正确生效：已推进数不回退，剩余始终随需求量**同向**变化
+   * （需求变小 → 剩余必然变小，绝不出现错向）。
+   * 计时器**启动/重置**（进入持续期、进入冷却、召唤临时单位）时必须把对应的已推进数归 0。 */
+  /** 启动/重置模块**持续期**计时：需求量按**当前**时间系数整数化，已推进数归 0。 */
+  function startDuration(inst, coeff) {
+    const fx = inst.cfg.effects || {};
+    inst.durElapsed = 0;
+    inst.durationLeft = timeScaled(fx.duration_ticks || 0, coeff);
+  }
+  /** 结束模块**持续期**（不进入冷却）：剩余与已推进数一并归 0。
+   *  ★ `delayed_trigger` 的待触发载荷随持续期一并撤销：唯一触发时机是**自然到期结算的瞬间**
+   *    （`advanceModuleState` 的到期分支），提前结束（停用/阵亡/移出场景/破盾）不产生效果。 */
+  function endDuration(inst) {
+    inst.durationLeft = 0;
+    inst.durElapsed = 0;
+    inst._delayedRefs = null;
+    inst._delayedDmg = 0;
+    inst._delayedPrimary = null;
+    inst._delayedBlast = false;
+  }
+  /** 启动/重置模块**冷却**计时：需求量按**当前**时间系数整数化，已推进数归 0。 */
+  function startCooldown(inst, coeff) {
+    const fx = inst.cfg.effects || {};
+    inst.cdElapsed = 0;
+    inst.cooldown = timeScaled(fx.cooldown_ticks ?? 1, coeff);
+  }
+  /** 清空模块**冷却**（激活进入持续期）：剩余与已推进数一并归 0。 */
+  function clearCooldown(inst) {
+    inst.cooldown = 0;
+    inst.cdElapsed = 0;
+  }
+  /** 启动/重置**临时单位存在时间**计时：需求量按**当前**时间系数整数化，已推进数归 0。 */
+  function startLife(u, baseNeed, coeff) {
+    u.tempLifeNeed = baseNeed; // 基础需求量（未缩放，供后续每 tick 按当时系数重算）
+    u.tempLifeElapsed = 0;
+    u.tempLeft = timeScaled(baseNeed, coeff);
+  }
+
+  /** ★ `type` 标签 `delayed_trigger`（**后触发**）的落地点：**效果在持续期结束（到期结算）时才触发**。
+   *  在 `advanceModuleState` 的**自然到期分支**调用（仍在 Pass1：**只记账、零数值变化**）：
+   *  · 按既有伤害记账方式把伤害写入**激活瞬间冻结的作用集合**内各存活单位的 `__pending.dmg`
+   *    （主目标 `splash:false`；`blast_range` 波及 `splash:true` 且带 `gate`，与 `maybeActivate`
+   *    的即时爆炸**同一条目格式**）→ 随后由 Phase A 收集、Phase B `settleHits` 统一结算：
+   *    护盾池吸收 / 防爆拦截（`blast` 标签）/ 溅射抑制（gate）/ 反射 / 判死 / 战报**全部沿用既有链路**，
+   *    **不新增任何伤害体系**。
+   *  · 出伤数值与作用集合都在**激活瞬间**冻结（`inst._delayedDmg` / `inst._delayedRefs`），
+   *    故持续期内的类别系数变化不影响本次引爆；作用集合内已阵亡/离场者跳过（结算侧还会再复核）。
+   *  · 载荷在触发时一并清空（`endDuration` 的提前结束路径同样清空 → 停用/阵亡/移出场景不产生效果）。 */
+  function fireDelayedEffect(ship, inst) {
+    const refs = inst._delayedRefs;
+    const dmg = inst._delayedDmg || 0;
+    const blast = !!inst._delayedBlast;
+    const primary = inst._delayedPrimary;
+    inst._delayedRefs = null;
+    inst._delayedDmg = 0;
+    inst._delayedPrimary = null;
+    inst._delayedBlast = false;
+    if (!ship || !refs || !refs.length || dmg <= 0) return;
+    // 本次触发的伤害统计项（结算阶段 `landDamageApp` 回填 → Phase C `finalizeModules` 写回
+    // lastDmg / 累计 damageDealt；激活本身已在 `maybeActivate` 计入 activations）
+    inst._pendingAct = { dmg: 0, shield: 0 };
+    const actKey = `${ship.id}:${inst.id}`; // 溅射抑制 gate（与即时爆炸同一 key 口径）
+    for (const u of refs) {
+      if (!u || !u.alive) continue; // 已阵亡/移出场景者跳过
+      const P = pendOf(u);
+      if (!P) continue;
+      const isPrimary = !!(primary && primary.has(u.id));
+      P.dmg.push({
+        actor: ship,
+        inst,
+        amount: dmg,
+        blast,
+        splash: !isPrimary,
+        gate: !isPrimary && blast ? actKey : null, // 仅爆炸型可被防爆抑制
+      });
+    }
   }
 
   /** 单模块状态结构推进 + 有效贡献窗口累计（时长/冷却倒计时）。
@@ -1089,21 +1309,29 @@ export function createBattle(preset) {
   function advanceModuleState(ship, inst, ctx) {
     if (!inst.enabled) return; // 停用模块：冷却/持续/窗口全部冻结
     const fx = inst.cfg.effects;
-    // ★ 本 tick 的计时推进量（＝ 1 + 时间加速）：读 Pass1 快照 → 加速对本单位**持续期与冷却的递减**同样生效。
-    const step = tickRate(ship);
+    // ★ 本 tick 的单位**时间系数**（读 Pass1 快照）→ 决定本 tick 各类计时器的需求量；
+    //   每 tick **推进量恒为 1**（不再随系数变化），只有“需要多少 tick 才走完”随系数变化。
+    const coeff = tickTimeCoeff(ship);
     if (inst.durationLeft > 0) {
-      inst.durationLeft -= step;
+      inst.durElapsed = (inst.durElapsed || 0) + 1; // 已推进恒 +1
+      inst.durationLeft = Math.max(0, timeScaled(fx.duration_ticks || 0, coeff) - inst.durElapsed);
       if (inst.durationLeft <= 0) {
         inst.durationLeft = 0;
-        if ((fx.cooldown_ticks || 0) > 0) inst.cooldown = fx.cooldown_ticks ?? 1; // 进入冷却
+        inst.durElapsed = 0;
+        // ★ `delayed_trigger`（后触发）：**持续期结算到期的瞬间才产生效果** —— 就在此处按既有伤害
+        //   记账方式写入各作用单位的 `__pending.dmg`（仍是 Pass1：只记账、零数值变化），
+        //   由 Phase A 收集、Phase B 统一按既有命中链路结算（护盾/防爆/判死/战报）。
+        if (isType(fx, 'delayed_trigger')) fireDelayedEffect(ship, inst);
+        if ((fx.cooldown_ticks || 0) > 0) startCooldown(inst, coeff); // 进入冷却（需求量按当前系数）
         // ★ 到期撤销/恢复不再即时执行：只记账（携带 inst 与所属单位），结算步骤 2 统一落地
         const rec = { ship, inst, cancelled: false };
         ctx.P.expiries.push(rec);
         inst._expiryRec = rec; // 若本 tick 又重新激活 → 在 maybeActivate 里标记 cancelled
       }
     } else if (inst.cooldown > 0) {
-      // 冷却同样按加速推进；钳到 0（加速可能一次跨过多个 tick，避免出现负冷却显示）
-      inst.cooldown = Math.max(0, inst.cooldown - step);
+      inst.cdElapsed = (inst.cdElapsed || 0) + 1; // 已推进恒 +1
+      inst.cooldown = Math.max(0, timeScaled(fx.cooldown_ticks ?? 1, coeff) - inst.cdElapsed);
+      if (inst.cooldown <= 0) inst.cdElapsed = 0;
     }
     // 有效贡献窗口累计（读本 tick 起始态 + 单位内运行计数，先于本模块激活）
     if (moduleActiveNow(ship, inst, ctx.avail)) inst.stats.activeTicks += 1;
@@ -1125,14 +1353,21 @@ export function createBattle(preset) {
     return n <= 1;
   }
 
-  /** ★ 状态型模块（`type` 含条件标签，如 `solo`）**当前是否生效**的**唯一权威判据**——供 UI 读取。
-   *  判据 = 结算阶段落地的实际生效值（加性系数 `inst._coeffAdd`（0 = 未生效）/ 受伤减免 `inst._takeMul`（1 = 未生效）），
+  /** ★ 状态型模块（`type` 含条件标签，如 `solo`；或常驻被动 `passive`）**当前是否生效**的**唯一权威判据**
+   *  ——供 UI 读取。
+   *  · `solo`：判据 = 结算阶段落地的实际生效值（加性系数 `inst._coeffAdd`（0 = 未生效）/ 受伤减免
+   *    `inst._takeMul`（1 = 未生效））；
+   *  · `passive`（常驻增幅器）：判据 = **模块启用中**（静态加成在开战前就已计入派生值，与战斗阶段无关）。
    *  **UI 不得自行重算条件**（避免两套口径）。
    *  返回：`true` = 生效中；`false` = 条件未满足/未生效；`null` = 非状态型模块
    *  （UI 走原有 就绪/冷却/持续 逻辑，故其它模块显示不回归），或战斗未进行中（尚无结算结果）。 */
   function moduleEffective(inst) {
     const fx = inst && inst.cfg && inst.cfg.effects;
     if (!fx) return null;
+    // ★ **常驻被动**（`type` 标签 `passive`，如增幅器类）：装上即生效、无“激活-触发”流程，
+    //   生效判据 = 模块启用中；**与战斗阶段无关**（静态加成在开战前就已计入派生值）
+    //   → 不返回 null（UI 据此显示「生效中」/「已停用」，且不显示倒计时徽标与就绪脉动）。
+    if (isType(fx, 'passive')) return inst.enabled !== false;
     if (!isType(fx, 'solo')) return null;
     const hasTerm =
       Object.keys(COEFF_ADD).some((k) => (fx[k] || 0) !== 0) ||
@@ -1141,6 +1376,29 @@ export function createBattle(preset) {
     if (phase !== 'running') return null; // 未开战/已结束：无结算结果，交给原有中性显示
     const on = !!inst._coeffAdd || (inst._takeMul || 1) !== 1;
     return !!on && inst.enabled !== false;
+  }
+
+  /** ★ **触发门控（`hp_below_activate`）当前是否满足**的**唯一权威判据**——供 UI 读取。
+   *  与 `moduleEffective`（状态型 `solo` 的生效判据）**同一个思路**：UI 只读引擎判据、**绝不自算条件**。
+   *  判据（与引擎 `maybeActivate` 顶部的门控判定**完全同源**）：
+   *    · 无该词条 / 无门控（`hp_below_activate <= 0`）→ `null`（**非门控型**，UI 走原有状态逻辑）；
+   *    · 战斗未进行中（`running` 之外）→ `null`（无运行期状态，交给原有中性显示）；
+   *    · `inst._firedOnce`（**本次低血区间已触发过**、血量回升过阈值才清标记）→ `false`（条件未满足）；
+   *    · 否则比较**血量比例** `hull.hp / hull.hpMax ≤ hp_below_activate` → `true/false`。
+   *  返回：`true` = 门控满足（可激活）；`false` = **条件未满足**（UI 据此显示「条件未满足」，**不得显示“就绪”**）；
+   *  `null` = 非门控型 / 战斗未进行中。 */
+  function moduleGateMet(inst) {
+    const fx = inst && inst.cfg && inst.cfg.effects;
+    if (!fx) return null;
+    const need = fx.hp_below_activate || 0;
+    if (!(need > 0)) return null; // 无门控词条：非门控型模块
+    if (phase !== 'running') return null; // 未开战/已结束：无运行期门控状态
+    const holder = ownerOf(inst);
+    if (!holder) return null;
+    if (inst._firedOnce) return false; // 本低血区间已触发过（血量回升过阈值才清标记）
+    const hpMax = holder.hull.hpMax || 0;
+    const ratio = hpMax > 0 ? holder.hull.hp / hpMax : 0;
+    return ratio <= need;
   }
 
   /** Pass1 —— 条件型自身增益：**只记“期望生效状态”**（零数值变化）。
@@ -1174,6 +1432,30 @@ export function createBattle(preset) {
         self: true, // 幂等读 inst._takeMul（同时供 UI 判据 moduleEffective 使用）
       });
     }
+  }
+
+  /** Pass1 —— **常驻被动**（`type` 标签 `passive`）：**只记账、零数值变化**。
+   *  · 静态加成类词条（`hp_cap_bonus` / `energy_cap_bonus` / `energy_regen_bonus` / `X_coeff_add`）：
+   *    **本函数无任何 tick 动作** —— 其数值在“安装 / 启停”时由 ship.js `syncSelfStatics` 派生落地
+   *    （非“激活-触发”流程：无冷却、无耗能、无持续期、不产生战报）。
+   *  · 按**上一 tick 阵亡数**结算的词条（`hp_regen_per_death`，如「回收利用」）：读快照 `lastTickDeaths`
+   *    （本 tick 内恒定）→ 记 `__pending.hpDeltas`，与 `hp_target` **同一落地路径**（结算步骤 4c 统一
+   *    `applyHpTo`：**真实回血**、钳制到 `hpMax`、正值不乘受伤减免、可致死者只有负值路径）；
+   *    `regen:true` 仅为结算阶段“实际回血>0 时记一条低频战报”的标记。
+   *    ★ **0 阵亡 → 不记任何账**（本 tick 零数值变化、无战报）。 */
+  function pass1Passive(ship, inst, ctx) {
+    if (!inst.enabled) return; // 停用：不生效（静态加成部分已由 disableModule → recomputeCap 回退）
+    const fx = inst.cfg.effects;
+    if (!fx) return;
+    const per = fx.hp_regen_per_death || 0;
+    if (!(per > 0)) return; // 无该词条：常驻被动无 tick 动作
+    const n = lastTickDeaths; // ★ 上一 tick（双方合计、排除召唤物）的阵亡数快照
+    if (!(n > 0)) return; // 0 阵亡：不回血
+    ctx.P.hpDeltas.push({
+      inst,
+      amount: per * coeff(ship, inst.cfg.category) * n, // 词条值 × 类别系数 × 上一 tick 阵亡数
+      regen: true,
+    });
   }
 
   /** 结算步骤 2 —— 统一落地一条“修饰意图”：仅在**生效状态/数值发生变化**时写入/撤销。
@@ -1234,68 +1516,84 @@ export function createBattle(preset) {
     return damageTakeMul(u);
   }
 
-  /* ---------- 时间加速（`hasten_ticks` 词条 · 多来源**取最大值**）----------
-   * ★ 口径：把作用对象的**计时推进量**从 1 变为 `1 + hastenTicks` —— 即每 tick 多推进 N tick，
-   *   作用于三处递减（均在 battle.js）：
-   *     · `advanceModuleState` 的模块**持续时间** `inst.durationLeft`；
-   *     · 同函数的模块**冷却** `inst.cooldown`；
-   *     · 结算步骤 4e `applyTempTick` 的临时单位**存在时间** `u.tempLeft`。
-   * ★ **多来源取最大值**（`ship.hastenMods` Map + 派生 `ship.hastenTicks = max`，见 ship.js）：
-   *   两个加速模块**不会叠成 4×**；撤销一个来源后按剩余来源重新取 max。
+  /* ---------- 时间系数（`time_coeff` 词条 · 影响“需求量”，不改每 tick 推进量）----------
+   * ★ 口径：作用对象的**时间系数**（负＝加速、正＝放缓）只改各计时器的**需求量**：
+   *     `需求量 = timeScaled(基础量, 系数)`（＝`max(0, round(基础量 × (1 + 系数)))`，整数 tick）；
+   *     每个计时器各自记**已推进 tick 数**，**剩余 = 需求量 − 已推进**，且**每 tick 推进恒为 1**。
+   *   作用于三处（均在 battle.js）：
+   *     · `advanceModuleState` 的模块**持续时间** `inst.durationLeft`（elapsed＝`inst.durElapsed`）；
+   *     · 同函数的模块**冷却** `inst.cooldown`（elapsed＝`inst.cdElapsed`；剩余钳到 0）；
+   *     · 结算步骤 4e `applyTempTick` 的临时单位**存在时间** `u.tempLeft`（elapsed＝`u.tempLifeElapsed`）。
+   * ★ **中途变更系数**：需求量每 tick 按快照系数重算、已推进数不回退 → 剩余总是“新需求 − 已推进”，
+   *   需求变小则剩余必变小（不可能出现错向）；系数被撤销后需求量回到基础值，剩余随之回到未加速的进度。
+   * ★ 多来源组合规则见 ship.js `refreshTimeCoeff()`（当前＝**加性求和**；切换点在该函数一行内）。
    * ★ 落地与撤销都在**结算阶段**（激活＝结算步骤 2；到期/停用/阵亡/移出场景＝各自既有撤销路径），
-   *   且一律读 Pass1 快照 `_hastenTick` → **下一 tick 起**生效、跨单位顺序一致、镜像对等。 */
-  /** 本 tick 该单位的**计时推进量**（唯一读取入口，＝ 1 + 时间加速）：取 Pass1 快照 `u._hastenTick`，
-   *  无快照者（Pass1 内新召单位已在其生成时写入；异常兜底）现算。 */
-  function tickRate(u) {
-    if (u && typeof u._hastenTick === 'number') return u._hastenTick;
-    return 1 + hastenTicksOf(u);
+   *   且一律读 Pass1 快照 `u._timeCoeffTick` → **下一 tick 起**生效、跨单位顺序一致。
+   * ★ 战报低频：负系数＝加速（`hastenStart`/`hastenEnd`），正系数＝减速（`slowStart`/`slowEnd`）。 */
+  /** 本 tick 该单位的**时间系数**（唯一读取入口）：取 Pass1 快照 `u._timeCoeffTick`，
+   *  无快照者（Pass1 内新召单位已在其生成时写入；异常兜底）现算 `timeCoeffOf`。 */
+  function tickTimeCoeff(u) {
+    if (u && typeof u._timeCoeffTick === 'number') return u._timeCoeffTick;
+    return timeCoeffOf(u);
   }
 
-  /** 结算步骤 2 —— 落地一条时间加速意图（与上限/系数同批，先于伤害结算）：
-   *  **单次一次性、仅对当前作用集合**：先撤上一批（旧集合上的加速立即失效），再对本次集合重新写入。
-   *  ★ 战报（低频，**不逐次激活播报**）：仅当该模块的加速**从无→有**时记 1 条“开始加速：{n}个单位”。 */
-  function applyHastenOp(rec) {
+  /** 时间系数 → 该模块的低频战报键（**符号决定加速/减速侧**）：负系数＝加速、正系数＝减速。
+   *  由 `applyTimeOp` 落地时记在 `inst._timeLog` 上，撤销时沿用同一对键（保证“开始/结束”成对）。 */
+  function timeLogKeys(coeff) {
+    return (Number(coeff) || 0) > 0
+      ? { start: 'battle.log.slowStart', end: 'battle.log.slowEnd' }
+      : { start: 'battle.log.hastenStart', end: 'battle.log.hastenEnd' };
+  }
+
+  /** 结算步骤 2 —— 落地一条**时间系数意图**（与上限/系数同批，先于伤害结算）：
+   *  **单次一次性、仅对当前作用集合**：先撤上一批（旧集合上的系数立即失效），再对本次集合重新写入。
+   *  ★ 战报（低频，**不逐次激活播报**）：仅当该模块的时间系数**从无→有**时记 1 条
+   *    「开始加速/开始减速：{n}个单位」（文案由系数符号决定）。 */
+  function applyTimeOp(rec) {
     const inst = rec.inst;
-    const wasActive = !!inst._hastenActive; // 撤销前先记下“之前是否已生效”（用于 0→有 判定）
-    releaseHasten(inst, true); // 先撤上一批（切换作用集合后旧单位按剩余来源重算 max）；此处恒静默
+    const wasActive = !!inst._timeActive; // 撤销前先记下“之前是否已生效”（用于 0→有 判定）
+    releaseTime(inst, true); // 先撤上一批（切换作用集合后旧单位按剩余来源重新组合）；此处恒静默
     const applied = [];
     for (const u of rec.targets) {
       if (!u || !u.alive) continue; // 结算时复核存活（集合内可能有本 tick 已判死/离场者）
-      setHastenMod(u, inst.id, rec.ticks);
+      setTimeCoeffMod(u, inst.id, rec.coeff);
       applied.push(u);
     }
-    inst._hastenRefs = applied.length ? applied : null; // 供各撤销路径精确回退
-    inst._hastenActive = applied.length > 0; // 模块级“加速生效中”标记（战报聚合用）
-    // 仅 **0 → 有** 记一条“开始加速”；n＝本次**真正写入**的单位数（结算时复核存活后的数量）
-    if (!wasActive && inst._hastenActive) {
+    inst._timeRefs = applied.length ? applied : null; // 供各撤销路径精确回退
+    inst._timeActive = applied.length > 0; // 模块级“时间系数生效中”标记（战报聚合用）
+    inst._timeLog = timeLogKeys(rec.coeff); // 记录本次的加速/减速侧战报键（撤销沿用）
+    // 仅 **0 → 有** 记一条“开始加速/开始减速”；n＝本次**真正写入**的单位数（结算复核存活后的数量）
+    if (!wasActive && inst._timeActive) {
       const holder = ownerOf(inst);
       const owner = holder ? uTok(holder) : { side: null, label: '—' };
-      battleLog('battle.log.hastenStart', { owner, module: modTok(inst), n: applied.length }, ['owner']);
+      battleLog(inst._timeLog.start, { owner, module: modTok(inst), n: applied.length }, ['owner']);
     }
   }
-  /** 撤销某模块施加在**其作用集合**上的时间加速（到期/停用/阵亡/移出场景/重新激活前）。
-   *  ★ 作用集合 `inst._hastenRefs` 由**结算阶段**在记录落地后写入（Pass1 不写），
+  /** 撤销某模块施加在**其作用集合**上的时间系数（到期/停用/阵亡/移出场景/重新激活前）。
+   *  ★ 作用集合 `inst._timeRefs` 由**结算阶段**在记录落地后写入（Pass1 不写），
    *    保证撤销时拿到的是“上一次真正落地的集合”，不会因覆盖而漏撤销。
-   *  ★ 战报（低频，**不逐次播报**）：仅当**从有→无**且 `silent` 为假时记 1 条“加速结束：{n}个单位”。
+   *  ★ 战报（低频，**不逐次播报**）：仅当**从有→无**且 `silent` 为假时记 1 条
+   *    「加速结束/减速结束：{n}个单位」（侧别沿用 `inst._timeLog`）。
    *    `silent`＝本 tick 该模块到期后又重新激活（撤销与重建同 tick 完成）：既不记“结束”，
-   *    **也不清 `_hastenActive`** → 紧随其后的 `applyHastenOp` 判定为“延续”，因此**不会**再记一条“开始”
+   *    **也不清 `_timeActive`** → 紧随其后的 `applyTimeOp` 判定为“延续”，因此**不会**再记一条“开始”
    *    ⇒ 同 tick 重激活**完全静默**、不产生成对刷屏（与 `releaseForced(inst, silent)` 同一套做法）。 */
-  function releaseHasten(inst, silent) {
+  function releaseTime(inst, silent) {
     if (!inst) return;
-    const refs = Array.isArray(inst._hastenRefs) ? inst._hastenRefs : null;
+    const refs = Array.isArray(inst._timeRefs) ? inst._timeRefs : null;
     const n = refs ? refs.filter(Boolean).length : 0;
     if (refs) {
-      for (const u of refs) if (u) clearHastenMod(u, inst.id);
-      inst._hastenRefs = null;
+      for (const u of refs) if (u) clearTimeCoeffMod(u, inst.id);
+      inst._timeRefs = null;
     }
-    if (silent) return; // 同上：延续场景不动 _hastenActive、不记战报
-    if (inst._hastenActive && n) {
-      // 效果结束类战报一律带**模块拥有者**（形如「XX的{模块}加速结束：{n}个单位」）
+    if (silent) return; // 同上：延续场景不动 _timeActive、不记战报
+    if (inst._timeActive && n) {
+      // 效果结束类战报一律带**模块拥有者**（形如「XX的{模块}加速结束/减速结束：{n}个单位」）
       const holder = ownerOf(inst);
       const owner = holder ? uTok(holder) : { side: null, label: '—' };
-      battleLog('battle.log.hastenEnd', { owner, module: modTok(inst), n }, ['owner']);
+      const keys = inst._timeLog || timeLogKeys(inst.cfg && inst.cfg.effects ? inst.cfg.effects.time_coeff : 0);
+      battleLog(keys.end, { owner, module: modTok(inst), n }, ['owner']);
     }
-    inst._hastenActive = false;
+    inst._timeActive = false;
   }
 
   /** 撤销某模块施加在**其本次激活作用集合**上的目标级修饰（系数修饰 + 受伤减免）：
@@ -1422,18 +1720,74 @@ export function createBattle(preset) {
     }
   }
 
+  /* ---------- 潜行落地与撤销（`type` 标签 `stealth`）----------
+   * ★ 落地：`applyStealthOp`（**结算步骤 2**，与 capOps/coeffOps/timeOps 同批、先于伤害结算）——
+   *   先撤上一批（切换作用集合后旧单位按剩余来源重新组合，故必须镜像 `applyTimeOp` 的“先撤后建”），
+   *   再对本次集合内的**存活**单位写入来源 key（`setStealthMod`，来源 key＝模块实例 id，可多来源并存）。
+   * ★ 撤销：`releaseStealth(inst, silent)` —— 到期（`expiries`）/ 停用 / 阵亡 / 移出场景 / 重新激活前统一走它；
+   *   `inst._stealthRefs`（结算阶段写入的“上一次真正落地的作用集合”）保证重复激活不会漏撤销；
+   *   `silent=true`（同 tick 到期后又重新激活：`expiries` 记录带 `cancelled`）→ 既不记“结束”也**不清
+   *   `_stealthActive`** → 紧随其后的 `applyStealthOp` 判为“延续”、不再记“开始” ⇒ **整体静默、不刷屏**
+   *   （与 `releaseForced`/`releaseTime` 同一套做法）。
+   * ★ 战报（低频聚合，遵循《战报日志开发要点》§3「效果结束类必须带模块拥有者」铁律）：
+   *   仅“从无→有”记 1 条「{owner}的{module}生效：{n}个单位进入潜行」、“从有→无”记 1 条
+   *   「{owner}的{module}潜行结束：{n}个单位」；**不逐次激活播报**、不逐单位播报（标记类无高频播报）。 */
+  function releaseStealth(inst, silent) {
+    if (!inst) return;
+    const refs = Array.isArray(inst._stealthRefs) ? inst._stealthRefs : null;
+    const n = refs ? refs.filter(Boolean).length : 0;
+    if (refs) {
+      for (const u of refs) if (u) clearStealthMod(u, inst.id); // 唯一撤销口径（ship.js）
+      inst._stealthRefs = null;
+    }
+    if (silent) return; // 同 tick 到期并重新激活：不动 _stealthActive、不记战报（延续场景）
+    if (inst._stealthActive && n) {
+      const holder = ownerOf(inst);
+      const owner = holder ? uTok(holder) : { side: null, label: '—' };
+      battleLog('battle.log.stealthEnd', { owner, module: modTok(inst), n }, ['owner']);
+    }
+    inst._stealthActive = false;
+  }
+
+  /** 结算步骤 2 —— 统一落地一条“潜行意图”（与上限/系数/时间系数同批，先于伤害结算）：
+   *  **单次一次性、仅对当前作用集合**：先撤上一批，再对本次集合内的存活单位重新打标；
+   *  作用集合 `inst._stealthRefs` 由**结算阶段**写入（Pass1 不写），供各撤销路径精确回退。 */
+  function applyStealthOp(rec) {
+    const inst = rec.inst;
+    const wasActive = !!inst._stealthActive; // 撤销前先记下“之前是否已生效”（用于 0→有 判定）
+    releaseStealth(inst, true); // 先撤上一批（此处恒静默）
+    const applied = [];
+    for (const u of rec.targets) {
+      if (!u || !u.alive) continue; // 结算时复核存活（集合内可能有本 tick 已判死/离场者）
+      setStealthMod(u, inst.id);
+      applied.push(u);
+    }
+    inst._stealthRefs = applied.length ? applied : null;
+    inst._stealthActive = applied.length > 0; // 模块级“潜行生效中”标记（战报聚合用，非数值）
+    // 仅 **0 → 有** 记一条“进入潜行”；n＝本次**真正写入**的单位数（结算复核存活后的数量）
+    if (!wasActive && inst._stealthActive) {
+      const holder = ownerOf(inst);
+      const owner = holder ? uTok(holder) : { side: null, label: '—' };
+      battleLog('battle.log.stealthStart', { owner, module: modTok(inst), n: applied.length }, ['owner']);
+    }
+  }
+
   /** 单位判死瞬间就地清理其全局残留（原 cleanDeadEffects“对死者”部分，逐死就地执行、省去每 tick 全量循环）：
    *  - 撤销死者自身仍在持续的时长 buff；
    *  - 撤销它与“其它单位”之间的双向影响：它施加的 cap 影响 / 目标级系数修饰 / 强制目标来源，
    *    以及它自身获得的自身词条系数修饰；强制目标只解除来源（被强制者按来源栈回落或回正常优先级）；
    *  - 清除仍指向“该死者(作为被叠加目标，已死)”的 cap 叠加。 */
   function onDeath(ship) {
+    // ★ 死亡计数（唯一出口）：排除召唤/临时单位（判据与 soloConditionHolds 的"召唤物不计入"同一口径）。
+    //   结算阶段累加、tick 收尾提交为 lastTickDeaths → 供**下一 tick** 的 Pass1 读取（"按上一 tick 死亡数"）。
+    if (!ship.summonMod && !ship.isSummon) deathsThisTick += 1;
     for (const inst of ship.modules) {
-      if (inst.durationLeft > 0) inst.durationLeft = 0; // 结束自身时长 buff
+      if (inst.durationLeft > 0) endDuration(inst); // 结束自身时长 buff（剩余/已推进一并归 0）
       dropSourceMods(inst); // 撤销其对其它目标护盾上限的影响（若无则无操作）
       clearAllSourceMods(ship, inst.id); // 撤销其自身获得的修饰（系数加/乘 + 受伤减免，阵亡即回退）
       releaseCoeffRefs(inst); // 撤销其施加在各被作用单位上的目标级修饰
-      releaseHasten(inst); // 撤销其施加在各被作用单位上的时间加速
+      releaseTime(inst); // 撤销其施加在各被作用单位上的时间系数（携带者阵亡）
+      releaseStealth(inst); // 撤销其施加在各被作用单位上的潜行标记（携带者阵亡）
       inst._coeffAdd = 0;
       inst._coeffMul = 1;
       inst._takeMul = 1;
@@ -1513,7 +1867,23 @@ export function createBattle(preset) {
    */
   function maybeActivate(ship, inst, ctx) {
     const fx = inst.cfg.effects;
-    if (!fx || !inst.enabled) return;
+    if (!fx) return;
+    // ★ 低血触发门控（`hp_below_activate`，如 `0.2` = **仅当单位血量 ≤ 20% 时**才可激活一次）：
+    //   · 只读写**结构标记** `inst._firedOnce`（非数值）→ 符合 Pass1“零数值变化”约定；
+    //   · 血量比例 = `hull.hp / hull.hpMax`（`hpMax` 已含上限类词条的运行期增减）；
+    //   · **标记生命周期**：本次真正激活时打标（见下方 payEnergy 之后）→ 该低血区间内不再激活；
+    //     血量**回升过阈值**（比例 > 阈值）即在此清除标记 → 下次跌破阈值可再次触发；
+    //   · 判定且标记清扫都在 Pass1、读 tick 起始血量（本 tick 的判死/回血均在结算阶段落地，
+    //     Pass1 内血量恒定 → 判定与遍历位置无关、跨单位对等）。
+    const hpNeed = fx.hp_below_activate || 0; // 0 = 无门控（既有模块行为不变）
+    let hpRatio = 1;
+    if (hpNeed > 0) {
+      hpRatio = ship.hull.hpMax > 0 ? ship.hull.hp / ship.hull.hpMax : 0;
+      if (hpRatio > hpNeed) inst._firedOnce = false; // 血量回升过阈值 → 清标记（可再次触发）
+    }
+    if (!inst.enabled) return;
+    // 低血门控：未进入低血区间 / 本低血区间已触发过（标记未清）→ 本次不激活（不耗能、不进冷却）
+    if (hpNeed > 0 && (hpRatio > hpNeed || inst._firedOnce)) return;
     if (inst.cooldown > 0) return;
     if (inst.durationLeft > 0) return; // 持续效果进行中不可重复触发
     const cost = fx.energy_cost || 0;
@@ -1563,11 +1933,15 @@ export function createBattle(preset) {
 
     // 自身能量消耗：只记账（结算步骤 3 统一落地），并在 Pass1 扣减单位内运行计数以做后续门控
     payEnergy(ctx, inst, cost);
+    // ★ 低血触发（`hp_below_activate`）：本次**真正激活**（目标/可行性/能量门控均已通过）→ 打标记；
+    //   该标记只在“血量回升过阈值”时被清除（见函数顶部）→ 每个低血区间只触发一次。
+    if (hpNeed > 0) inst._firedOnce = true;
     if ((fx.duration_ticks || 0) > 0) {
-      // 持续时间词条：先进入持续期；时长型护盾池的“创建+填满”改为意图（结算步骤 4a 落地，
-      // 使池值变化与其它数值修改同样归到结算阶段）。持续结束后自动进冷却；瞬间量值词条走 pending。
-      inst.durationLeft = fx.duration_ticks;
-      inst.cooldown = 0;
+      // 持续时间词条：先进入持续期（需求量＝timeScaled(duration_ticks, 本 tick 时间系数)，已推进归 0）；
+      // 时长型护盾池的“创建+填满”改为意图（结算步骤 4a 落地，使池值变化与其它数值修改同样归到结算阶段）。
+      // 持续结束后自动进冷却；瞬间量值词条走 pending。
+      startDuration(inst, tickTimeCoeff(ship));
+      clearCooldown(inst);
       if (inst._expiryRec) inst._expiryRec.cancelled = true; // 本 tick 到期后又重新激活 → 覆盖该次到期撤销
       if ((fx.shield_cap_bonus || 0) > 0) ctx.P.poolFills.push({ inst, ship });
       // 受伤减免词条（damage_coeff_mul）：持续期内生效 → 激活时记“置位”意图，
@@ -1584,7 +1958,7 @@ export function createBattle(preset) {
         });
       }
     } else {
-      inst.cooldown = fx.cooldown_ticks ?? 1;
+      startCooldown(inst, tickTimeCoeff(ship)); // 瞬时模块：激活后进入冷却（需求量按当前时间系数）
     }
 
     // —— 目标级受伤减免词条（`damage_coeff_mul_target`）：对**每个解析目标**写其自身的受伤减免 ——
@@ -1634,6 +2008,21 @@ export function createBattle(preset) {
       ctx.P.forceOps.push({ inst, actor: ship, targets: fTargets });
     }
 
+    // —— ★ 潜行（`type` 标签 `stealth`）：把**作用集合**内的单位标记为“潜行”（不可作为主要攻击目标）——
+    //   · 引擎按**标签**识别（不按模块 id 硬编码）；作用集合＝**共享 helper** `effectSetOf`
+    //     （解析到的目标 ∪ `blast_range` 波及 ∪ `include_self` 自身），与上限类/时间系数词条同源
+    //     （“潜行”模块 kinds:['self'] → 集合即自身；将来若要“给友军上潜行”只需改选择器，引擎无需改动）。
+    //   · 与其它时长型修饰同规则：**必须搭配 `duration_ticks`** —— 持续期结束是唯一的自动撤销时机
+    //     （到期 / 停用 / 阵亡 / 移出场景 / 重新激活前统一走 `releaseStealth`）；无时长的瞬时模块不施加。
+    //   · Pass1 只记账（`__pending.stealthOps`，**零数值变化**），结算步骤 2 与 capOps/coeffOps/timeOps
+    //     **同批**统一落地（先于伤害结算）→ 从**下一 tick 的目标解析**起体现。
+    //   · **不改任何数值**：仍受 `blast_range` 溅射、仍受既已锁定的目标（`lockTargetId` /
+    //     `lock_target_on_activate` 锁定集合）约束。
+    if (isType(fx, 'stealth') && (fx.duration_ticks || 0) > 0) {
+      const P = pendOf(ship);
+      if (P) P.stealthOps.push({ inst, targets: effectSetOf(ship, targets, fx) });
+    }
+
     // —— 目标级 量值/上限 词条：对每个选定目标同时生效（shield/hp/energy 三类）——
     const co = coeff(ship, inst.cfg.category);
     const amtKeys = Object.keys(AMOUNT).filter((k) => (fx[k] || 0) !== 0);
@@ -1662,21 +2051,22 @@ export function createBattle(preset) {
       }
     }
 
-    // —— 「时间加速」词条（`hasten_ticks`）：把**作用集合**内的单位计时推进量改为 `1 + N` ——
+    // —— 「时间系数」词条（`time_coeff`）：把**作用集合**内的单位各计时器**需求量**乘上 (1 + 系数) ——
     //   · 作用集合＝**共享 helper** `effectSetOf`（目标 ∪ blast_range 波及 ∪ include_self 自身），
-    //     与上限类词条同源，故“选中友方 + 波及 + 自身”一次算清。
+    //     与上限类词条同源，故“选中友方 + 波及 + 自身”一次算清；**不新增任何作用集合逻辑**。
     //   · 与其它时长型修饰同规则：**必须搭配 `duration_ticks`**（离开持续期才有唯一的撤销时机）。
-    //   · 与上限修改同批：Pass1 只记账（`__pending.hastenOps`），结算步骤 2 统一落地
-    //     → 加速/撤销都跨单位顺序一致，且从**下一 tick 的计时**起体现（不回溯修改本 tick 已推进的计时）。
-    //   · 数值**不经类别系数缩放**（整数 tick 语义：`hasten_ticks: 1` 就是每 tick 多推进 1）。
-    const hastenKey = Object.keys(HASTEN).find((k) => (fx[k] || 0) > 0);
-    if (hastenKey && (fx.duration_ticks || 0) > 0) {
+    //   · 与上限修改同批：Pass1 只记账（`__pending.timeOps`），结算步骤 2 统一落地
+    //     → 落地/撤销都跨单位顺序一致，且从**下一 tick 的需求量**起体现
+    //     （本 tick 的计时已按 tick 起始的快照系数推进完毕）。
+    //   · 系数**不经类别系数缩放**（时间系语义：`-0.1` 就是需求量 ×0.9）；可正可负，故判定用 `!== 0`。
+    const timeKey = Object.keys(TIME).find((k) => (fx[k] || 0) !== 0);
+    if (timeKey && (fx.duration_ticks || 0) > 0) {
       const P = pendOf(ship);
       if (P) {
-        P.hastenOps.push({
+        P.timeOps.push({
           inst,
           targets: effectSetOf(ship, targets, fx),
-          ticks: fx[hastenKey] | 0, // 整数 tick（额外推进量）
+          coeff: fx[timeKey], // 时间系数（负=加速 / 正=放缓）
         });
       }
     }
@@ -1748,8 +2138,13 @@ export function createBattle(preset) {
     }
     const effDmg = effRaw * coeff(ship, inst.cfg.category); // 出伤侧到此为止：受伤减免在 applyHit 入口按**受击方**结算
     const isBlastMod = isType(fx, 'blast'); // 爆炸型伤害（如火箭/导弹爆炸）
+    // ★ `delayed_trigger`（`type` 标签，**后触发**）：本模块的伤害**不在激活时开出**，
+    //   而是把「作用集合 + 出伤数值」冻结在激活瞬间，待**持续期到期结算的瞬间**才记账并走既有伤害链路
+    //   （见 `fireDelayedEffect`）。注意：与 `blast`/`explosive` 等标签相互独立、可叠加。
+    const isDelayedTrigger = isType(fx, 'delayed_trigger');
     // —— 主目标伤害（pending 记账，Pass2 结算实际吸收/扣血并判破盾/反射）——
-    if ((fx.damage || 0) > 0) {
+    //   ★ 后触发模块（`delayed_trigger`）在此**不开出伤害**，只冻结载荷（见下方延迟块）。
+    if ((fx.damage || 0) > 0 && !isDelayedTrigger) {
       for (const target of targets) {
         const P = pendOf(target);
         if (P) P.dmg.push({ actor: ship, inst, amount: effDmg, blast: isBlastMod, splash: false });
@@ -1785,6 +2180,19 @@ export function createBattle(preset) {
           }
         }
       }
+    }
+    // —— ★ `delayed_trigger`（后触发）的**载荷冻结**：激活瞬间只记结构引用与数值，不产生任何效果 ——
+    //   · 作用集合＝**共享 helper** `effectSetOf`（解析到的目标 ∪ `blast_range` 波及 ∪ `include_self`），
+    //     与上限类/时间系数词条同一实现，**激活瞬间冻结**（持续期内新入场/离场单位不受影响）；
+    //   · 出伤数值＝`effDmg`（已按**激活瞬间**的类别系数折算，持续期内系数变化不影响本次引爆）；
+    //   · 主目标 id 集合另存：引爆时用于区分“主目标命中”与“`blast_range` 溅射”（与即时爆炸同一口径，
+    //     波及条目带 `gate` → 主目标被防爆池吸收时波及被抑制）；
+    //   · 载荷全部为**结构引用/数值缓存**，Pass1 零数值变化；真正落地在持续期到期分支（`fireDelayedEffect`）。
+    if (isDelayedTrigger && (fx.damage || 0) > 0) {
+      inst._delayedRefs = effectSetOf(ship, targets, fx);
+      inst._delayedPrimary = new Set(targets.map((t) => t.id));
+      inst._delayedDmg = effDmg;
+      inst._delayedBlast = isBlastMod;
     }
     // —— 自毁词条 self_destruct_damage：对所属单位自身血量"正加负减"（负值即扣光机体死亡）；
     //    始终触发（锁定目标即使已阵亡也照常引爆），Pass2 在自身血量上结算。 ——
@@ -1828,11 +2236,18 @@ export function createBattle(preset) {
     //    “本 tick 受伤按 tick 起始值算，本 tick 结算阶段落地的修饰从下一 tick 才体现”，
     //    与其它系数的生效时序一致（且不引入任何数值修改，仅只读缓存）。 ——
     ship._takeMulTick = damageTakeMul(ship);
-    // —— 本 tick 的**计时推进量快照**（`hasten_ticks` 时间加速）：Pass1 单位开头取一次，
-    //    供本 tick 的三处计时递减（模块持续/冷却、临时单位存在时间）统一使用 →
-    //    “本 tick 的计时按 tick 起始的加速值推进，本 tick 结算阶段落地的加速/撤销从下一 tick 才体现”，
-    //    与受伤减免/系数完全同一范式（且不引入任何数值修改，仅只读缓存）。 ——
-    ship._hastenTick = 1 + hastenTicksOf(ship);
+    // —— 本 tick 的**单位时间系数快照**（`time_coeff`）：Pass1 单位开头取一次，
+    //    供本 tick 的三类计时器需求量换算（模块持续/冷却、临时单位存在时间）统一使用 →
+    //    “本 tick 的计时需求量按 tick 起始的系数算，本 tick 结算阶段落地的系数/撤销从下一 tick 才体现”，
+    //    与受伤减免/系数完全同一范式（且不引入任何数值修改，仅只读缓存）。
+    //    ★ 唯一口径 timeCoeffOf(ship)；每 tick 推进量恒为 1，只有“需求量”随系数变化。 ——
+    ship._timeCoeffTick = timeCoeffOf(ship);
+    // —— 本 tick 的**潜行快照**（`type` 标签 `stealth`）：Pass1 单位开头取一次，供本 tick 全部
+    //    目标解析（`moduleTargetList` / `shipEffectiveTarget` → `stealthBlocksTargeting`）统一使用 →
+    //    “本 tick 的目标解析按 tick 起始的潜行状态进行，本 tick 结算阶段落地的潜行从下一 tick 起体现”，
+    //    与受伤减免/时间系数完全同一范式（且不引入任何数值修改，仅只读缓存）。
+    //    ★ 唯一读口径 isStealthed(ship)。 ——
+    ship._stealthTick = isStealthed(ship);
     const P = pendOf(ship);
     if (!P) return;
     // —— 能量回充：只记账（数值统一在结算步骤 3 落地）——
@@ -1841,10 +2256,15 @@ export function createBattle(preset) {
     //   能量本身不改（Pass1 零数值变化）；该计数是单位局部，同单位多模块依次门控结果与旧即时语义一致。
     const ctx = { ship, P, avail: Math.min(ship.hull.energyCap, ship.hull.energy + regen) };
     // —— 模块：① 结构推进(时长/冷却递减、窗口累计、到期只记撤销意图) ② 判定激活(只记账不改数值)
-    //          ③ 条件型自身增益(状态型，只记期望生效状态) ——
+    //          ③ 条件型自身增益(状态型，只记期望生效状态) ④ 常驻被动(无“激活-触发”流程) ——
     for (const inst of ship.modules) advanceModuleState(ship, inst, ctx);
     for (const inst of ship.modules) {
       if (isType(inst.cfg.effects, 'solo')) pass1CoeffState(ship, inst, ctx);
+      // ★ 常驻被动（`type` 标签 `passive`，如增幅器类 hp_cap_bonus/energy_cap_bonus/energy_regen_bonus、
+      //   回收利用 hp_regen_per_death）：**不进“激活-触发”流程**（无冷却/耗能/持续期、无目标）。
+      //   纯静态加成由派生重算落地（安装/启停时 ship.js `syncSelfStatics`）；按上一 tick 阵亡数结算的
+      //   词条只在此记账（`__pending.hpDeltas`，Pass1 零数值变化），由结算步骤 4c 统一落地。
+      else if (isType(inst.cfg.effects, 'passive')) pass1Passive(ship, inst, ctx);
       else maybeActivate(ship, inst, ctx); // 状态型模块不进“激活-触发”流程（无冷却/耗能/持续期）
     }
     // —— 临时单位存在时间：只记“寿命递减意图”（结算步骤 4e 落地，到期判死）——
@@ -1923,11 +2343,14 @@ export function createBattle(preset) {
     }
   }
 
-  /** 4e 临时单位寿命递减：到期即判死并就地撤销其 cap/存续影响
-   *  ★ 递减量同样吃**时间加速**（读该单位本 tick 快照 `_hastenTick`）：被加速的召唤物寿命消耗更快。 */
+  /** 4e 临时单位寿命：**需求量**＝`timeScaled(lifespan, 时间系数)`、**已推进恒 +1**、剩余 = 需求 − 已推进；
+   *  剩余归 0 即到期判死（并就地撤销其 cap/存续影响）。
+   *  ★ 系数只改“需要多少 tick 才到期”（加速＝需求变少、放缓＝需求变多），不改每 tick 推进量。 */
   function applyTempTick(u) {
     if (!u.temp || !u.alive) return;
-    u.tempLeft -= tickRate(u);
+    const need = timeScaled(u.tempLifeNeed || 0, tickTimeCoeff(u));
+    u.tempLifeElapsed = (u.tempLifeElapsed || 0) + 1; // 已推进恒 +1
+    u.tempLeft = Math.max(0, need - u.tempLifeElapsed);
     if (u.tempLeft <= 0) {
       u.hull.hp = 0;
       u.alive = false;
@@ -2139,8 +2562,8 @@ export function createBattle(preset) {
     }
     if (!broken.length && !spentNoBreak.length) return;
     for (const inst of broken) {
-      inst.durationLeft = 0;
-      inst.cooldown = inst.cfg.effects.cooldown_ticks ?? 1; // 破盾 → 进入冷却
+      endDuration(inst); // 破盾 → 结束持续期（剩余/已推进一并归 0）
+      startCooldown(inst, timeCoeffOf(ship)); // 破盾 → 进入冷却（需求量按当前时间系数）
       battleLog(
         'battle.log.shieldBreak',
         { module: i18n.t(inst.cfg.nameKey), ship: uTok(ship) },
@@ -2217,7 +2640,8 @@ export function createBattle(preset) {
     const tempRecs = [];
     const coeffOps = [];
     const forceOps = [];
-    const hastenOps = [];
+    const timeOps = [];
+    const stealthOps = [];
     for (const u of allNow) {
       const P = u.__pending;
       if (!P) continue; // 本 tick 未参与(无挂账)者跳过
@@ -2233,7 +2657,8 @@ export function createBattle(preset) {
       if (P.tempTick) tempRecs.push(u);
       if (P.coeffOps.length) coeffOps.push(...P.coeffOps);
       if (P.forceOps.length) forceOps.push(...P.forceOps);
-      if (P.hastenOps.length) hastenOps.push(...P.hastenOps);
+      if (P.timeOps.length) timeOps.push(...P.timeOps);
+      if (P.stealthOps.length) stealthOps.push(...P.stealthOps);
     }
 
     // ── 结算步骤 1：计时推进（全单位模块时长/冷却递减、窗口累计）──
@@ -2249,20 +2674,21 @@ export function createBattle(preset) {
     for (const e of expiries) {
       clearAllSourceMods(e.ship, e.inst.id); // 自身词条：撤销该来源在施放方自身的修饰（系数 + 受伤减免）
       releaseCoeffRefs(e.inst); // 目标级词条（*_target）：撤销其施加在各被作用单位上的修饰
-      releaseHasten(e.inst, !!e.cancelled); // 时间加速：撤销其施加在各被作用单位上的加速（计时推进量回落；同 tick 重激活则静默）
+      releaseTime(e.inst, !!e.cancelled); // 时间系数：撤销其施加在各被作用单位上的系数（计时需求量回落；同 tick 重激活则静默）
       e.inst._coeffAdd = 0;
       e.inst._coeffMul = 1;
       e.inst._takeMul = 1;
       releaseForced(e.inst, !!e.cancelled); // 强制来源出栈（本 tick 又重新激活则不单记“解除/回落”，避免刷屏）
+      releaseStealth(e.inst, !!e.cancelled); // 潜行标记撤销（同 tick 重激活则静默：不记“结束”、保留 _stealthActive）
       if (e.cancelled) continue; // 本 tick 到期后又重新激活：该次撤销被覆盖（重新激活已重建并填满池）
       dropSourceMods(e.inst);
       if (e.ship && e.ship.alive) recalcDerived(e.ship);
     }
     //   上限修改：逐记录 dropSourceMods(inst) → 逐存活目标 setOverlay（非累加，记录间顺序无关）
     for (const rec of capOps) applyCapOps(rec);
-    //   时间加速落地（`hasten_ticks`）：与上限同批（“作用集合”类），**先于**本 tick 的计时之后生效
-    //   → 本 tick 的计时已在 Pass1 按快照推进完毕，故加速从**下一 tick** 起体现（撤销同理）。
-    for (const rec of hastenOps) applyHastenOp(rec);
+    //   时间系数落地（`time_coeff`）：与上限同批（“作用集合”类），**先于**伤害结算
+    //   → 本 tick 的计时已在 Pass1 按快照需求量算完，故系数从**下一 tick** 起体现（撤销同理）。
+    for (const rec of timeOps) applyTimeOp(rec);
     //   系数/受伤减免修改（条件型自身增益 / 时长型修饰 / 目标级修饰）：与上限修改同属“上限/系数类”，
     //   同批落地、跨单位顺序一致；只在状态变化时写入/撤销（幂等）。此后本 tick 的伤害结算不使用它们
     //   （见 Phase B 说明），故生效时序 = **下一 tick 的激活/受伤**才体现
@@ -2285,6 +2711,11 @@ export function createBattle(preset) {
       inst._coeffShield = b.shield; // 护盾类别 → 撤销时顺带 recalcDerived
     }
 
+    //   潜行标记落地（`type` 标签 `stealth`）：与上限/系数/时间系数**同批**（“作用集合类”），
+    //   **先于**伤害结算 —— 结构性、**零数值变化** → 本 tick 的目标解析已在 Pass1 完成，
+    //   故从**下一 tick 的目标解析**起体现（撤销同理）。
+    for (const rec of stealthOps) applyStealthOp(rec);
+
     // ── 结算步骤 2b：强制目标统一落地（控制类，跨单位顺序一致）──
     //   放在系数之后、能量/伤害之前：只改各单位的目标指向（结构性），不影响本 tick 已收集的数值；
     //   其效果从**下一 tick 的目标解析**（Pass1 moduleTargetList）开始体现。
@@ -2305,7 +2736,20 @@ export function createBattle(preset) {
     for (const { u, P } of nonDamageRecs) {                     // 4c 血量
       if (!u.alive) continue;
       const takeMul = tickTakeMul(u); // 负值(hp_target 扣血)＝受到的伤害 → 乘受伤减免；正值加血不减免
-      for (const h of P.hpDeltas) applyHpTo(u, h.amount < 0 ? h.amount * takeMul : h.amount);
+      for (const h of P.hpDeltas) {
+        const before = u.hull.hp;
+        applyHpTo(u, h.amount < 0 ? h.amount * takeMul : h.amount);
+        // ★ 按阵亡数回血（`hp_regen_per_death`，如「回收利用」）：**若实际回血 > 0** 才记 1 条低频战报
+        //   （区别于目标级 `hp_target`：那类走既有命中/量值战报措辞；本词条按“模块拥有者 + 实际回血”
+        //    成句，每 tick 每模块至多 1 条，且必须有阵亡才会出现 → 天然低频）。
+        if (h.regen && u.hull.hp > before) {
+          battleLog(
+            'battle.log.recycleRegen',
+            { owner: uTok(u), module: modTok(h.inst), n: lastTickDeaths, amount: Math.round(u.hull.hp - before) },
+            ['owner']
+          );
+        }
+      }
     }
     for (const { u, P } of nonDamageRecs) applySelfDestruct(u, P); // 4d 自毁
     for (const u of tempRecs) applyTempTick(u);                    // 4e 临时单位寿命递减/到期判死
@@ -2343,6 +2787,11 @@ export function createBattle(preset) {
       if (!u.alive && u.temp) deadTemp.push(u);
     }
     for (const u of deadTemp) removeSummoned(u.side, u); // 临时单位阵亡/到期直接移出场景
+    // ★ 死亡计数提交（tick 收尾，Phase C 之后）：本 tick 的死亡数 → `lastTickDeaths`，供**下一 tick**
+    //   的 Pass1 读取（"按上一 tick 的死亡数结算"）；随后清零本 tick 计数。放在收尾处保证同一 tick 内
+    //   的死亡绝不反馈给本 tick 的 Pass1（无反馈环、与遍历顺序无关、镜像对等）。
+    lastTickDeaths = deathsThisTick;
+    deathsThisTick = 0;
     checkEnd();
   }
 
@@ -2396,6 +2845,8 @@ export function createBattle(preset) {
     enableModule,
     disableModule,
     moduleEffective, // 状态型模块“当前是否生效”的唯一判据（UI 用；非状态型返回 null）
+    moduleGateMet, // ★ 触发门控（`hp_below_activate`）“当前是否满足”的唯一判据（UI 用；非门控型返回 null）
+    targetableBy: (ship, u) => !stealthBlocksTargeting(ship, u), // ★ 目标可选口径（唯一）：u 能否被 ship 选为主要攻击目标
     start,
     stop,
   };

@@ -1,16 +1,20 @@
-/* ===== data/modules/function/timeWarp.js —— 时间扭曲（功能 · 时间加速） =====
+/* ===== data/modules/function/slowTime.js —— 放缓时间（功能 · 时间放缓） =====
  * 功能：对【选择器解析出的单个目标（敌我任意，含自己）】+【该目标所在队列前后各 blast_range 个存活单位】
- *   +【自身（`include_self` 标签）】，施加**时间加速**：给出一个**负的时间系数**（`time_coeff: -0.1`）。
- *   —— ★ 它**不改每 tick 推进量**（每 tick 恒推进 1 tick），而是把作用对象各类计时器的**需求量**变小：
+ *   +【自身（`include_self` 标签）】，施加**时间放缓**：给出一个**正的时间系数**（`time_coeff: 0.1`）。
+ *   —— ★ 它**不改每 tick 推进量**（每 tick 恒推进 1 tick），而是把作用对象各类计时器的**需求量**变大：
  *     `需求量 = timeScaled(基础量, 系数) = max(0, round(基础量 × (1 + 系数)))`（整数 tick），
  *     计时器**剩余 = 需求量 − 已推进 tick 数**。作用于三类计时器：
  *     · 模块**冷却**（`inst.cooldown`）· 模块**持续时间**（`inst.durationLeft`）· 临时单位**存在时间**（`u.tempLeft`）。
- *   —— `-0.1` → 需求量 ×0.9（更快走完）；系数在**中途**生效/撤销都能正确反映（已推进的进度不回退，
+ *   —— `+0.1` → 需求量 ×1.1（更慢走完）；系数在**中途**生效/撤销都能正确反映（已推进的进度不回退，
  *      只是“还需要多少 tick”随需求量变化）。
+ *   - ★ 本模块是「时间扭曲」（`timeWarp` / 词条 `time_coeff`，**时间加速**）的**镜像反向**实现：
+ *     同一张来源表（`ship.timeCoeffMods`，只是系数取**正号**）、同一套作用集合、同一套激活时序、
+ *     同一套撤销路径、同一套低频战报聚合，只是方向相反（更快 → 更慢）。
+ *     若同一单位同时被两个模块作用，则系数按**加性求和**组合（当前规则，见 ship.js `refreshTimeCoeff()`）。
  *   - 持续型模块：由 `duration_ticks > 0` 判定（**不要**写 `'duration'` 标签，那不是合法标签）。
- *   - 词条：`time_coeff`（时间系数，**负＝加速**）+ `blast_range`（作用集合扩至“目标及波及”）
+ *   - 词条：`time_coeff`（时间系数，**正＝放缓**）+ `blast_range`（作用集合扩至“目标及波及”）
  *       + `duration_ticks`（持续一段；到期/停用/携带者阵亡/离场即撤销）。映射表 `TIME`。
- *   - ★ **`type` 标签**（三个，全部按标签识别、引擎不硬编码模块 id）：
+ *   - ★ **`type` 标签**（三个，全部按标签识别、引擎不硬编码模块 id；均为既有通用标签、未新增标签）：
  *       · `include_self` —— **效果同时施加于自身**（与目标选择器无关：即使 kinds 不含 self 也作用于自身）；
  *       · `prefer_self` —— **优先自己**：自身可作为目标（`kinds:['any']` 含自身）时，默认解析**优先取自己**；
  *         玩家手动点选其它单位时以手动为准（手动 > 优先自己）；
@@ -21,26 +25,27 @@
  *   - ★ 生效时序：Pass1 只记账（`__pending.timeOps`），**结算步骤 2**统一落地（与上限/系数修改同批、
  *       先于伤害结算）→ **下一 tick 起**生效（本 tick 的计时已按 tick 起始的快照系数算完），
  *       落地与撤销跨单位顺序一致。
- *   - 系数**不经类别系数缩放**（时间系语义：`-0.1` 就是需求量 ×0.9）。
+ *   - 系数**不经类别系数缩放**（时间系语义：`+0.1` 就是需求量 ×1.1）。
  *   - 目标：`kinds:['any']` + `countMode:'single'` → **可手动指定任意单个单位**（自己/友军/敌军皆可）；
  *     无手动指定时由 `prefer_self` 优先取自己（自身存活即可激活，故单人编队也能放）。
  *   - ★ **“自身是否溅射”看它是怎么进作用集合的**：由 `include_self` 标签补入的自身**不产生溅射**；
  *     而由 `prefer_self` 默认取到的自身（或玩家手动选中的自身）属于**选择器正常解析出的目标** →
- *     `blast_range` **照常以它为中心波及**其所在队列前后各 N 个存活单位（默认玩法即如此）。
+ *     `blast_range` **照常以它为中心波及**其所在队列前后各 N 个存活单位（与时间扭曲同一套规则）。
  *   - **战报（低频）**：不逐次激活播报；仅**首次施加**（从无→有）记一条
- *     「{owner}的{module}开始加速：{n}个单位」、**最后一次撤销**（从有→无）记一条
- *     「{owner}的{module}加速结束：{n}个单位」；同一模块同 tick 内到期并重新激活则整体静默。
+ *     「{owner}的{module}开始减速：{n}个单位」、**最后一次撤销**（从有→无）记一条
+ *     「{owner}的{module}减速结束：{n}个单位」；同一模块同 tick 内到期并重新激活则整体静默
+ *     （与时间加速的战报规则**完全对称**）。
  * 数值说明：【占位预填】duration_ticks / cooldown_ticks / energy_cost / time_coeff / blast_range
  *   由用户逐级人工调校。
  */
 export default {
-  id: 'timeWarp',
-  nameKey: 'module.timeWarp', // i18n -> 时间扭曲
-  name: '时间扭曲',
+  id: 'slowTime',
+  nameKey: 'module.slowTime', // i18n -> 放缓时间
+  name: '放缓时间',
   category: 'function',
   target: { kinds: ['any'], countMode: 'single', maxCount: 1 }, // 任意单个目标（自己/友方/敌方）
   effects: {
-    time_coeff: -0.1,       // 时间系数：负＝加速（需求量 ×0.9 → 冷却/持续/存在时间更快走完）
+    time_coeff: 0.1,        // 时间系数：正＝放缓（需求量 ×1.1 → 冷却/持续/存在时间更慢走完）
     blast_range: 1,         // 作用集合扩至各目标所在队列前后各 1 个存活单位（标签补入的自身不产生溅射）
     duration_ticks: 200,    // Lv1 占位：持续 10s
     cooldown_ticks: 300,    // Lv1 占位：间隔 15s
@@ -50,8 +55,8 @@ export default {
   },
   maxLevel: 16,
   levels: [
-    { level: 5, effects: { time_coeff: -0.15, duration_ticks: 240, cooldown_ticks: 280, energy_cost: 360, blast_range: 2 } },
-    { level: 10, effects: { time_coeff: -0.2, duration_ticks: 300, cooldown_ticks: 260, energy_cost: 440, blast_range: 3 } },
-    { level: 16, effects: { time_coeff: -0.25, duration_ticks: 600, cooldown_ticks: 240, energy_cost: 520, blast_range: 3 } },
+    { level: 5, effects: { time_coeff: 0.15, duration_ticks: 240, cooldown_ticks: 280, energy_cost: 360, blast_range: 2 } },
+    { level: 10, effects: { time_coeff: 0.2, duration_ticks: 300, cooldown_ticks: 260, energy_cost: 440, blast_range: 3 } },
+    { level: 16, effects: { time_coeff: 0.25, duration_ticks: 600, cooldown_ticks: 240, energy_cost: 520, blast_range: 3 } },
   ],
 };

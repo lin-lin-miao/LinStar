@@ -17,6 +17,7 @@ export default {
   id: 'emp',
   nameKey: 'module.emp', // i18n -> 电磁脉冲
   name: '电磁脉冲',
+  icon: 'assets/img/电磁脉冲.svg',
   category: 'function',
   target: { kinds: ['enemy'], countMode: 'single', maxCount: 1 }, // 必须解析到目标才激活
   effects: {

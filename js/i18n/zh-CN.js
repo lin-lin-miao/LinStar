@@ -39,6 +39,7 @@ export default {
   'ship.drone': '无人机',
   'ship.rocket': '火箭',
   'ship.missile': '导弹',
+  'ship.omegaMissile': '欧米茄导弹',
 
   /* 模块 */
   'module.cannon': '火炮',
@@ -52,6 +53,13 @@ export default {
   'module.rocketWarhead': '火箭爆炸',
   'module.missileLauncher': '导弹发射器',
   'module.missileWarhead': '导弹爆炸',
+  'module.omegaMissileLauncher': '欧米茄导弹发射器',
+  'module.omegaMissileWarhead': '欧米茄导弹爆炸',
+  'module.reactorCoil': '强辐线圈',
+  'module.shieldBattery': '护盾电池',
+  'module.hullArmor': '船体装甲',
+  'module.recycle': '回收利用',
+  'module.energyTransfer': '能量输送',
   'module.emp': '电磁脉冲',
   'module.alphaShield': '阿尔法护盾',
   'module.regenShield': '再生护盾',
@@ -64,6 +72,9 @@ export default {
   'module.singleHanded': '单枪匹马',
   'module.impregnable': '固若金汤',
   'module.timeWarp': '时间扭曲',
+  'module.slowTime': '放缓时间',
+  'module.overload': '辐能过载',
+  'module.stealth': '潜行',
 
   /* 单位系数栏（详情页 · 模块字段之前） */
   'battle.detail.coeffs': '单位系数',
@@ -74,10 +85,11 @@ export default {
   'battle.coeff.mining': '采矿系数',
   'battle.coeff.drone': '无人机系数',
   // ★ 单位系数栏（详情页）：**只放数值、不放任何解释性文案**（基础值/口径说明/预留说明一律不显示）。
-  //   `mulRow` 为预留项（当前无词条映射 → 显示“无”）；`takeMul`＝受伤减免（×值）；`hasten`＝时间流速（×值）。
+  //   `mulRow` 为预留项（当前无词条映射 → 显示“无”）；`takeMul`＝受伤减免（×值）；
+  //   `timeCoeff`＝时间系数（负＝加速 / 正＝放缓；计时器需求量 = 基础量 ×(1+系数)，取整）。
   'battle.coeff.mulRow': '其它系数',
   'battle.coeff.takeMul': '受伤减免',
-  'battle.coeff.hasten': '时间流速',
+  'battle.coeff.timeCoeff': '时间系数',
   'battle.coeff.none': '无',
 
   /* 对战场景 */
@@ -173,7 +185,7 @@ export default {
   'battle.detail.ready': '就绪',
   'battle.detail.stateActive': '生效中',
   'battle.detail.stateInactive': '条件未满足',
-  'battle.detail.stateCost': '状态型（无冷却/耗能）',
+  'battle.detail.stateCost': '状态型',
   'battle.detail.noEnergy': '能量不足',
   'battle.detail.regen': '回复中',
   'battle.detail.full': '护盾已满',
@@ -206,17 +218,24 @@ export default {
   'battle.detail.statDamage': '伤害 {n}/次',
   'battle.detail.statAttackCoeff': '攻击系数 {v}',
   'battle.detail.statAttackCoeffT': '目标攻击系数 {v}',
-  'battle.detail.statDamageCoeffMul': '受到伤害 ×{v}（自毁除外）',
-  'battle.detail.statDamageCoeffMulT': '目标受到伤害 ×{v}（自毁除外）',
-  'battle.detail.statRamp': '逐步伤害：每次激活+{r}（上限 {c}）',
-  'battle.detail.statHasten': '时间加速：每 tick 多推进 {n} tick（持续/冷却/存在时间）',
-  'battle.detail.statCoolFirst': '部署后先冷却再触发',
-  'battle.detail.statSolo': '仅当友方只剩自己时生效（不计召唤物）',
-  'battle.detail.statSelfDestruct': '引爆后自毁',
-  'battle.detail.statBlast': '爆炸范围：队列前后 {n}',
-  'battle.detail.statInvincible': '无敌持续 {n}t（免疫伤害，自毁除外）',
-  'battle.detail.statRegen': '自身恢复 {n} 盾/次',
-  'battle.detail.statCap': '护盾上限+{n}',
+  'battle.detail.statHpBelow': '血量 ≤{v}%',
+  'battle.detail.statDamageCoeffMul': '受到伤害 ×{v}',
+  'battle.detail.statDamageCoeffMulT': '目标受到伤害 ×{v}',
+  'battle.detail.statRamp': '每次激活 +{r} · 上限 {c}',
+  'battle.detail.statTimeCoeff': '时间系数 {v}',
+  'battle.detail.statBlast': '爆炸范围 {n}',
+  'battle.detail.statInvincible': '无敌 {n}t',
+  'battle.detail.statRegen': '回盾 {n}/次',
+  'battle.detail.statCap': '护盾上限 +{n}',
+  // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
+  //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
+  'battle.detail.statHpCapBonus': '血量上限 {v}',
+  'battle.detail.statEnergyCapBonus': '能量上限 {v}',
+  'battle.detail.statEnergyRegenBonus': '能量恢复 {v}/s',
+  // 自身护盾系数加性（`shield_coeff_add`，与既有 `attack_coeff_add` 的显示体例一致）
+  'battle.detail.statShieldCoeff': '护盾系数 {v}',
+  // 按阵亡数回血（`hp_regen_per_death`，如「回收利用」）：只放数值
+  'battle.detail.statHpRegenPerDeath': '每阵亡单位恢复 {n}',
   'battle.detail.statShieldT': '目标护盾 {v}',
   'battle.detail.statCapT': '目标护盾上限 {v}',
   'battle.detail.statCapClear': '清空目标护盾上限',
@@ -226,10 +245,8 @@ export default {
   'battle.detail.statEnergyT': '目标能量 {v}',
   'battle.detail.statEnergyCapT': '目标能量上限 {v}',
   'battle.detail.statEnergyCapClear': '清空目标能量上限',
-  'battle.detail.statForceTarget': '强制选定目标攻击自己（优先于手动目标；多来源取最后激活者）',
-  'battle.detail.statIncludeSelf': '效果同时作用于自身',
-  'battle.detail.statPreferSelf': '默认优先选择自己（手动指定其它目标时以手动为准）',
-  'battle.detail.statLockTarget': '激活后锁定目标（持续期内不可改，新选择于下次激活生效）',
+  // ★ 自身单体模块（`target.kinds === ['self']`，如「潜行」）：上限类词条的作用对象就是自己 → “自身”措辞
+  'battle.detail.statEnergyCapClearSelf': '清空自身能量上限',
   'battle.detail.targetForced': '被强制攻击：{name}',
   'battle.detail.statDuration': '持续 {n}t',
   'battle.detail.statSummon': '召唤 {type} · 存活上限 {n} · 时长 {t}t',
@@ -252,5 +269,13 @@ export default {
   'battle.log.forceRelease': '{owner}的{module}强制效果结束：{n}个单位恢复按正常优先级选择目标',
   'battle.log.hastenStart': '{owner}的{module}开始加速：{n}个单位',
   'battle.log.hastenEnd': '{owner}的{module}加速结束：{n}个单位',
+  'battle.log.slowStart': '{owner}的{module}开始减速：{n}个单位',
+  'battle.log.slowEnd': '{owner}的{module}减速结束：{n}个单位',
+  // ★ 潜行（`type` 标签 `stealth`）：低频聚合（仅状态翻转各一条、带模块拥有者；标记类不做高频播报）
+  'battle.log.stealthStart': '{owner}的{module}生效：{n}个单位进入潜行',
+  'battle.log.stealthEnd': '{owner}的{module}潜行结束：{n}个单位',
+  // ★ 按阵亡数回血（`hp_regen_per_death`，如「回收利用」）：**低频**——必须有阵亡才会出现，
+  //   且仅“实际回血 > 0”时每 tick 每模块至多一条；带模块拥有者。
+  'battle.log.recycleRegen': '{owner}的{module}回收利用：阵亡 {n} 个单位，恢复 {amount} 点生命',
   'battle.result.close': '收起',
 };

@@ -39,6 +39,7 @@ export default {
   'ship.drone': 'Drone',
   'ship.rocket': 'Rocket',
   'ship.missile': 'Missile',
+  'ship.omegaMissile': 'Omega Missile',
 
   /* Modules */
   'module.cannon': 'Cannon',
@@ -52,6 +53,13 @@ export default {
   'module.rocketWarhead': 'Rocket Blast',
   'module.missileLauncher': 'Missile Launcher',
   'module.missileWarhead': 'Missile Blast',
+  'module.omegaMissileLauncher': 'Omega Missile Launcher',
+  'module.omegaMissileWarhead': 'Omega Missile Blast',
+  'module.reactorCoil': 'Strong Radiation Coil',
+  'module.shieldBattery': 'Shield Battery',
+  'module.hullArmor': 'Hull Armor',
+  'module.recycle': 'Recycling',
+  'module.energyTransfer': 'Energy Transfer',
   'module.emp': 'EMP',
   'module.alphaShield': 'Alpha Shield',
   'module.regenShield': 'Regenerative Shield',
@@ -64,6 +72,9 @@ export default {
   'module.singleHanded': 'Single-Handed',
   'module.impregnable': 'Impregnable',
   'module.timeWarp': 'Time Warp',
+  'module.slowTime': 'Slow Time',
+  'module.overload': 'Overload',
+  'module.stealth': 'Stealth',
 
   /* Unit coefficients (detail page · before Modules) */
   'battle.detail.coeffs': 'Unit Coefficients',
@@ -74,9 +85,11 @@ export default {
   'battle.coeff.mining': 'Mining coeff.',
   'battle.coeff.drone': 'Drone coeff.',
   // ★ Unit-coefficient bar (detail page): **values only, no explanatory text**.
+  //   `timeCoeff` = time coefficient (negative = accelerate / positive = slow down;
+  //   timer demand = base × (1 + coeff), rounded).
   'battle.coeff.mulRow': 'Other coeffs',
   'battle.coeff.takeMul': 'Damage taken',
-  'battle.coeff.hasten': 'Time rate',
+  'battle.coeff.timeCoeff': 'Time coeff.',
   'battle.coeff.none': 'None',
 
   /* Battle scene */
@@ -172,7 +185,7 @@ export default {
   'battle.detail.ready': 'Ready',
   'battle.detail.stateActive': 'Active',
   'battle.detail.stateInactive': 'Condition unmet',
-  'battle.detail.stateCost': 'State type (no cycle)',
+  'battle.detail.stateCost': 'State type',
   'battle.detail.noEnergy': 'No energy',
   'battle.detail.regen': 'Regenerating',
   'battle.detail.full': 'Shield full',
@@ -205,17 +218,24 @@ export default {
   'battle.detail.statDamage': 'Damage {n}/shot',
   'battle.detail.statAttackCoeff': 'Attack coefficient {v}',
   'battle.detail.statAttackCoeffT': 'Target attack coefficient {v}',
-  'battle.detail.statDamageCoeffMul': 'Damage taken ×{v} (self-destruct excluded)',
-  'battle.detail.statDamageCoeffMulT': 'Target damage taken ×{v} (self-destruct excluded)',
-  'battle.detail.statRamp': 'Ramp +{r}/hit (cap {c})',
-  'battle.detail.statHasten': 'Time acceleration: +{n} tick per tick (duration/cooldown/lifespan)',
-  'battle.detail.statCoolFirst': 'Cools first after deploy',
-  'battle.detail.statSolo': 'Active only while alone (summons excluded)',
-  'battle.detail.statSelfDestruct': 'Self-destructs after firing',
-  'battle.detail.statBlast': 'Blast: {n} front/back in queue',
-  'battle.detail.statInvincible': 'Invincible for {n}t (immune to damage; self-destruct still applies)',
-  'battle.detail.statRegen': 'Restore {n} own shield/activation',
+  'battle.detail.statHpBelow': 'HP ≤{v}%',
+  'battle.detail.statDamageCoeffMul': 'Damage taken ×{v}',
+  'battle.detail.statDamageCoeffMulT': 'Target damage taken ×{v}',
+  'battle.detail.statRamp': '+{r}/activation · cap {c}',
+  'battle.detail.statTimeCoeff': 'Time coeff. {v}',
+  'battle.detail.statBlast': 'Blast range {n}',
+  'battle.detail.statInvincible': 'Invincible {n}t',
+  'battle.detail.statRegen': 'Shield +{n}/shot',
   'battle.detail.statCap': 'Shield cap +{n}',
+  // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
+  //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
+  'battle.detail.statHpCapBonus': 'HP cap {v}',
+  'battle.detail.statEnergyCapBonus': 'Energy cap {v}',
+  'battle.detail.statEnergyRegenBonus': 'Energy regen {v}/s',
+  // 自身护盾系数加性（`shield_coeff_add`，与既有 `attack_coeff_add` 的显示体例一致）
+  'battle.detail.statShieldCoeff': 'Shield coeff {v}',
+  // 按阵亡数回血（`hp_regen_per_death`，如「回收利用」）：只放数值
+  'battle.detail.statHpRegenPerDeath': 'Restore {n} HP per death',
   'battle.detail.statShieldT': 'Target shield {v}',
   'battle.detail.statCapT': 'Target cap {v}',
   'battle.detail.statCapClear': 'Clears target shield cap',
@@ -225,10 +245,8 @@ export default {
   'battle.detail.statEnergyT': 'Target energy {v}',
   'battle.detail.statEnergyCapT': 'Target energy cap {v}',
   'battle.detail.statEnergyCapClear': 'Clears target energy cap',
-  'battle.detail.statForceTarget': 'Forces selected targets to attack this unit (over manual targets; last activated wins)',
-  'battle.detail.statIncludeSelf': 'Also applies to self',
-  'battle.detail.statPreferSelf': 'Defaults to self (a manual pick of another target wins)',
-  'battle.detail.statLockTarget': 'Locks its target on activation (fixed for the duration; new picks apply next activation)',
+  // ★ Self-only modules (`target.kinds === ['self']`, e.g. Stealth): the cap term applies to oneself
+  'battle.detail.statEnergyCapClearSelf': 'Clears own energy cap',
   'battle.detail.targetForced': 'Forced to attack: {name}',
   'battle.detail.statDuration': 'Duration {n}t',
   'battle.detail.statSummon': 'Summon {type} · cap {n} · lifespan {t}t',
@@ -251,5 +269,13 @@ export default {
   'battle.log.forceRelease': "{owner}'s {module} forced-target effect ended: {n} unit(s) return to normal target priority",
   'battle.log.hastenStart': "{owner}'s {module} starts accelerating: {n} unit(s)",
   'battle.log.hastenEnd': "{owner}'s {module} acceleration ended: {n} unit(s)",
+  'battle.log.slowStart': "{owner}'s {module} starts slowing: {n} unit(s)",
+  'battle.log.slowEnd': "{owner}'s {module} slowing ended: {n} unit(s)",
+  // ★ Stealth (`type` tag `stealth`): low-frequency aggregation (one line per state flip, with module owner)
+  'battle.log.stealthStart': "{owner}'s {module} active: {n} unit(s) stealthed",
+  'battle.log.stealthEnd': "{owner}'s {module} stealth ended: {n} unit(s)",
+  // ★ Per-death regen (`hp_regen_per_death`, e.g. "Recycling"): low-frequency — requires deaths,
+  //   and at most one line per module per tick, only when the heal actually restored HP.
+  'battle.log.recycleRegen': "{owner}'s {module} recycled: {n} unit(s) died, restored {amount} HP",
   'battle.result.close': 'Dismiss',
 };
