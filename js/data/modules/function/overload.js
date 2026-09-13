@@ -22,7 +22,7 @@ export default {
   id: 'overload',
   nameKey: 'module.overload', // i18n -> 辐能过载 / Overload
   name: '辐能过载',
-  icon: 'assets/img/爆炸.svg',
+  icon: 'assets/img/辐能过载.svg',
   category: 'function',
   target: { kinds: ['enemy'], countMode: 'single', maxCount: 1 }, // 必须解析到目标才激活
   effects: {

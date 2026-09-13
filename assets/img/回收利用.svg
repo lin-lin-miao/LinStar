@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 绿色简约线条，无填充背景，内部有十字架的棱形图标 -->
+    <g fill="none" stroke="#00FF88" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        
+        <!-- 外部的棱形（菱形）轮廓 -->
+        <path d="M 50 15 L 85 50 L 50 85 L 15 50 Z" />
+        
+        <!-- 内部的十字架 -->
+        <!-- 垂直部分 -->
+        <path d="M 50 32 L 50 68" />
+        <!-- 水平部分 -->
+        <path d="M 34 50 L 66 50" />
+        
+    </g>
+</svg>

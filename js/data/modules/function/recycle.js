@@ -22,6 +22,7 @@ export default {
   id: 'recycle',
   nameKey: 'module.recycle', // i18n -> 回收利用 / Recycling
   name: '回收利用',
+  icon: 'assets/img/回收利用.svg',
   category: 'function',
   // 常驻被动：无命中目标（自身词条不需要目标）
   target: {},

@@ -61,6 +61,26 @@ export function deepClone(obj) {
   return obj === undefined ? undefined : JSON.parse(JSON.stringify(obj));
 }
 
+/** 深合并补丁对象 patch 到 base（就地改 base）：普通对象递归合并，数组/原始值直接覆盖（数组拷贝）。
+ *  用于等级表的"逐级只写差异、未填字段回退上一级"（船型 levels 见 data/ships/index.js；
+ *  模块 levels 见 entities/module.js 的同名本地实现，体例一致）。 */
+export function deepMerge(base, patch) {
+  if (!patch) return base;
+  for (const k of Object.keys(patch)) {
+    const v = patch[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      if (base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) {
+        deepMerge(base[k], v);
+      } else {
+        base[k] = deepClone(v);
+      }
+    } else {
+      base[k] = Array.isArray(v) ? v.slice() : v;
+    }
+  }
+  return base;
+}
+
 /** 延时 promise */
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

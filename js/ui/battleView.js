@@ -1,9 +1,15 @@
-/* ===== ui/battleView.js —— 战斗屏（M1 对战 Demo + 视觉/交互增强） =====
- * 布局（自上而下）：敌方单位 → 分隔线 → 我方战斗单位 → 后勤(占位) → 技能(占位)
- *                  → 单位详情面板（点击单位后出现，可指定主目标）→ 战报
- * 单位实体卡（矩形，从上到下）：单位图标(SVG) → 状态条(HP/护盾/能量) → 简约模块图标
+/* ===== ui/battleView.js —— 战斗屏（对战 Demo + 视觉/交互增强） =====
+ * 布局（自上而下）：标题行(含「离开」) → 敌方后勤 → 敌方战斗 → 分隔线 → 我方战斗 → 我方后勤
+ *                  → 指挥栏 → 单位详情面板（点击单位后出现，可指定主目标）→ 战报
+ * 单位实体卡（矩形，从上到下）：单位图标(SVG) → 状态条(HP/护盾/能量/**货物/矿物**，容量 0 的条自动隐藏)
+ *   → 简约模块图标
  * 实时信息：模块冷却倒计时徽标 / 就绪脉冲；"下一步"行动提示（敌方将做什么一望可知）
- * 流程：选择演练 -> 开战(combat:state true) -> 实时结算 -> 结算浮层(自动存档)
+ * 流程：演练编队配置（`ui/setupView.js`）→ enterBattle() → 开战(combat:state true) → 实时结算
+ *       → 结算浮层(自动存档) → 「再战」或「离开」回配置界面
+ * ★ 编队配置界面的**逻辑与渲染已整体拆分到 `ui/setupView.js`**（本文件只挂载并接收其回调）；
+ *   本文件**不保存编队编辑态**。
+ * ★ 唯一的「进入战斗」入口＝本文件导出的 `enterBattle(formation)`（内部走 `systems/battle.js startBattle`）：
+ *   演练界面「开战」、结算「再战」、将来的关卡/剧情入口**都必须走它**，不留第二条开战路径。
  * 调试：window.__battle 暴露当前战斗对象
  */
 import { el } from '../core/utils.js';
@@ -11,26 +17,31 @@ import { bus } from '../core/eventBus.js';
 import { i18n } from '../i18n/index.js';
 import { SHIPS } from '../data/ships.js';
 import { MODULES } from '../data/modules.js';
-import { createBattle, TARGET_POLICIES } from '../systems/battle.js';
-import { moduleMaxLevel } from '../entities/module.js';
-import { modulePoolCapOf, coeff, coeffDetail, damageTakeMul, timeCoeffOf } from '../entities/ship.js';
+import { startBattle, TARGET_POLICIES } from '../systems/battle.js';
+import {
+  modulePoolCapOf,
+  coeff,
+  coeffDetail,
+  damageTakeMul,
+  timeCoeffOf,
+  // ★ 货舱 / 矿物容量：**唯一口径在引擎**（本体容量 + Σ各来源×对应船级系数 后取整）
+  //   —— UI 只读、**不自算**；分解值 `{base, modules, total}` 供展示，装载量读 `cargoLoadOf`/`oreLoadOf`（M4 前恒 0）。
+  cargoCapPartsOf,
+  oreCapPartsOf,
+  cargoLoadOf,
+  oreLoadOf,
+} from '../entities/ship.js';
 import { bar } from './widgets.js';
 import { router } from './router.js';
+import { setupView } from './setupView.js'; // ★ 演练编队配置屏（单一职责；本文件只挂载它并接收回调）
 import { log, formatRich } from '../core/log.js';
 import { ticker } from '../core/tick.js';
 
 const SEC_TICKS = 20; // 1 秒 = 20 tick（与战斗核心一致，用于按 tick 折算每秒消耗）
 
-/* —— 演练配置（沙盘）：双方均可增删舰船、调整每舰模块后开战 ——
- * 本轮仅可选"战斗舰"(combat)；模块从 data/modules.js 已注册模块中选装/卸除，
- * 每舰模块数不超过 SHIPS[type].slots（combat=3）。 */
-const SHIP_TYPES = ['combat']; // M1：演练仅战斗舰（运输/采矿 M2 再放开）
-// 可被玩家选装的模块清单（排除内部模块如 rocketWarhead，其仅随召唤携带）
-const MODULE_IDS = Object.keys(MODULES).filter((id) => !MODULES[id].picker);
-let allyShips = [{ type: 'combat', modules: [] }]; // 我方演练编队（编辑态）
-let enemyShips = [{ type: 'combat', modules: [] }]; // 敌方演练编队（编辑态）
-let battleAllyCfg = null;  // 最近一次开战的我方配置快照（供"再战"重开同一配置）
-let battleEnemyCfg = null; // 最近一次开战的敌方配置快照
+/* —— 编队编辑态（双方编队、单位类型/等级/定位、模块装配）已移出到 `ui/setupView.js`；
+ *    本文件只保留「进行中战斗」的运行态。 —— */
+let lastFormation = null; // 最近一次成功开战的编队快照（供结算面板「再战」重开同一配置）
 
 /** UI 侧战斗战报（channel=battle，带着色段） */
 function uiLog(key, params, colorKeys) {
@@ -58,12 +69,7 @@ function moduleGlyphEl(cfg) {
   }
   return el('span', { text: name ? Array.from(name)[0] : '?' });
 }
-function shipName(type) {
-  return SHIPS[type] ? i18n.t(SHIPS[type].nameKey) : type;
-}
-function shipSlotLimit(type) {
-  return (SHIPS[type] && SHIPS[type].slots) || 1;
-}
+/* 注：船型名称/槽位/编队渲染等**编队配置界面专用**的工具函数已随界面一并移入 `ui/setupView.js`（不在此重复实现）。 */
 
 let battle = null;
 let selectedId = null;
@@ -71,9 +77,14 @@ let listenersBound = false;
 
 /* 模块级 DOM 引用 */
 let stageArea = null;
+let stageHeadEl = null;        // 战斗标题行（标题 + 状态 + 「离开」按钮）
+let leaveBtn = null;           // 「离开」按钮（有战斗时显示；回编队配置界面）
 let overlay = null;            // { overlay, show }
-let enemyZone = null;
-let allyZone = null;
+let enemyZone = null;          // 敌方【战斗单位】栏
+let enemyLogZone = null;       // 敌方【后勤单位】栏
+let allyZone = null;           // 我方【战斗单位】栏
+let allyLogZone = null;        // 我方【后勤单位】栏
+let allZones = [];             // 四个分区（用于“无单位自动隐藏”的统一刷新）
 let detailEl = null;           // 详情面板挂载点
 let detail = null;             // { ship, refs } | null
 let updateCards = null;
@@ -87,6 +98,14 @@ let cmdAllianceNum = null;     // 同盟护盾条数值
 let cmdBlast = null;           // 指挥栏：友方防爆护盾共享层条（单独一行）
 let cmdBlastFill = null;       // 防爆护盾条填充
 let cmdBlastNum = null;        // 防爆护盾条数值
+// ★ 指挥栏：货舱总量行（货物 / 矿物，己方一侧合计）——与共享护盾条**同一处、同一视觉体例**；
+//   总量为 0 → 整行隐藏（唯一规则）。取值全走引擎 `battle.cargoPool('ally')` / `battle.orePool('ally')`。
+let cmdCargo = null;
+let cmdCargoFill = null;
+let cmdCargoNum = null;
+let cmdOre = null;
+let cmdOreFill = null;
+let cmdOreNum = null;
 
 /* 迷你护盾池条（详情/长期池用）：无标签小横条 + 数值 */
 function makeMiniPool() {
@@ -250,7 +269,12 @@ function unitIcon(ship) {
     class: 'unit-icon-img',
     alt: '',
     draggable: 'false',
-    src: ship.summonIcon || `./assets/img/ship-${ship.typeId}-${ship.side}.svg`,
+    // 图标优先级：召唤模块图标（summon.attrs.icon / 模块 icon） > **船型等级解析出的 icon**
+    // （`ship.typeCfg.icon`，船型任意条目可逐级覆写） > 既有按 typeId+side 约定的素材路径。
+    src:
+      ship.summonIcon ||
+      (ship.typeCfg && ship.typeCfg.icon) ||
+      `./assets/img/ship-${ship.typeId}-${ship.side}.svg`,
   });
   img.addEventListener('error', () => {
     wrap.replaceChildren(document.createTextNode('▲'));
@@ -301,8 +325,11 @@ function nextActionText(ship) {
 
 function buildModuleChips(ship) {
   const type = SHIPS[ship.typeId];
+  // ★ 槽位数取**实例的等级解析结果**（`ship.slots`，由 createShip/applyShipLevel 按船型等级落地）；
+  //   未带该字段的旧实例/调用方回退到该船型 Lv1 定义 → 默认等级下与拆分前完全一致。
+  const slots = ship.slots != null ? ship.slots : (type && type.slots) || 1;
   const chips = [];
-  for (let i = 0; i < type.slots; i += 1) {
+  for (let i = 0; i < slots; i += 1) {
     const inst = ship.modules[i];
     if (!inst) {
       chips.push({ empty: true, el: el('span', { class: 'module-slot-empty' }) });
@@ -325,6 +352,11 @@ function buildShipCard(ship) {
   const hpBar = bar(i18n.t('battle.hp'), 'var(--hp)');
   const shieldBar = bar(i18n.t('battle.shield'), 'var(--shield)');
   const energyBar = bar(i18n.t('battle.energy'), 'var(--energy)');
+  // ★ 货舱容量条（货物 / 矿物）：与护盾条**同一套条形体例**（同一个 `bar()` 组件 + `.bar` 结构）。
+  //   取值＝引擎唯一口径 `cargoCapPartsOf`/`oreCapPartsOf`（UI 不自算）；**容量为 0 → 整条隐藏**（唯一规则）。
+  //   当前值读 `cargoLoadOf`/`oreLoadOf`（M4 资源系统落地前恒为 0，故显示「0 / 上限」）。
+  const cargoBar = bar(i18n.t('battle.cargo'), 'var(--cargo)');
+  const oreBar = bar(i18n.t('battle.ore'), 'var(--ore)');
   const chips = buildModuleChips(ship);
   const intentEl = el('div', { class: 'unit-intent', text: '' });
   const focusEl = el('div', { class: 'unit-focus', text: '' }); // 主要目标
@@ -333,7 +365,7 @@ function buildShipCard(ship) {
 
   const cardEl = el('div', { class: `unit-card ${ship.side}`, onclick: () => selectUnit(ship.id) }, [
     el('div', { class: 'unit-icon-zone' }, [unitIcon(ship), nameTag]),
-    el('div', { class: 'unit-bars' }, [hpBar.el, shieldBar.el, energyBar.el]),
+    el('div', { class: 'unit-bars' }, [hpBar.el, shieldBar.el, energyBar.el, cargoBar.el, oreBar.el]),
     lifeEl,
     el('div', { class: 'unit-modules' }, chips.map((c) => c.el)),
     intentEl,
@@ -432,6 +464,14 @@ function buildShipCard(ship) {
     hpBar.update(s.hull.hp, s.hull.hpMax);
     shieldBar.update(s.hull.shield, s.hull.shieldCap);
     energyBar.update(s.hull.energy, s.hull.energyCap);
+    // ★ 货舱容量条（货物 / 矿物）：容量为 0 → 整条隐藏（唯一规则，与详情/指挥栏一致）；
+    //   当前装载量读引擎口径 `cargoLoadOf`/`oreLoadOf`（M4 前恒 0）。
+    const cp = cargoCapPartsOf(s);
+    const op = oreCapPartsOf(s);
+    cargoBar.el.classList.toggle('hidden', cp.total <= 0);
+    oreBar.el.classList.toggle('hidden', op.total <= 0);
+    if (cp.total > 0) cargoBar.update(cargoLoadOf(s), cp.total);
+    if (op.total > 0) oreBar.update(oreLoadOf(s), op.total);
     // 护盾值改变：按改变类型变色+同色光，宽度缓动到位后回本色（自动由 nextBarTint 过期触发）
     const agTint = nextBarTint('ship:' + s.id, s.hull.shield, shieldTint(s));
     if (agTint) {
@@ -467,6 +507,9 @@ function buildShipCard(ship) {
 
 /* ================= 布局构建 ================= */
 
+/** 一个分区（栏）：标题 + 单位行（+ 可选空栏提示）。
+ *  ★ **无单位时整栏自动隐藏**（由 syncZoneVisibility 统一刷新）——敌我双方的战斗/后勤栏皆然：
+ *    单位入场（含召唤）后自动出现，全部阵亡/离场后自动隐藏，不留空框。 */
 function zoneEl(labelKey, sideClass, emptyHintKey) {
   const label = el('div', { class: 'zone-label', text: i18n.t(labelKey) });
   const unitsRow = el('div', { class: 'zone-units' });
@@ -474,7 +517,19 @@ function zoneEl(labelKey, sideClass, emptyHintKey) {
   const hint = emptyHintKey ? el('div', { class: 'zone-hint', text: i18n.t(emptyHintKey) }) : null;
   if (hint) children.push(hint);
   const zone = el('div', { class: `battle-zone ${sideClass || ''}`.trim() }, children);
-  return { zone, unitsRow, hint };
+  const rec = { zone, unitsRow, hint, side: sideClass || '' };
+  zone.classList.add('hidden'); // 初始隐藏，由 syncZoneVisibility 按单位数显示
+  return rec;
+}
+
+/** 刷新四个分区的显隐：**该栏没有单位卡就隐藏**（战斗/后勤、敌我共四条规则完全一致）。 */
+function syncZoneVisibility() {
+  for (const z of allZones) {
+    if (!z) continue;
+    const n = z.unitsRow.children.length;
+    z.zone.classList.toggle('hidden', n === 0);
+    if (z.hint) z.hint.classList.toggle('hidden', n > 0);
+  }
 }
 
 /** 指挥栏（原技能行）：设置全队（我方阵营）主要目标的自动策略 */
@@ -493,31 +548,50 @@ function buildCommandZone() {
     if (updateCards) updateCards();
   });
   cmdPreview = el('span', { class: 'command-preview', text: '' });
-  // 共享护盾条行构造器（同盟 / 防爆 各一行，无则隐藏）
-  const makeRow = (nameKey, isBlast) => {
-    const fill = el('div', { class: isBlast ? 'command-alliance-fill is-blast' : 'command-alliance-fill' });
+  // 共享护盾条行构造器（同盟 / 防爆 / 货物 / 矿物 各一行，无则隐藏）
+  //   `extraCls`：`''`=同盟、`'is-blast'`=防爆、`'is-cargo'`=货物、`'is-ore'`=矿物
+  //   （同一行体例，仅**填充/文字配色**不同：货物橙、矿物绿，其余沿用共享护盾条的既有蓝）
+  const makeRow = (nameKey, extraCls) => {
+    const fill = el('div', { class: `command-alliance-fill${extraCls ? ` ${extraCls}` : ''}` });
     const num = el('span', { class: 'command-alliance-num', text: '' });
-    const row = el('div', { class: 'command-alliance-row hidden' }, [
+    const row = el('div', { class: `command-alliance-row${extraCls ? ` ${extraCls}` : ''} hidden` }, [
       el('span', { class: 'command-alliance-label', text: i18n.t(nameKey) }),
       el('div', { class: 'command-alliance-track' }, [fill]),
       num,
     ]);
     return { row, fill, num };
   };
-  const al = makeRow('module.allianceShield', false);
+  const al = makeRow('module.allianceShield', '');
   cmdAlliance = al.row;
   cmdAllianceFill = al.fill;
   cmdAllianceNum = al.num;
-  const bp = makeRow('module.blastShield', true);
+  const bp = makeRow('module.blastShield', 'is-blast');
   cmdBlast = bp.row;
   cmdBlastFill = bp.fill;
   cmdBlastNum = bp.num;
+  // ★ 货舱总量行（货物 / 矿物）：与共享护盾条**同一处、同一视觉体例**（值走引擎阵营合计口径）；
+  //   与共享护盾条一致地**只显示己方（我方）一侧**（指挥栏本就是“我方全队”栏，敌方不镜像）。
+  const cg = makeRow('battle.cargo', 'is-cargo');
+  cmdCargo = cg.row;
+  cmdCargoFill = cg.fill;
+  cmdCargoNum = cg.num;
+  const or = makeRow('battle.ore', 'is-ore');
+  cmdOre = or.row;
+  cmdOreFill = or.fill;
+  cmdOreNum = or.num;
   const bar = el('div', { class: 'command-bar' }, [
     el('span', { class: 'command-label', text: i18n.t('battle.command.fleet') }),
     cmdSel,
     cmdPreview,
   ]);
-  const zone = el('div', { class: 'battle-zone command' }, [label, bar, cmdAlliance, cmdBlast]);
+  const zone = el('div', { class: 'battle-zone command' }, [
+    label,
+    bar,
+    cmdAlliance,
+    cmdBlast,
+    cmdCargo,
+    cmdOre,
+  ]);
   refreshCommand();
   return { zone };
 }
@@ -545,6 +619,8 @@ function refreshCommand() {
     cmdSel.disabled = true;
     if (cmdAlliance) { if (cmdAllianceFill) cmdAllianceFill.style.width = '0%'; cmdAlliance.classList.add('hidden'); }
     if (cmdBlast) { if (cmdBlastFill) cmdBlastFill.style.width = '0%'; cmdBlast.classList.add('hidden'); }
+    if (cmdCargo) { if (cmdCargoFill) cmdCargoFill.style.width = '0%'; cmdCargo.classList.add('hidden'); }
+    if (cmdOre) { if (cmdOreFill) cmdOreFill.style.width = '0%'; cmdOre.classList.add('hidden'); }
     return;
   }
   cmdSel.value = battle.allyPolicy;
@@ -560,12 +636,24 @@ function refreshCommand() {
   if (typeof battle.blastPool === 'function') {
     renderSharedRow(cmdBlast, cmdBlastFill, cmdBlastNum, battle.blastPool('ally'));
   }
+  // ★ 货舱总量（货物 / 矿物）：走引擎阵营合计口径（`cargoPool`/`orePool`，只统计存活单位）；
+  //   总量为 0 → 整行隐藏（与共享护盾条“池为空则隐藏”同一规则、同一渲染函数）。
+  if (typeof battle.cargoPool === 'function') {
+    renderSharedRow(cmdCargo, cmdCargoFill, cmdCargoNum, battle.cargoPool('ally'));
+  }
+  if (typeof battle.orePool === 'function') {
+    renderSharedRow(cmdOre, cmdOreFill, cmdOreNum, battle.orePool('ally'));
+  }
 }
 
 function buildStage() {
+  // ★ 四栏对称：敌方后勤 / 敌方战斗 ｜（分隔线）｜ 我方战斗 / 我方后勤
+  //   单位进哪一栏由**编队条目 `role`（或船型默认值）→ 实例 `ship.role`** 决定（唯一口径，见 rebuildUnits）。
+  const enemyLogZ = zoneEl('battle.zone.enemyLogistics', 'enemy', null);
   const enemyZ = zoneEl('battle.zone.enemy', 'enemy', null);
   const combatZ = zoneEl('battle.zone.combat', 'ally', null);
-  const logisticsZ = zoneEl('battle.zone.logistics', 'ally', 'battle.zone.logistics.empty');
+  const logisticsZ = zoneEl('battle.zone.logistics', 'ally', null);
+  allZones = [enemyLogZ, enemyZ, combatZ, logisticsZ];
   const cmdZ = buildCommandZone();
 
   // 详情面板（选中单位后填充）
@@ -603,6 +691,7 @@ function buildStage() {
   grip.addEventListener('pointercancel', endDrag);
 
   const stage = el('div', { class: 'battle-stage' }, [
+    enemyLogZ.zone,
     enemyZ.zone,
     el('div', { class: 'battle-sep' }),
     combatZ.zone,
@@ -611,12 +700,20 @@ function buildStage() {
     detailEl,
     logPanel,
   ]);
-  return { stage, enemyZ, combatZ, logLines };
+  return { stage, enemyZ, enemyLogZ, combatZ, logisticsZ, logLines };
 }
 
 function rebuildUnits() {
   const cardById = new Map();
-  const rowOf = (ship) => (ship.side === 'enemy' ? enemyZone.unitsRow : allyZone.unitsRow);
+  // ★ 单位卡归属哪一栏：**读引擎侧的实例字段 `ship.role`**（'logistics'=后勤栏，其余=战斗栏）。
+  //   该字段由 `createShip` 落地：船型默认值 `data/ships/<id>.js role` 或**编队条目 `role`** 覆盖
+  //   （编队 → `startBattle` → `spawnList` → `createShip(overrides)`），UI **不自算定位**。
+  //   敌我两侧同规则（同一函数），故四个分区严格对称。
+  const rowOf = (ship) => {
+    const logi = ship.role === 'logistics';
+    if (ship.side === 'enemy') return (logi ? enemyLogZone : enemyZone).unitsRow;
+    return (logi ? allyLogZone : allyZone).unitsRow;
+  };
   // 每次刷新按当前 roster 调和：新增(召唤)单位建卡、被移除(临时单位阵亡/到期)单位删卡
   let lastSig = ''; // 上一次的 roster 签名（单位 id 顺序串），变化时才增删/重排卡片
   const reconcile = () => {
@@ -648,6 +745,7 @@ function rebuildUnits() {
         const rec = cardById.get(u.id);
         if (rec) rowOf(u).appendChild(rec.card.el);
       }
+      syncZoneVisibility(); // ★ 单位进出后刷新四栏显隐（无单位的栏自动隐藏）
     }
     // 每 tick 仅就地刷新数值（不触碰 DOM 顺序，避免打断点击/详情选中）
     for (const ship of units) {
@@ -670,23 +768,27 @@ function foesOf(ship) {
 }
 
 /** 目标可选池（存活、去重）：按 target 词条 kinds 展开（enemy/ally/self/any 敌我任意）
- *  ★ **潜行过滤**（`type` 标签 `stealth`）：被标记单位**不可被选为主要攻击目标** →
- *    不进入“手动可选目标”列表。判据取自**引擎导出** `battle.targetableBy`（唯一口径，UI 不自算）；
- *    该判据只挡“对敌目标”，自身/友方（支援类）不受影响，且**不影响既已锁定的目标**的解析。 */
+ *  ★ **过滤判据全部来自引擎** `battle.targetableBy(ship, u, kind)`（**唯一口径，UI 不自算**），含两条规则：
+ *    ① **潜行过滤**（`type` 标签 `stealth`）：被标记单位不可被选为主要攻击目标；只挡“对敌目标”，
+ *       自身/友方（支援类）不受影响，且不影响既已锁定的目标解析；
+ *    ② **role 分离**：`enemy` 目标在“目标方仍有**可选战斗单位**（存活 且 未被潜行屏蔽）”时
+ *       **跳过其后勤单位**（战斗单位全部阵亡**或全部被潜行屏蔽**时后勤解禁）；`self`/`ally`/`any`
+ *       三类不做分离 —— 故**每个候选都要带上它来自哪个选择器桶**（kind），
+ *       由引擎按桶判定；UI 只做“把桶名带过去”，不做任何过滤判断。 */
 function candList(ship, tgt) {
   const kinds = (tgt && tgt.kinds) || [];
   const foes = ship.side === 'ally' ? battle.enemies : battle.allies;
   const same = ship.side === 'ally' ? battle.allies : battle.enemies;
-  const out = [];
-  if (kinds.includes('self')) out.push(ship);
-  if (kinds.includes('enemy')) out.push(...foes);
-  if (kinds.includes('ally')) out.push(...same.filter((u) => u.id !== ship.id));
-  if (kinds.includes('any')) out.push(...battle.units());
+  const out = []; // { u, kind }（kind＝来源选择器桶，交给引擎判据）
+  if (kinds.includes('self')) out.push({ u: ship, kind: 'self' });
+  if (kinds.includes('enemy')) for (const u of foes) out.push({ u, kind: 'enemy' });
+  if (kinds.includes('ally')) for (const u of same) if (u.id !== ship.id) out.push({ u, kind: 'ally' });
+  if (kinds.includes('any')) for (const u of battle.units()) out.push({ u, kind: 'any' });
   const seen = new Set();
   const res = [];
-  for (const u of out) {
+  for (const { u, kind } of out) {
     if (!u.alive || seen.has(u.id)) continue;
-    if (typeof battle.targetableBy === 'function' && !battle.targetableBy(ship, u)) continue; // 潜行：不可选
+    if (typeof battle.targetableBy === 'function' && !battle.targetableBy(ship, u, kind)) continue; // 潜行/role：不可选
     seen.add(u.id);
     res.push(u);
   }
@@ -838,6 +940,18 @@ function perActText(ship, inst) {
   if ((fx.energy_regen_bonus || 0) !== 0) {
     parts.push(
       i18n.t('battle.detail.statEnergyRegenBonus', { v: fmtSigned(fx.energy_regen_bonus * coef) })
+    );
+  }
+  // ★ 货舱容量词条（自身常驻）：货物按**运输系数**、矿物按**采矿系数**缩放（与引擎唯一口径
+  //   `cargoCapacityOf`/`oreCapacityOf` 的缩放类别一致）——故此处**显式取对应类别系数**，不沿用 `coef`。
+  if ((fx.cargo_cap_bonus || 0) !== 0) {
+    parts.push(
+      i18n.t('battle.detail.statCargoCapBonus', { v: fmtSigned(fx.cargo_cap_bonus * coeff(ship, 'transport')) })
+    );
+  }
+  if ((fx.ore_cap_bonus || 0) !== 0) {
+    parts.push(
+      i18n.t('battle.detail.statOreCapBonus', { v: fmtSigned(fx.ore_cap_bonus * coeff(ship, 'mining')) })
     );
   }
   if ((fx.shield_coeff_add || 0) !== 0) {
@@ -1259,7 +1373,7 @@ function buildDetail(ship) {
     unitIcon(ship),
     el('div', { class: 'detail-head-text' }, [
       el('div', { class: 'detail-name', text: `${baseName(ship)} · ${i18n.t(tagKey)}` }),
-      el('div', { class: 'detail-type', text: i18n.t('battle.detail.slots', { n: type.slots }) }),
+      el('div', { class: 'detail-type', text: i18n.t('battle.detail.slots', { n: ship.slots ?? type.slots }) }),
     ]),
   ]);
 
@@ -1276,6 +1390,14 @@ function buildDetail(ship) {
 
   const lifeNote = el('div', { class: 'detail-timer', text: '' }); // 临时单位存活剩余（非临时隐藏）
 
+  // ★ 货舱容量条（货物 / 矿物）：与单位卡**同一套条形体例**（同一个 `bar()` 组件 + `.bar` 结构），
+  //   名称/当前值/上限，颜色区分货物与矿物；取值＝引擎唯一口径 `cargoCapPartsOf`/`oreCapPartsOf`。
+  //   **容量为 0 → 整条隐藏**；两条皆为 0 → 整个区块隐藏（唯一规则）。
+  //   条上 `title` 显示**本体 / 模块分解值**（只放数值，来自引擎分解，不在 UI 重算）。
+  const dCargo = bar(i18n.t('battle.cargo'), 'var(--cargo)');
+  const dOre = bar(i18n.t('battle.ore'), 'var(--ore)');
+  const cargoBlock = el('div', { class: 'detail-cargo' }, [dCargo.el, dOre.el]);
+
   // ★ 单位系数栏：置于“模块字段”之前（**可折叠、默认折叠**：类别系数 / 受伤减免 / 时间系数 / 其它系数）
   const coeffSec = buildCoeffSection(ship);
 
@@ -1291,7 +1413,7 @@ function buildDetail(ship) {
   const targetBar = el('div', { class: 'detail-target' });
   const targetHint = el('div', { class: 'detail-target-cur', text: '' });
 
-  const topRow = el('div', { class: 'detail-top' }, [head, statLine, lifeNote]);
+  const topRow = el('div', { class: 'detail-top' }, [head, statLine, cargoBlock, lifeNote]);
   const panelEl = el('div', { class: 'detail-inner' }, [
     topRow,
     coeffSec.titleEl,
@@ -1310,6 +1432,20 @@ function buildDetail(ship) {
     stats.hp.textContent = `${Math.ceil(ship.hull.hp)} / ${ship.hull.hpMax}`;
     stats.shield.textContent = `${Math.ceil(ship.hull.shield)} / ${ship.hull.shieldCap}（+${shipHullRegenText(ship, 'shield')}/s）`;
     stats.energy.textContent = `${Math.floor(ship.hull.energy)} / ${ship.hull.energyCap}（+${ship.energyRegenPerSec}/s）`;
+    // ★ 货舱容量条（货物 / 矿物）：容量为 0 → 整条隐藏；两条皆 0 → 区块隐藏（唯一规则，与单位卡/指挥栏一致）
+    const cp = cargoCapPartsOf(ship);
+    const op = oreCapPartsOf(ship);
+    cargoBlock.classList.toggle('hidden', cp.total <= 0 && op.total <= 0);
+    dCargo.el.classList.toggle('hidden', cp.total <= 0);
+    dOre.el.classList.toggle('hidden', op.total <= 0);
+    if (cp.total > 0) {
+      dCargo.update(cargoLoadOf(ship), cp.total);
+      dCargo.el.title = i18n.t('battle.cargo.breakdown', { base: cp.base, modules: cp.modules });
+    }
+    if (op.total > 0) {
+      dOre.update(oreLoadOf(ship), op.total);
+      dOre.el.title = i18n.t('battle.cargo.breakdown', { base: op.base, modules: op.modules });
+    }
     coeffSec.refresh(); // 单位系数栏：每 tick 按引擎函数重算（运行期修饰即时反映）
     if (ship.temp && ship.alive && typeof ship.tempLeft === 'number') {
       lifeNote.style.display = '';
@@ -1454,10 +1590,11 @@ function buildDetail(ship) {
       );
       return;
     }
-    // ★ 船级“主要攻击目标”候选：潜行单位**不可被选为主要攻击目标** → 不进入按钮列表
-    //   （判据取自引擎 `battle.targetableBy`，唯一口径；与模块手动目标列表同一规则）
+    // ★ 船级“主要攻击目标”候选：潜行单位 + （目标方仍有可选战斗单位时的）其后勤单位
+    //   **不可被选为主要攻击目标** → 不进入按钮列表
+    //   （判据取自引擎 `battle.targetableBy(ship, u, 'enemy')`，唯一口径；与模块手动目标列表同一规则）
     const foes = foesOf(ship).filter(
-      (f) => f.alive && (typeof battle.targetableBy !== 'function' || battle.targetableBy(ship, f))
+      (f) => f.alive && (typeof battle.targetableBy !== 'function' || battle.targetableBy(ship, f, 'enemy'))
     );
     // 该舰自动策略：''=跟随全队，否则为该舰独立策略（覆盖全队）
     const policySel = el(
@@ -1584,153 +1721,81 @@ function refreshDetail() {
   detail.refreshStats();
 }
 
-/* ================= 演练配置 + 流程控制 ================= */
+/* ================= 流程控制（唯一开战入口 / 离开 / 返回） =================
+ * ★ 编队配置界面（双方编队编辑、单位类型/等级/定位、模块装配、开战前预检）已整体迁至
+ *   `ui/setupView.js`；本文件通过 `setupView.render(stageArea, { onStart, onExit })` 挂载它，
+ *   并以 `onStart = enterBattle` 把它接到唯一开战入口上（回调注入，无模块循环依赖）。 */
 
-/** 渲染一列演练编队（sideKey: 'ally' | 'enemy'），含增删舰与模块调整 */
-function renderFleetColumn(sideKey) {
-  const ships = sideKey === 'ally' ? allyShips : enemyShips;
-  const titleKey = sideKey === 'ally' ? 'battle.fleet.ally' : 'battle.fleet.enemy';
-  const wrap = el('div', { class: 'drill-fleet' }, [
-    el('div', { class: 'zone-label', text: i18n.t(titleKey) }),
-  ]);
-  ships.forEach((sh, idx) => {
-    const head = el('div', { class: 'drill-ship-head' }, [
-      el('span', { class: 'drill-ship-name', text: `${shipName(sh.type)} #${idx + 1}` }),
-      el('button', {
-        class: 'btn tiny ghost',
-        text: i18n.t('battle.drill.removeShip'),
-        title: i18n.t('battle.drill.removeShip'),
-        onclick: () => {
-          ships.splice(idx, 1);
-          renderLaunch();
-        },
-      }),
-    ]);
-    sh.modules = sh.modules.map((m) => (typeof m === 'string' ? { moduleId: m, level: 1 } : m));
-    const chips = el('div', { class: 'drill-modules' });
-    sh.modules.forEach((mod, mi) => {
-      const id = mod.moduleId;
-      const maxLv = moduleMaxLevel(MODULES[id]);
-      const unit = el('span', { class: 'drill-mod' });
-      unit.append(
-        el('button', {
-          class: 'chip on drill-mod-chip',
-          title: i18n.t('battle.drill.removeModule'),
-          text: `× ${moduleName(id)}`,
-          onclick: () => {
-            sh.modules.splice(mi, 1);
-            renderLaunch();
-          },
-        })
-      );
-      // 模块等级可选：仅当该模块 maxLevel>1 时显示 Lv 下拉（未给高阶数值前不出现）
-      if (maxLv > 1) {
-        const sel = el('select', {
-          class: 'drill-mod-level',
-          'aria-label': i18n.t('battle.drill.levelOf', { n: moduleName(id) }),
-        }, Array.from({ length: maxLv }, (_, i) => {
-          const o = el('option', { value: String(i + 1), text: `Lv${i + 1}` });
-          if (i + 1 === (mod.level || 1)) o.selected = true;
-          return o;
-        }));
-        sel.addEventListener('change', () => {
-          mod.level = Number(sel.value) || 1;
-          renderLaunch();
-        });
-        unit.append(sel);
-      }
-      chips.append(unit);
-    });
-    const full = sh.modules.length >= shipSlotLimit(sh.type);
-    const addSel = el('select', {
-      class: 'drill-add-mod',
-      'aria-label': i18n.t('battle.drill.addModule'),
-    }, full
-      ? [el('option', { text: i18n.t('battle.drill.fullSlots') })]
-      : [
-          el('option', { value: '', text: i18n.t('battle.drill.addModule') }),
-          ...MODULE_IDS.map((id) => el('option', { value: id, text: moduleName(id) })),
-        ]);
-    addSel.addEventListener('change', () => {
-      const id = addSel.value;
-      if (id && sh.modules.length < shipSlotLimit(sh.type)) {
-        sh.modules.push({ moduleId: id, level: 1 });
-      }
-      renderLaunch();
-    });
-    wrap.append(el('div', { class: 'drill-ship' }, [head, chips, addSel]));
-  });
-  wrap.append(
-    el('button', {
-      class: 'btn small',
-      text: i18n.t('battle.drill.addShip'),
-      onclick: () => {
-        ships.push({ type: SHIP_TYPES[0], modules: [] });
-        renderLaunch();
-      },
-    })
-  );
-  return wrap;
-}
 
-/** 演练配置屏（沙盘）：替换原硬编码场景选择 */
-function renderLaunch() {
-  const canStart = allyShips.length > 0 && enemyShips.length > 0;
-  const startBtn = el('button', {
-    class: 'btn primary',
-    text: i18n.t('battle.drill.start'),
-    onclick: startBattle,
-  });
-  startBtn.disabled = !canStart; // property 赋 disabled，避免被当作字符串属性写入
-  stageArea.replaceChildren(
-    el('div', { class: 'drill-builder' }, [
-      el('h3', { text: i18n.t('battle.drill.title') }),
-      el('p', { class: 'drill-hint', text: i18n.t('battle.drill.hint') }),
-      el('div', { class: 'drill-grid' }, [
-        renderFleetColumn('ally'),
-        renderFleetColumn('enemy'),
-      ]),
-      el('div', { class: 'drill-actions' }, [
-        startBtn,
-        el('button', { class: 'btn small', text: i18n.t('battle.menu.back'), onclick: exitToMenu }),
-      ]),
-    ])
-  );
-  refreshStatus();
-}
-
-/** 用当前编辑态开战 */
-function startBattle() {
-  if (!allyShips.length || !enemyShips.length) return;
-  const ally = allyShips.map((s) => ({ type: s.type, modules: s.modules.slice() }));
-  const enemy = enemyShips.map((s) => ({ type: s.type, modules: s.modules.slice() }));
-  beginBattleFromCfg(ally, enemy);
-}
-
-/** 用给定配置快照开战（每次开战前自动暂停供手动调整） */
-function beginBattleFromCfg(allyCfg, enemyCfg) {
-  battleAllyCfg = allyCfg.map((s) => ({ type: s.type, modules: s.modules.slice() }));
-  battleEnemyCfg = enemyCfg.map((s) => ({ type: s.type, modules: s.modules.slice() }));
+/** ★★ 唯一的「进入战斗」入口（UI 侧）——所有开战路径都必须走它 ★★
+ *  演练编队界面「开战」、结算面板「再战」、将来的关卡/剧情入口…全部经此函数；不留第二条开战路径。
+ *  内部调用 `systems/battle.js startBattle()`（引擎侧唯一开战接口：编队规范化/等级钳制/模块与槽位校验 +
+ *  建单位），再初始化战斗屏 UI 与运行态。
+ *  @param {{allies:[], enemies:[]}} formation 编队（结构见 `ui/setupView.js` 文件头；也接受 {ally,enemy}）
+ *  @returns {{ok:boolean, error:null|'noUnits', battle:object|null, formation:{allies,enemies}, warnings:[]}}
+ *           `ok:false` 时**不创建战斗、不改动界面**，由调用方按 `error`/`warnings` 处理。
+ *  示例：enterBattle({ allies:[{type:'combat',level:5,modules:[{moduleId:'cannon',level:3}]}],
+ *                       enemies:[{type:'transport'}] }) */
+export function enterBattle(formation) {
+  const entry = startBattle(formation || {});
+  if (!entry.ok) return entry; // 校验不通过：保持当前界面不变（不做任何 UI 变更）
+  if (battle && battle !== entry.battle) battle.stop(); // 同屏重开/再战：先停旧战斗
+  lastFormation = entry.formation; // 规范化后的编队快照，供结算「再战」原样重开
+  battle = entry.battle;
+  window.__battle = battle;
+  // 旧战斗的 UI 运行态清理（新舞台渲染时会被整体替换，这里清引用即可）
   selectedId = null;
   detail = null;
-  if (battle) battle.stop();
-  battle = createBattle({ ally: allyCfg, enemy: enemyCfg });
-  window.__battle = battle;
+  updateCards = null;
+  barTints.clear(); // 变色状态机以单位 id 为键，新战斗必为新 id → 清空避免跨局累积
+  overlay?.overlay.classList.add('hidden');
+  battle.start(); // 引擎进入 running
+  ticker.pause(); // 开战即暂停：让玩家先手动调整目标/启停再开始（既有交互）
 
-  if (stageArea) {
-    stageArea.replaceChildren();
-    const built = buildStage();
-    stageArea.append(built.stage);
-    enemyZone = built.enemyZ;
-    allyZone = built.combatZ;
-    logPanelEl = built.logLines;
-    rebuildUnits();
-    overlay?.overlay.classList.add('hidden');
+  if (router.current === 'battle' && stageArea) {
+    renderRunning(); // 已在战斗屏：就地重绘战斗舞台
+  } else {
+    router.show('battle'); // 未在战斗屏：切屏（root() 按 battle 状态渲染战斗舞台）
   }
-  battle.start();
-  ticker.pause(); // 开战即暂停：让玩家先手动调整目标/启停再开始
+  return entry;
+}
+
+/** 「离开」：结束当前战斗并回到**编队/演练配置界面**（同一屏内的配置面板）。
+ *  ★ 清理清单（保证可反复进出、无残留）：
+ *    1) `battle.stop()`：停掉该战斗的 tick 订阅与 running 广播；
+ *    2) 清空全部战斗运行态引用：battle / window.__battle / 选中单位 / 详情面板 / 卡片刷新闭包 /
+ *       四个分区引用 / 战报挂载点；
+ *    3) 关闭结算浮层；
+ *    4) 恢复 tick 全局态：速度归 x1、解除“开战自动暂停”（避免遗留全局暂停）；
+ *    5) 清空护盾条变色状态机（barTints）；
+ *    6) 重新挂载编队配置屏（回调仍指向唯一入口 enterBattle）。
+ *  · 编队编辑态**保留在 `setupView` 内**（便于微调后再战）；需要重置调用 `setupView.reset()`。 */
+export function leaveBattle() {
+  if (battle) {
+    battle.stop();
+    battle = null;
+    window.__battle = null;
+  }
+  selectedId = null;
+  detail = null;
+  updateCards = null;
+  enemyZone = null;
+  enemyLogZone = null;
+  allyZone = null;
+  allyLogZone = null;
+  allZones = [];
+  logPanelEl = null;
+  barTints.clear();
+  overlay?.overlay.classList.add('hidden');
+  ticker.setSpeed(1);
+  ticker.resume();
+  if (stageArea) mountSetup(); // 回编队配置界面
   refreshStatus();
-  refreshCommand(); // 立即按 running 状态启用指挥栏（暂停中也可先设全队目标）
+}
+
+/** 挂载编队配置屏（`ui/setupView.js`）：开战回调＝唯一入口 enterBattle，返回回调＝exitToMenu */
+function mountSetup() {
+  setupView.render(stageArea, { onStart: enterBattle, onExit: exitToMenu });
 }
 
 function exitToMenu() {
@@ -1739,6 +1804,12 @@ function exitToMenu() {
     battle = null;
     window.__battle = null;
   }
+  detail = null;
+  updateCards = null;
+  logPanelEl = null;
+  allZones = [];
+  barTints.clear();
+  setupView.detach(); // 卸载配置屏宿主：离屏后不再重绘
   ticker.setSpeed(1);
   ticker.resume();
   router.show('menu');
@@ -1749,7 +1820,15 @@ function exitToMenu() {
 function root() {
   const titleEl = el('div', { class: 'battle-title', text: i18n.t('battle.title') });
   statusEl = el('div', { class: 'battle-status', text: '' });
-  const rootEl = el('section', { class: 'screen screen-battle' }, [titleEl, statusEl]);
+  // 「离开」：仅在对局中/已结算时出现（配置界面无战斗可离开）→ 回编队/演练配置界面
+  leaveBtn = el('button', {
+    class: 'btn tiny ghost battle-leave',
+    text: i18n.t('battle.leave'),
+    title: i18n.t('battle.leave.title'),
+    onclick: leaveBattle,
+  });
+  stageHeadEl = el('div', { class: 'battle-head' }, [titleEl, statusEl, leaveBtn]);
+  const rootEl = el('section', { class: 'screen screen-battle' }, [stageHeadEl]);
   stageArea = el('div');
   rootEl.append(stageArea);
   overlay = overlayEl();
@@ -1761,13 +1840,14 @@ function root() {
   if (battle && battle.phase !== 'idle') {
     renderRunning();
   } else {
-    renderLaunch();
+    mountSetup(); // 编队配置屏（原 renderLaunch，已拆分到 ui/setupView.js）
   }
   return rootEl;
 }
 
-/** 战斗状态行：阶段 + 双方存活数 */
+/** 战斗状态行：阶段 + 双方存活数（并同步「离开」按钮显隐：有战斗才显示） */
 function refreshStatus() {
+  if (leaveBtn) leaveBtn.classList.toggle('hidden', !battle);
   if (!statusEl) return;
   if (!battle) {
     statusEl.textContent = i18n.t('battle.status', {
@@ -1796,7 +1876,9 @@ function renderRunning() {
   const built = buildStage();
   stageArea.replaceChildren(built.stage);
   enemyZone = built.enemyZ;
+  enemyLogZone = built.enemyLogZ;
   allyZone = built.combatZ;
+  allyLogZone = built.logisticsZ;
   logPanelEl = built.logLines;
   rebuildUnits();
   overlay.overlay.classList.add('hidden');
@@ -1815,9 +1897,11 @@ function overlayEl() {
       class: 'btn primary small',
       text: i18n.t('battle.restart'),
       onclick: () => {
-        if (battleAllyCfg && battleEnemyCfg) beginBattleFromCfg(battleAllyCfg, battleEnemyCfg);
+        // 「再战」＝用最近一次成功开战的编队快照重开 → 同样走**唯一开战入口**（不留旁路）
+        if (lastFormation) enterBattle(lastFormation);
       },
     }),
+    el('button', { class: 'btn small', text: i18n.t('battle.leave'), onclick: leaveBattle }),
     el('button', { class: 'btn small', text: i18n.t('battle.menu.back'), onclick: exitToMenu }),
     el('button', {
       class: 'btn small ghost',
@@ -1832,11 +1916,14 @@ function overlayEl() {
     ]),
   ]);
 
+  /** 结算浮层：'win' | 'lose' | 'draw' 三态（**平局＝双方全灭**，与引擎 `checkEnd()` 的
+   *  `!anyAlly && !anyEnemy → settle('draw')` **同一口径**：任何 tick 收尾发现双方均无存活单位即判和，
+   *  亦涵盖“同 tick 互毁”。UI 只读 `battle.result`，不自算胜负判据。 */
   function show(result) {
-    const win = result === 'win';
-    resultTitle.textContent = i18n.t(win ? 'battle.result.win.title' : 'battle.result.lose.title');
-    resultTitle.className = `result-title ${win ? 'win' : 'lose'}`;
-    resultDesc.textContent = i18n.t(win ? 'battle.result.win.desc' : 'battle.result.lose.desc');
+    const kind = result === 'win' ? 'win' : result === 'draw' ? 'draw' : 'lose';
+    resultTitle.textContent = i18n.t(`battle.result.${kind}.title`);
+    resultTitle.className = `result-title ${kind}`;
+    resultDesc.textContent = i18n.t(`battle.result.${kind}.desc`);
     overlayDiv.classList.remove('hidden');
   }
   return { overlay: overlayDiv, show };
@@ -1905,12 +1992,22 @@ function bindGlobalListeners() {
       ticker.resume(); // 解除开战自动暂停，避免遗留全局暂停态
       battle = null;
       window.__battle = null;
+      // 离屏清理：清空运行态引用与变色状态机（下次进屏由 root() 重建，可反复进出无残留）
+      selectedId = null;
+      detail = null;
+      updateCards = null;
+      logPanelEl = null;
+      allZones = [];
+      barTints.clear();
+      setupView.detach();
     }
   });
 }
 
 export const battleView = {
   root,
+  enterBattle, // ★ 唯一「进入战斗」入口（UI 侧）：演练开战 / 结算再战 / 将来关卡入口统一走它
+  leaveBattle, // 「离开」：结束战斗并回编队配置界面（含完整清理）
 };
 
 export default battleView;

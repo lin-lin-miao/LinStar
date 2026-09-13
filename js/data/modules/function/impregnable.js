@@ -22,6 +22,7 @@ export default {
   id: 'impregnable',
   nameKey: 'module.impregnable', // i18n -> 固若金汤 / Impregnable
   name: '固若金汤',
+  icon: 'assets/img/固若金汤.svg',
   category: 'function',
   target: {
     kinds: ['enemy'],   // 强制对象＝敌方（作用集合由本选择器解析，引擎不硬编码）

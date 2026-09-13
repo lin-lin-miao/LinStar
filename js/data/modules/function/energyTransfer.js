@@ -29,6 +29,7 @@ export default {
   id: 'energyTransfer',
   nameKey: 'module.energyTransfer', // i18n -> 能量输送 / Energy Transfer
   name: '能量输送',
+  icon: 'assets/img/能量输送.svg',
   category: 'function',
   // 单体 · 仅友方（既有 `ally` 分支已排除自身：同阵营其它存活单位）
   target: { kinds: ['ally'], countMode: 'single', maxCount: 1 },

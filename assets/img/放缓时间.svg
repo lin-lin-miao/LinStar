@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 绿色简约线条，无填充背景，减速时间图标 -->
+    <g fill="none" stroke="#00FF88" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        
+        <!-- 时钟表盘 -->
+        <circle cx="50" cy="50" r="22" />
+        <circle cx="50" cy="50" r="2" fill="#00FF88" />
+        
+        <!-- 时钟指针（逆时针方向） -->
+        <line x1="50" y1="50" x2="50" y2="62" />
+        <line x1="50" y1="50" x2="38" y2="50" />
+        
+        <!-- 时钟下方两个叠放的 V 形（双线箭头向下） -->
+        <path d="M 42 76 L 50 86 L 58 76" />
+        <path d="M 42 84 L 50 94 L 58 84" />
+        
+    </g>
+</svg>

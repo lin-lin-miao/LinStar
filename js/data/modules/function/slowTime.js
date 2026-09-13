@@ -42,6 +42,7 @@ export default {
   id: 'slowTime',
   nameKey: 'module.slowTime', // i18n -> 放缓时间
   name: '放缓时间',
+  icon: 'assets/img/放缓时间.svg',
   category: 'function',
   target: { kinds: ['any'], countMode: 'single', maxCount: 1 }, // 任意单个目标（自己/友方/敌方）
   effects: {

@@ -14,6 +14,8 @@
   --shield: #4fc3f7;
   --invincible: #ffffff;   /* 无敌时护盾条颜色 */
   --energy: #ffe066;
+  --cargo: #ffb066;        /* 货舱容量条：货物（橙） */
+  --ore: #7ee29a;          /* 货舱容量条：矿物（绿，与采矿类同族） */
   --ok: #4ade80;
   --warn: #fbbf24;
   --radius: 10px;

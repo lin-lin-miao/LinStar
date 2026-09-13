@@ -98,6 +98,14 @@ function attachDebug() {
       dump: () => log.dump(),
       clear: () => log.clear(),
     },
+    // ★ 进入战斗（**唯一开战入口**的调试入口）：与演练界面「开战」/结算「再战」走同一函数，
+    //   便于在不点界面的情况下用控制台验证编队数据/关卡入口。
+    //   例：LS.battle.start({ allies:[{type:'combat',level:5}], enemies:[{type:'transport'}] })
+    battle: {
+      start: (formation) => battleView.enterBattle(formation),
+      leave: () => battleView.leaveBattle(),
+      get current() { return window.__battle || null; },
+    },
   };
 }
 

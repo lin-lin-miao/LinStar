@@ -43,6 +43,8 @@ import hullArmor from './modules/function/hullArmor.js';
 import shieldBattery from './modules/function/shieldBattery.js';
 import recycle from './modules/function/recycle.js';
 import energyTransfer from './modules/function/energyTransfer.js';
+import cargoHold from './modules/transport/cargoHold.js';
+import oreHold from './modules/mining/oreHold.js';
 
 export const MODULES = {
   cannon,
@@ -76,6 +78,8 @@ export const MODULES = {
   shieldBattery,    // 功能 · 护盾电池（常驻增幅器：自身护盾系数 +0.1 / 能量上限 −100，无冷却/耗能/持续）
   recycle,          // 功能 · 回收利用（常驻被动：按**上一 tick**非召唤单位阵亡数恢复自身生命）
   energyTransfer,   // 功能 · 能量输送（主动·单体友方：消耗自身能量给目标加能量 energy_target，钳到目标上限）
+  cargoHold,        // 运输 · 货舱（C25 常驻增幅器：自身货物容量 cargo_cap_bonus，无冷却/耗能/持续）
+  oreHold,          // 采矿 · 矿舱（C34 语义「采矿载货强化」常驻增幅器：自身矿物容量 ore_cap_bonus）
 };
 
 /** 模块类别展示顺序（后续 UI/筛选用）：攻击/护盾/功能/运输/采矿/无人机 */

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 绿色简约线条，无填充背景，双层锥形（外罩内） -->
+    <g fill="none" stroke="#00FF88" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        
+        <!-- 外层锥形（由内层等比放大1.35倍得出） -->
+        <path d="M 50 9.5 L 9.5 83.75 Q 50 63.5 90.5 83.75 Z" />
+        
+        <!-- 内层锥形（完全保留您提供的原始路径） -->
+        <path d="M 50 20 L 20 75 Q 50 60 80 75 Z" />
+        
+    </g>
+</svg>

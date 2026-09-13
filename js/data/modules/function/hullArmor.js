@@ -23,6 +23,7 @@ export default {
   id: 'hullArmor',
   nameKey: 'module.hullArmor', // i18n -> 船体装甲 / Hull Armor
   name: '船体装甲',
+  icon: 'assets/img/船体装甲.svg',
   category: 'function',
   // 常驻被动：无命中目标（自身词条不需要目标）
   target: {},

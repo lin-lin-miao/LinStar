@@ -27,6 +27,7 @@ export default {
   id: 'stealth',
   nameKey: 'module.stealth', // i18n -> 潜行 / Stealth
   name: '潜行',
+  icon: 'assets/img/潜行.svg',
   category: 'function',
   target: { kinds: ['self'], countMode: 'single', maxCount: 1 }, // 自身单体（增益对象＝自己）
   effects: {

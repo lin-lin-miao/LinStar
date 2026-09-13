@@ -20,12 +20,14 @@
  *     - 满盾（战斗开场/召唤登场）→ fillShieldPools 把全部池补满。
  *
  * ★ 自身【常驻静态加成】词条：`hp_cap_bonus` / `energy_cap_bonus` / `energy_regen_bonus` /
- *   `X_coeff_add`（如 `shield_coeff_add`）+ 既有 `shield_cap_bonus`。**无冷却/无持续/无耗能/不激活**
- *   —— 装上即生效、停用即失效，由**派生重算**落地（安装 / 启停时），不逐 tick 参与任何结算，
- *   故不破坏 Pass1 零数值变化。统一入口＝`syncSelfStatics`：
+ *   `cargo_cap_bonus` / `ore_cap_bonus` / `X_coeff_add`（如 `shield_coeff_add`）+ 既有 `shield_cap_bonus`。
+ *   **无冷却/无持续/无耗能/不激活**——装上即生效、停用即失效，由**派生重算**落地（安装 / 启停时），
+ *   不逐 tick 参与任何结算，故不破坏 Pass1 零数值变化。统一入口＝`syncSelfStatics`：
  *   · 三围上限与能量恢复 → `syncHullCaps`（基准 + Σ常驻 + Σ目标级叠加）；
  *   · 类别系数加性 → `syncStaticCoeffs`（写既有 `coeffMods`，由 `coeff()` 求和）；
- *   · 护盾容量 `shield_cap_bonus` → 既有护盾池本体池 `permanentBonus`（见 syncShieldPools）。
+ *   · 护盾容量 `shield_cap_bonus` → 既有护盾池本体池 `permanentBonus`（见 syncShieldPools）；
+ *   · 货舱/矿物容量 `cargo_cap_bonus`/`ore_cap_bonus` → **按需读取口径** `cargoCapacityOf`/`oreCapacityOf`
+ *     （本体容量 + Σ各来源×对应船级系数后取整；不缓存、不逐 tick，见下方“货舱/矿物容量”块）。
  *   上限提升**不补当前值**（只做 `min(当前, 上限)` 钳制），满血/满能量只在**登场**时由 `fillHullVitals` 给予。
  *
  * ★ 四套“乘性/系数”别混（详情见本文件 coeff() / damageTakeMul() / timeCoeffOf() / timeScaled() 的注释）：
@@ -39,8 +41,18 @@
  * ★ 另有一套**非数值**的结构状态（不走乘算、改“能不能被选中”）：
  *   `isStealthed(ship)`：**潜行**（`type` 标签 `stealth`，来源表 `ship.stealthMods`）——被标记单位
  *   **不能成为主要攻击目标**，但**仍受溅射**、**仍受既已锁定的目标约束**（详见下方 isStealthed 注释）。
+ *
+ * ★ 船型【等级系统】（与模块等级模型完全同构，唯一口径＝`data/ships/index.js resolveShipAtLevel`）：
+ *   · 船型定义（`data/ships/<id>.js`）顶层字段＝**Lv1 基准值**，另有 `maxLevel` + `levels[]` **逐级绝对表**；
+ *     某级未填的条目**回退上一级**（递归向上，最终以 Lv1 兜底）；可覆写**任意条目**
+ *     （`base.*` / `coefficients.*` / `slots` / `nameKey` / `icon` …）。
+ *   · **解析时机＝创建实例时解析一次**（`createShip(..., level)` → `resolveShipAtLevel`），
+ *     解析结果即该实例的**基准值**（`ship.typeCfg`），此后所有派生（护盾池 cap、`hpMax/energyCap`、
+ *     常驻加成 `syncSelfStatics` 等）**全部基于它** → 引擎与 UI 同口径、无第二套等级合并。
+ *   · 实例字段：`ship.level`（默认 1）、`ship.slots`（该等级的槽位数）、`ship.typeCfg`（该等级的完整配置）。
+ *   · 等级可在建单位后调整：`applyShipLevel(ship, level)`（重解析基准 + 重算派生；当前无 UI 调用）。
  */
-import { SHIPS } from '../data/ships.js';
+import { SHIPS, resolveShipAtLevel } from '../data/ships.js';
 import { uid } from '../core/utils.js';
 import { createModuleInstance } from './module.js';
 
@@ -309,10 +321,14 @@ export function modulePoolCapOf(ship, inst) {
  * ★ 落地时机：**只在“结构变化”时重算**（建单位 / 安装 / 启停），由 `syncSelfStatics` 统一落地；
  *   属**派生重算**，不逐 tick 执行、不产生任何逐 tick 数值变化（Pass1 零数值变化铁律）。 */
 
-/** **自身常驻静态加成合计**（唯一口径）：Σ(启用中 且 无 `duration_ticks` 的模块的该词条 × 其类别系数)。
- *  `key` 取上方三个自身词条之一（`hp_cap_bonus` / `energy_cap_bonus` / `energy_regen_bonus`）。
- *  仅作“派生重算”的取值来源，不写任何数值；战斗层的目标级 cap 叠加（capOverlays）在调用处另行传入。 */
-export function selfStaticBonus(ship, key) {
+/** **自身常驻静态加成合计**（唯一口径）：Σ(启用中 且 无 `duration_ticks` 的模块的该词条 × 其系数)。
+ *  `key` 取自身常驻词条之一（`hp_cap_bonus` / `energy_cap_bonus` / `energy_regen_bonus` /
+ *  `cargo_cap_bonus` / `ore_cap_bonus` …）。
+ *  `coeffCategory` 可选：**指定用哪个类别系数缩放**（缺省 ＝ 模块自身类别 `inst.cfg.category`）。
+ *  货舱/矿物容量用**对应船级系数**（`transport` / `mining`）而非模块自身类别系数，见 `cargoCapPartsOf`。
+ *  ★ **每个来源分别乘系数后再求和**（不是先求和再乘；单船只有一个系数故二者数学等价，此处按逐来源写法）。
+ *  仅作“派生重算/按需读取”的取值来源，不写任何数值；战斗层的目标级 cap 叠加（capOverlays）在调用处另行传入。 */
+export function selfStaticBonus(ship, key, coeffCategory = null) {
   if (!ship || !Array.isArray(ship.modules)) return 0;
   let sum = 0;
   for (const inst of ship.modules) {
@@ -322,7 +338,7 @@ export function selfStaticBonus(ship, key) {
     const v = fx[key] || 0;
     if (!v) continue;
     if ((fx.duration_ticks || 0) > 0) continue; // 时长型不属常驻（由激活/到期撤销机制承载）
-    sum += v * coeff(ship, inst.cfg.category);
+    sum += v * coeff(ship, coeffCategory || inst.cfg.category);
   }
   return sum;
 }
@@ -415,6 +431,54 @@ export function syncSelfStatics(ship, overlayHp = 0, overlayEnergy = 0) {
   syncStaticCoeffs(ship);
   syncHullCaps(ship, overlayHp, overlayEnergy);
   return ship;
+}
+
+/* ---------- 货舱 / 矿物容量（自身常驻词条 `cargo_cap_bonus` / `ore_cap_bonus`）----------
+ * ★ **唯一口径（引擎与 UI 同源，UI 不得自算）**：
+ *     总量 = **本体容量**（船型 `base.cargoCap` / `base.oreCap`，**不受系数影响、直接相加**）
+ *          + Σ(模块 `*_cap_bonus` **各来源分别 × 对应类别系数** 再求和)
+ *   · 货物 → `coeff(ship,'transport')`（运输系数）；矿物 → `coeff(ship,'mining')`（采矿系数）；
+ *   · 常驻判据与 `hp_cap_bonus`/`energy_cap_bonus` **完全同源**（走 `selfStaticBonus`：模块**启用中**
+ *     且 **无 `duration_ticks`** → 生效；装/拆/启停即变，**不逐 tick**）；
+ *   · 最后 **`Math.round` 取整** 得到总量（本体为整数占位值 → `base + modules === total`）。
+ * ★ 本体容量的落地：`createShip` 把等级解析后的 `type.base.cargoCap/oreCap` 写到实例
+ *   `ship.baseCargoCap/baseOreCap`（`applyShipLevel` 重解析时一并更新）→ 与船型等级同口径，
+ *   `base.*` 可被 `levels[]` 逐级覆写。
+ * ★ **按需计算、不缓存**（与 `modulePoolCapOf` 的护盾池 cap 同一体例）：结构变化（装拆/启停）与
+ *   系数变化（结算阶段落地的系数修饰）都**即时**反映，且**不逐 tick 写任何数值**
+ *   → 不破坏 Pass1 零数值变化铁律。分解值供 UI 展示：`{ base, modules, raw, total }`。 */
+const CARGO_KEY = 'cargo_cap_bonus';
+const ORE_KEY = 'ore_cap_bonus';
+/** 容量分解（内部共用实现，避免货物/矿物各写一遍算式） */
+function capPartsOf(ship, key, coeffCategory, baseField) {
+  const base = Math.round((ship && ship[baseField]) || 0); // 本体容量：不受系数影响
+  const raw = selfStaticBonus(ship, key, coeffCategory);   // Σ(各来源 × 对应类别系数)
+  return { base, modules: Math.round(raw), raw, total: Math.round(base + raw) };
+}
+/** **货物容量**（唯一口径，取整后总量） */
+export function cargoCapacityOf(ship) {
+  return cargoCapPartsOf(ship).total;
+}
+/** **矿物容量**（唯一口径，取整后总量） */
+export function oreCapacityOf(ship) {
+  return oreCapPartsOf(ship).total;
+}
+/** 货物容量分解：`{ base（本体）, modules（模块部分，取整）, raw（未取整）, total（取整总量） }` */
+export function cargoCapPartsOf(ship) {
+  return capPartsOf(ship, CARGO_KEY, 'transport', 'baseCargoCap');
+}
+/** 矿物容量分解：`{ base, modules, raw, total }`（同 `cargoCapPartsOf`） */
+export function oreCapPartsOf(ship) {
+  return capPartsOf(ship, ORE_KEY, 'mining', 'baseOreCap');
+}
+/** 当前**已装载货物量**的唯一读口径（M4 资源系统前恒为 0；UI 显示「已用 / 上限」用）。
+ *  `hull.cargo` 由后续资源系统写入，本函数只读、不写。 */
+export function cargoLoadOf(ship) {
+  return Math.max(0, (ship && ship.hull && ship.hull.cargo) || 0);
+}
+/** 当前**已装载矿物量**的唯一读口径（同 `cargoLoadOf`） */
+export function oreLoadOf(ship) {
+  return Math.max(0, (ship && ship.hull && ship.hull.ore) || 0);
 }
 
 /** 依 effects.type 刷新池的语义标记：blastproof=防爆池、alliance=同盟(共享)池 */
@@ -547,25 +611,45 @@ export function moduleShieldPoolOf(ship, inst) {
   return ship.hull.pools.get(inst.id) || null;
 }
 
-/** 创建一艘船（模块槽初始为空）。
- * overrides 可选：在船型模板上做"全条目"覆写（结构与 data/ships.js 单船一致，如 nameKey / slots /
- * base{hp,shieldCap,energyCap,energyRegen} / coefficients{...}），缺省的条目沿用模板。
- * 用于召唤模块给通用无人机模板设定具体种类；常规造舰不传即可。 */
-export function createShip(typeId, side = 'ally', overrides = null) {
-  const tmpl = SHIPS[typeId];
-  if (!tmpl) throw new Error(`未知船型: ${typeId}`);
+/** 船型解析（**等级唯一口径**）+ 全条目覆写 → 该实例的**基准配置**。
+ *  · 等级解析：`data/ships/index.js resolveShipAtLevel(def, level)`（未填字段回退上一级、可覆写任意条目）；
+ *  · `overrides`（召唤模块的 `effects.summon.attrs`）**优先级最高**：在**解析后**的等级配置上再做全条目覆写
+ *    → 召唤物“种类差异”永远压过模板与等级（既有行为不变：drone 走 Lv1 + attrs 覆写）；
+ *  · `base` / `coefficients` 做深合并（缺省沿用），其余条目直接覆盖（与拆分前体例一致）。 */
+function buildTypeCfg(typeId, level, overrides) {
+  const def = SHIPS[typeId];
+  if (!def) throw new Error(`未知船型: ${typeId}`);
+  const tmpl = resolveShipAtLevel(def, level); // 该等级的完整配置（返回新对象，不改原定义）
   const ov = overrides && typeof overrides === 'object' ? overrides : {};
-  // 模板 + 全条目覆写（base/coefficients 做深合并，缺省用模板）
-  const type = {
+  return {
     ...tmpl,
     ...ov,
     base: Object.assign({}, tmpl.base, ov.base),
     coefficients: Object.assign({}, tmpl.coefficients, ov.coefficients),
   };
+}
+
+/** 创建一艘船（模块槽初始为空）。
+ * overrides 可选：在船型模板上做"全条目"覆写（结构与 `data/ships/<id>.js` 单船一致，如 nameKey / slots /
+ * base{hp,shieldCap,energyCap,energyRegen} / coefficients{...}），缺省的条目沿用模板。
+ * 用于召唤模块给通用无人机模板设定具体种类；常规造舰不传即可。
+ * level 可选：船型等级（默认 1）——建单位时按 `resolveShipAtLevel` 解析一次作为**实例基准值**，
+ * 之后所有派生（护盾池/常驻加成/三围上限）都基于它（详见文件头“船型等级系统”）。 */
+export function createShip(typeId, side = 'ally', overrides = null, level = 1) {
+  const lv = Math.max(1, level | 0);
+  const type = buildTypeCfg(typeId, lv, overrides);
   const ship = {
     id: uid('ship'),
     side,
     typeId,
+    level: lv,                // ★ 船型等级（默认 1）：引擎按实例等级结算（基准值已在下方落地）
+    slots: type.slots,        // ★ 该等级的模块槽位数（安装校验/UI 槽位渲染读它，勿直接读 SHIPS[typeId].slots）
+    typeCfg: type,            // ★ 该实例的**基准配置**（等级解析 + attrs 覆写后的完整船型条目）
+    typeOverrides: overrides && typeof overrides === 'object' ? overrides : null, // 供 applyShipLevel 重解析
+    // ★ 单位定位（'combat' 战斗单位 / 'logistics' 后勤单位）：船型默认值（`data/ships/<id>.js` 的 `role`）
+    //   可被**编队条目 / 召唤 attrs** 的 `role` 覆写（经上面的 overrides 全条目覆写）→ 本字段即**唯一口径**，
+    //   UI 只读它决定把该单位显示在【战斗单位栏】还是【后勤单位栏】；战斗层不使用该字段（不影响战斗行为）。
+    role: type.role || 'combat',
     nameKey: type.nameKey,
     coefficients: Object.assign({}, type.coefficients),
     coeffMods: new Map(),    // 类别系数**加性**修饰（来源 key → {category, add}）；由 coeff() 求和
@@ -591,6 +675,9 @@ export function createShip(typeId, side = 'ally', overrides = null) {
     },
     energyRegenPerSec: type.base.energyRegen,
     baseEnergyRegen: type.base.energyRegen, // 基准能量恢复/秒（`syncHullCaps` 据此非累加重算 energyRegenPerSec）
+    // ★ 货舱容量基准（本体，**不受系数影响**；唯一口径 `cargoCapacityOf`/`oreCapacityOf`，按需读取不缓存）
+    baseCargoCap: Math.max(0, type.base.cargoCap || 0),
+    baseOreCap: Math.max(0, type.base.oreCap || 0),
     targetId: null, // 玩家指定的主要攻击目标（unit id）；null=自动(最近)
     alive: true,
   };
@@ -600,8 +687,10 @@ export function createShip(typeId, side = 'ally', overrides = null) {
 
 /** 安装模块（槽位不足抛错，除非 force=true 忽略槽位上限）；返回模块实例 */
 export function installModule(ship, moduleId, level = 1, force = false) {
-  const type = SHIPS[ship.typeId];
-  if (!force && ship.modules.length >= type.slots) throw new Error('模块槽位已满');
+  // ★ 槽位数取**实例的等级解析结果**（`ship.slots`，由 createShip/applyShipLevel 落地）；
+  //   旧实例（或未带该字段的调用方）回退到该船型 Lv1 定义，保持既有行为不变。
+  const slots = ship.slots != null ? ship.slots : (SHIPS[ship.typeId] || {}).slots;
+  if (!force && ship.modules.length >= slots) throw new Error('模块槽位已满');
   const inst = createModuleInstance(moduleId, level);
   ship.modules.push(inst);
   recalcDerived(ship); // 常驻模块池出现（值为 0；时长型不在持续期则无池）
@@ -611,6 +700,37 @@ export function installModule(ship, moduleId, level = 1, force = false) {
   //   故此处不需要（也无权访问）战斗层的 capOverlays；战斗内启停模块走 battle.js 的 recomputeCap。
   syncSelfStatics(ship);
   return inst;
+}
+
+/** 重设船型等级（**等级可在建单位后调整**；当前无 UI 调用，供后续“升级舰船”功能接入）。
+ *  · 重新走唯一口径 `buildTypeCfg`（等级解析 + 该实例原有的 `attrs` 覆写）；
+ *  · 基准值（`baseHpMax` / `baseShieldCap` / `baseEnergyCap` / `baseEnergyRegen`）随之更新，
+ *    再由 `syncSelfStatics` 按“基准 + Σ自身常驻”**非累加**重算上限与能量恢复（当前值**只钳制不补齐**，
+ *    与安装/启停同一口径），最后 `recalcDerived` 重算护盾池（cap 变化 → 池值由 ensureBasePool 钳制）。
+ *  · 已装模块实例不受影响（等级是船型基准，不是模块等级）。 */
+export function applyShipLevel(ship, level) {
+  if (!ship || !SHIPS[ship.typeId]) return ship;
+  const lv = Math.max(1, level | 0);
+  const type = buildTypeCfg(ship.typeId, lv, ship.typeOverrides || null);
+  ship.level = lv;
+  ship.slots = type.slots;
+  ship.typeCfg = type;
+  ship.role = type.role || 'combat'; // 定位随等级解析一并更新（船型可逐级覆写 role）
+  ship.nameKey = type.nameKey;
+  ship.coefficients = Object.assign({}, type.coefficients);
+  const h = ship.hull;
+  if (h) {
+    h.baseHpMax = type.base.hp;
+    h.baseShieldCap = type.base.shieldCap;
+    h.baseEnergyCap = type.base.energyCap;
+  }
+  ship.baseEnergyRegen = type.base.energyRegen;
+  // 货舱容量基准随等级解析一并更新（唯一口径 `cargoCapacityOf`/`oreCapacityOf` 按需读取）
+  ship.baseCargoCap = Math.max(0, type.base.cargoCap || 0);
+  ship.baseOreCap = Math.max(0, type.base.oreCap || 0);
+  syncSelfStatics(ship); // hpMax/energyCap/energyRegenPerSec：基准 + Σ自身常驻（非累加，只钳制）
+  recalcDerived(ship);   // 护盾池按新基准重算
+  return ship;
 }
 
 export default createShip;

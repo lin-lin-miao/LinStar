@@ -37,6 +37,7 @@ export default {
   id: 'timeWarp',
   nameKey: 'module.timeWarp', // i18n -> 时间扭曲
   name: '时间扭曲',
+  icon: 'assets/img/时间扭曲.svg',
   category: 'function',
   target: { kinds: ['any'], countMode: 'single', maxCount: 1 }, // 任意单个目标（自己/友方/敌方）
   effects: {

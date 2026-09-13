@@ -43,17 +43,22 @@
  *     stealth（`type` 标签）→ **潜行**：把作用集合（`effectSetOf`：目标 ∪ 波及 ∪ `include_self` 自身）
  *       内的单位标记为“**不能成为主要攻击目标**”（`ship.stealthMods` + `ship.isStealth`，**零数值变化**）；
  *       仍受 `blast_range` 溅射、仍受既已锁定的目标（`lockTargetId` / `lock_target_on_activate`）约束；
- *       目标解析过滤的**唯一口径**＝`stealthBlocksTargeting`（`moduleTargetList` 与 `shipEffectiveTarget`
- *       同口径）；Pass1 只记账（`__pending.stealthOps`）→ **结算步骤 2** 与 capOps/coeffOps/timeOps 同批落地
+ *       目标解析过滤的**唯一口径**＝`targetAllowed`（内含潜行判据 `stealthBlocksTargeting` + role 分离；
+ *       `moduleTargetList` 与 `shipEffectiveTarget` 同口径）；Pass1 只记账（`__pending.stealthOps`）→ **结算步骤 2**
+ *       与 capOps/coeffOps/timeOps 同批落地
  *       → 从**下一 tick 的目标解析**起体现；需搭配 `duration_ticks`（到期/停用/阵亡/移出场景/重新激活前撤销）
  *     attack_coeff_add → 类别系数**加性**修饰（**自身**词条，走 coeff() 唯一口径）
- *     hp_cap_bonus / energy_cap_bonus / energy_regen_bonus / shield_coeff_add / shield_cap_bonus →
+ *     hp_cap_bonus / energy_cap_bonus / energy_regen_bonus / shield_coeff_add / shield_cap_bonus /
+ *       cargo_cap_bonus / ore_cap_bonus →
  *       **自身【常驻静态加成】**（**增幅器类**，一律**无 `_target` 后缀** = 硬作用于模块所属自身）：
- *       血量上限 / 能量上限 / 能量恢复 / 类别系数加性 / 护盾容量。**无冷却、无持续、无耗能、不激活**——
- *       由**派生重算**落地（安装即生效、停用即失效），**不进** Pass1/Pass2 任何记账、**不产生战报**，
+ *       血量上限 / 能量上限 / 能量恢复 / 类别系数加性 / 护盾容量 / 货物容量 / 矿物容量。
+ *       **无冷却、无持续、无耗能、不激活**——
+ *       由**派生重算/按需读取**落地（安装即生效、停用即失效），**不进** Pass1/Pass2 任何记账、**不产生战报**，
  *       故对 tick 而言零数值变化。唯一落地口径＝`ship.js syncSelfStatics`（三围上限与能量恢复：
- *       `基准 + Σ自身常驻×类别系数 + Σ目标级 cap 叠加`；类别系数加性写既有 `coeffMods`）与护盾池
- *       `permanentBonus`（护盾容量）；战斗内启停模块走 `recomputeCap`（合并目标级叠加，非累加），
+ *       `基准 + Σ自身常驻×类别系数 + Σ目标级 cap 叠加`；类别系数加性写既有 `coeffMods`）、护盾池
+ *       `permanentBonus`（护盾容量），以及**按需读取**的 `cargoCapacityOf`/`oreCapacityOf`
+ *       （货舱/矿物容量 = 本体容量 + Σ各来源×对应船级系数 后取整；各来源分别乘系数再求和）；
+ *       战斗内启停模块走 `recomputeCap`（合并目标级叠加，非累加），
  *       绝不复位到裸基准。常驻判据＝模块启用中 且 **无 `duration_ticks`**（与护盾池 permanentBonus 分支同源）。
  *     hp_regen_per_death → **按上一 tick 阵亡数回血**（**自身**词条，如「回收利用」）：
  *       恢复量 = `词条值 × 类别系数 × 上一 tick 阵亡数`（全场双方合计、**排除召唤/临时单位**，
@@ -94,14 +99,30 @@
  *   ★ **潜行过滤**（`type` 标签 `stealth`，唯一口径 `stealthBlocksTargeting`）：上述链中
  *     **除“锁定单位 / 激活锁定”外的全部来源**（强制目标 / 手动选择 / 优先自己 / 船指定目标 /
  *     自动粘性 / 全队策略）**一律跳过潜行单位**；`blast_range` 溅射**不受影响**。
+ *   ★ **单位定位（role）分离**（唯一口径 `targetAllowed` / `roleBlocksInFoes`，与潜行过滤**同一处**）：
+ *     · `enemy` 类目标：**目标方仍有「可选战斗单位」时，其后勤单位不可被选**；「可选」＝**存活 且 未被
+ *       潜行屏蔽**（对该施放者而言不可选）→ 战斗单位全部阵亡**或全部被潜行屏蔽**时后勤**解禁**
+ *       （避免“潜行挡战斗 + role 挡后勤 → 候选池空”，按**存活/潜行快照**计、下一 tick 起体现）；
+ *     · `self`/`ally`/`any` 类**不做 role 分离**（治疗/输送类仍可指向后勤单位）；
+ *     · **锁定豁免照旧**（`lockTargetId` / `lock_target_on_activate` 两分支在过滤之前直接返回）；
+ *     · **溅射按主目标所属 role 队列分离**：`blast_range` 邻接只取自**与主目标同侧、同 role** 的
+ *       视觉顺序队列（`unitsOfRole`/`orderedQueueFor`），**不跨 role 波及**。
  *   目标不足/无目标 → 本次不激活。
  *
  * 契约：开始广播 combat:state{active:true}；结算完成广播 active:false（自动落档）。
  * 事件：'battle:settled' { result:'win'|'lose'|'draw' }
+ * ★ 开战入口（唯一）：本文件 `startBattle({allies, enemies})` —— 校验/规范化编队 + 建单位；
+ *   UI 侧唯一入口是 `ui/battleView.js enterBattle(formation)`（内部调用前者）。
+ *   请勿在别处直接 `createBattle` 或自拼 preset。
  */
 import { bus } from '../core/eventBus.js';
 import { log, formatRich } from '../core/log.js';
 import { i18n } from '../i18n/index.js';
+// ★ 唯一开战接口的入参校验口径：船型注册表 + 等级解析（`data/ships.js` 转发 `data/ships/index.js`）、
+//   模块注册表与模块等级上限。UI 的编队预检也调用本文件导出的 `normalizeFormation`（同一口径，不各自实现）。
+import { MODULES } from '../data/modules.js';
+import { getShip, resolveShipAtLevel, shipMaxLevel } from '../data/ships.js';
+import { moduleMaxLevel } from '../entities/module.js';
 import {
   createShip,
   installModule,
@@ -136,9 +157,21 @@ import {
   fillModuleShieldPool,
   syncShieldSummary,
   BASE_POOL_KEY,
+  // ★ 货舱 / 矿物容量（自身常驻词条 `cargo_cap_bonus` / `ore_cap_bonus`）的**唯一口径**在 ship.js：
+  //   `cargoCapacityOf/oreCapacityOf`（取整总量）、`cargoCapPartsOf/oreCapPartsOf`（本体/模块分解，UI 用）、
+  //   `cargoLoadOf/oreLoadOf`（当前装载读数口径，M4 前恒 0）——战斗层只做**阵营合计**，不复制算式。
+  cargoCapacityOf,
+  oreCapacityOf,
+  cargoCapPartsOf,
+  oreCapPartsOf,
+  cargoLoadOf,
+  oreLoadOf,
 } from '../entities/ship.js';
 
 const TPS = 20; // 1 秒 = 20 tick
+
+/** 召唤物继承召唤者系数时**必定覆盖的类别**（船型条目里另有的类别，如 `drone`，也会一并继承）。 */
+const COEFF_CATEGORIES = ['attack', 'shield', 'function', 'transport', 'mining'];
 
 /** 全队（阵营级）自动目标策略：顺序 / 最低血量 / 最低护盾 / 优先无人机 / 优先舰船（可扩展）。
  *  ship 级可用 ship.policy 覆盖（null=跟随全队）；该列表也作为 船舰主要目标 的策略选项。 */
@@ -479,7 +512,9 @@ export function createBattle(preset) {
 
   function spawnList(arr, side, list) {
     for (const cfg of list) {
-      const ship = createShip(cfg.type, side);
+      // ★ 船型等级 + 单位定位：编队 cfg 可带 `level`（缺省 1）与 `role`（'combat'|'logistics'，缺省用船型默认）
+      //   （唯一口径 `data/ships/index.js resolveShipAtLevel`，见 entities/ship.js createShip）。
+      const ship = createShip(cfg.type, side, cfg.role ? { role: cfg.role } : null, cfg.level || 1);
       for (const mod of cfg.modules) {
         // 支持字符串 id（level=1）或规格对象 { moduleId/id, level }
         const spec = mod && typeof mod === 'object' ? mod : { moduleId: mod };
@@ -572,15 +607,83 @@ export function createBattle(preset) {
     return true;
   }
 
+  /* ---------- ★ 单位定位（role）分离：目标选择与溅射队列的唯一口径 ----------
+   * `role ∈ {'combat','logistics'}`；**缺省＝'combat'**（落地口径见 `entities/ship.js createShip`：
+   *   船型数据 `data/ships/<id>.js` 的 `role` → 编队条目 `ShipCfg.role` / 召唤 `attrs.role` 可覆写 →
+   *   实例 `ship.role`；`applyShipLevel` 重解析时同样写回）。**本文件只读 `ship.role`，不自算定位**。
+   *
+   * 1) **队列口径** `unitsOfRole(side, role)`：某阵营**按 role 分离后的“视觉顺序队列”**
+   *    —— 与战斗界面四个分区（敌我 × 战斗/后勤）的卡片顺序**完全一致**（同 `allies`/`enemies` 数组顺序；
+   *    **不做存活过滤**：阵亡单位仍占队列位置，与既有“按索引取前后邻居 + 存活才结算”的语义一致）。
+   *    `orderedQueueFor(u)` ＝ 单位 `u` **自己那一侧、自己那一 role** 的队列 —— `blast_range` 溅射邻接的
+   *    **唯一取法**（即时爆炸与 `effectSetOf` 共用，不再各写一遍）。
+   *    **无后勤单位时** `unitsOfRole(side,'combat')` ≡ 整条阵营队列 → **既有行为零变化**。
+   *
+   * 2) **对敌可选口径** `roleBlocksInFoes(u, foes, isStealthBlocked)`：目标方阵营 `foes` 中**仍有
+   *    「可选战斗单位」**时，该阵营的**后勤单位不可被选**；没有可选战斗单位时后勤**解禁**。
+   *    ★ **“可选战斗单位”判据（与潜行叠加后的最终口径）**＝ 存活 **且 未被潜行筛选屏蔽**
+   *      （`f.alive && roleOf(f)==='combat' && !isStealthBlocked(f)`）——
+   *      即：敌方战斗单位**全部阵亡**、**或全部被潜行屏蔽**（对该施放者而言不可选）时，
+   *      `enemy` 可选择敌方后勤单位（避免“潜行挡战斗 + role 挡后勤 → 候选池空”）。
+   *    ★ 只作用于**“对敌”语义**：`kinds` 含 `enemy` 的选择器，以及船级“主要攻击目标”/阵营预览/UI 候选池
+   *      的对敌分支；`ally`/`self`/`any` 三类**不做 role 分离**（治疗/输送类仍可指向后勤单位）。
+   *    ★ 潜行判据由调用方传入（`isStealthBlocked`）：施放者视角用 `stealthBlocksTargeting(ship,·)`，
+   *      阵营预览（无施放者）用 `tickStealthed(·)` —— 与各自既有潜行口径**完全同源**、潜行语义未改。
+   *    ★ 时序：判据读**存活状态**，而 Pass1 阶段不会有任何单位被判死（判死全部发生在结算阶段）→
+   *      本 tick 全体单位的目标解析看到的是**同一份 tick 起始存活状态**；本 tick 结算落地的阵亡
+   *      从**下一 tick** 的解析起体现（与潜行/系数同一时序范式，不逐 tick 抖动、不产生数值修改）。
+   *
+   * 3) **目标可选唯一判据** `targetAllowed(ship, u, kind)` ＝ 潜行过滤 +（按来源桶的）role 分离，
+   *    与潜行过滤**落在同一处**（`moduleTargetList` 的候选池过滤），并被 `shipEffectiveTarget`、
+   *    `fleetPreview`、UI 候选池（导出 `targetableBy`）共用；**锁定豁免照旧**（两个锁定分支在过滤之前直接返回）。
+   *    `kind` ＝ 候选来自哪个选择器桶（`'self'|'enemy'|'ally'|'any'`）；**缺省（2 参调用）按 `'enemy'`
+   *    （对敌主要目标）语义判定** —— 与既有 2 参调用完全兼容。 */
+  function roleOf(u) {
+    return u && u.role === 'logistics' ? 'logistics' : 'combat'; // 缺省/异常值一律按战斗单位
+  }
+  /** 某阵营按 role 分离后的视觉顺序队列（与战斗界面分区渲染顺序一致；**含阵亡单位占位**，不过滤存活） */
+  function unitsOfRole(side, role) {
+    const want = role === 'logistics' ? 'logistics' : 'combat';
+    return (side === 'ally' ? allies : enemies).filter((u) => roleOf(u) === want);
+  }
+  /** 单位自身所在队列（**同侧 + 同 role**）—— `blast_range` 邻接的唯一取法 */
+  function orderedQueueFor(u) {
+    return unitsOfRole(u && u.side, u && u.role);
+  }
+  /** 对敌 role 分离核心判据：目标方仍有**可选战斗单位**（存活 且 未被潜行屏蔽）→ 其后勤单位不可被选。
+   *  `isStealthBlocked(f)` ＝ 该战斗单位是否因**潜行**而对“当前解析视角”不可选
+   *  （施放者视角 `stealthBlocksTargeting(ship,·)`；阵营预览 `tickStealthed`）——潜行语义本身未改。 */
+  function roleBlocksInFoes(u, foes, isStealthBlocked) {
+    if (!u || roleOf(u) !== 'logistics') return false;
+    const blocked = typeof isStealthBlocked === 'function' ? isStealthBlocked : () => false;
+    return foes.some((f) => f.alive && roleOf(f) === 'combat' && !blocked(f));
+  }
+  /** ★ 目标可选（唯一口径）：潜行过滤 + 按来源桶的 role 分离。
+   *  **不含存活判定** —— 存活由各调用方的既有逻辑负责（候选池 `!u.alive` / `orderedFoes` 只给存活 /
+   *  UI 的 `f.alive`），以免改动既有语义。 */
+  function targetAllowed(ship, u, kind) {
+    if (!ship || !u) return false;
+    if (stealthBlocksTargeting(ship, u)) return false; // 潜行：自身永远可选、只挡对敌（既有语义不变）
+    if (kind === 'ally' || kind === 'self' || kind === 'any') return true; // ★ 三类不做 role 分离
+    const foes = ship.side === 'ally' ? enemies : allies;
+    if (!foes.includes(u)) return true; // 非对敌候选（友方/自身）不受 role 分离限制
+    // 'enemy'（含缺省）→ role 分离；「可选战斗单位」与潜行叠加：潜行屏蔽的战斗单位不算可选
+    return !roleBlocksInFoes(u, foes, (f) => stealthBlocksTargeting(ship, f));
+  }
+
   /** 依目标词条(kinds/countMode/maxCount)解析本次命中的目标列表（引擎与 UI 共用）
-   *  - 目标池：self → 自身；enemy → 敌方存活（按全队策略排序）；ally → 同阵营其它存活；any → 敌我任意（含自身）
+   *  - 目标池：self → 自身；enemy → 敌方存活（按全队策略排序，★ 受 role 分离：目标方仍有**可选战斗单位**
+   *    （存活且未被潜行屏蔽）时不含其后勤）；ally → 同阵营其它存活；any → 敌我任意（含自身，★ 不做 role 分离）
    *  - 手动选择互斥（去重）；未手动覆盖的空位由上游自动补足
    *  - ★ **目标优先级链（唯一口径，与 `shipEffectiveTarget` 同源）**：
    *      **锁定单位(`lockTargetId`) > 激活锁定(`lock_target_on_activate`·持续期内) > 强制目标 >
    *        模块手动目标 > 优先自己(`prefer_self`) > 船 `targetId` > 自动粘性 > 全队策略/阵营顺序**
    *    （实现：给候选池打优先级桶后稳定排序，三个 countMode 分支同取这一条链）
-   *  - ★ **潜行过滤**（`type` 标签 `stealth`，唯一口径 `stealthBlocksTargeting`）：在**两个锁定分支之后**
-   *    过滤候选池 —— 锁定单位/激活锁定**豁免**，其余来源（含**玩家手动选定**）一律跳过潜行单位；
+   *  - ★ **候选池过滤（唯一处）**＝潜行过滤 + 按来源桶的 role 分离，同由 `targetAllowed(ship, u, kind)` 判定，
+   *    且都在**两个锁定分支之后**执行 —— 锁定单位/激活锁定**豁免**，其余来源（含**玩家手动选定**）一律过滤：
+   *      · 潜行（`type` 标签 `stealth`）：跳过潜行单位（自身永远可选、只挡对敌）；
+   *      · role 分离：**`enemy` 桶**在“目标方仍有可选战斗单位（存活且未被潜行屏蔽）”时跳过其后勤；
+   *        `self`/`ally`/`any` 桶不分离。
    *    过滤后为空 → 返回 []（按既有规则**不激活**）。
    *  - countMode：single=1 / multi=min(maxCount, 可用) / all=全部；空目标池 → 无目标 []
    */
@@ -600,19 +703,35 @@ export function createBattle(preset) {
       return b && b.alive ? [b] : [];
     }
 
-    const pool = [];
-    if (kinds.includes('self')) pool.push(ship);
-    if (kinds.includes('enemy')) pool.push(...orderedFoes(foes, policyOf(ship)));
-    if (kinds.includes('ally')) {
-      pool.push(...sameSide.filter((u) => u.alive && u.id !== ship.id));
+    // ★ 候选池：按选择器桶组装，**每个候选带上来源桶 `kind`**（role 分离按桶判定，见下方统一过滤处）。
+    const pool = []; // { u, kind }
+    if (kinds.includes('self')) pool.push({ u: ship, kind: 'self' });
+    if (kinds.includes('enemy')) {
+      for (const u of orderedFoes(foes, policyOf(ship))) pool.push({ u, kind: 'enemy' });
     }
-    if (kinds.includes('any')) pool.push(...[...allies, ...enemies]); // 敌我任意（含自身）
-    const uniq = [];
+    if (kinds.includes('ally')) {
+      for (const u of sameSide) if (u.alive && u.id !== ship.id) pool.push({ u, kind: 'ally' });
+    }
+    if (kinds.includes('any')) {
+      for (const u of [...allies, ...enemies]) pool.push({ u, kind: 'any' }); // 敌我任意（含自身）
+    }
     const excl = Array.isArray(tgt.exclude) ? tgt.exclude : []; // 目标排除标签（如 projectile=召唤弹体）
-    for (const u of pool) {
+    const uniq = [];
+    const seen = new Set();
+    // ★ **唯一过滤处（潜行 + role 同一处）**：`targetAllowed(ship, u, kind)` ——
+    //   · 潜行过滤（`stealthBlocksTargeting`，语义不变）：**锁定分支之后**统一过滤候选池 →
+    //     锁定单位/激活锁定豁免，其余来源（含玩家手动选定）一律跳过潜行单位；
+    //   · role 分离：仅 **`enemy` 桶**受限 —— 目标方仍有**可选战斗单位**（存活 且 未被潜行屏蔽）时
+    //     其后勤不入池（战斗单位全部阵亡/全部潜行时自动放开）；`self`/`ally`/`any` 桶不做 role 分离。
+    //   ★ 同一单位可能来自多个桶：**任一桶允许即可选**（被挡的候选不登记 `seen`，故 `any` 桶仍可放行
+    //     敌方后勤 —— 对应“any 不受分离限制”）。过滤后为空 → 返回 []（**不激活**，不报错）。
+    for (const { u, kind } of pool) {
       if (!u.alive) continue;
       if (excl.length && excl.some((t) => unitHasTag(u, t))) continue;
-      if (!uniq.some((x) => x.id === u.id)) uniq.push(u);
+      if (seen.has(u.id)) continue;
+      if (!targetAllowed(ship, u, kind)) continue;
+      seen.add(u.id);
+      uniq.push(u);
     }
     if (!uniq.length) return [];
 
@@ -636,15 +755,14 @@ export function createBattle(preset) {
     //    船 `targetId` > 自动粘性 > 自然顺序（全队策略/阵营顺序）
     //    实现：对候选池每个单位打**优先级桶**（rank），桶内保持自然顺序 → 一次稳定排序得出结果；
     //    `all`/`multi`/`single` 三个分支都从这同一条有序链上取（`single` 取首位、`multi` 取前 N、`all` 取全部）。
-    // ★ **潜行过滤（`type` 标签 `stealth`，唯一口径 `stealthBlocksTargeting`）**：
-    //   放在**锁定分支之后** —— 上方的“锁定单位 / 激活锁定”属**激活瞬间已锁定**的目标，
-    //   **豁免**本判据（潜行不推翻既有锁定）；其余全部来源（强制目标 / 模块手动目标 / 优先自己 /
-    //   船 `targetId` / 自动粘性 / 全队策略）**一律跳过潜行单位**。
-    //   若过滤后无可用目标 → 返回空（**按既有规则不激活**，不报错）。
-    const selectable = uniq.filter((u) => !stealthBlocksTargeting(ship, u));
-    if (!selectable.length) return [];
+    // ★ **潜行过滤 + role 分离已在候选池过滤处统一完成**（见上方 `targetAllowed`）：
+    //   两者都落在**锁定分支之后** —— 上方的“锁定单位 / 激活锁定”属**激活瞬间已锁定**的目标，
+    //   **豁免**全部过滤（潜行不推翻既有锁定；role 分离同样不推翻锁定）；
+    //   其余全部来源（强制目标 / 模块手动目标 / 优先自己 / 船 `targetId` / 自动粘性 / 全队策略）
+    //   一律经过 `targetAllowed`。过滤后无可用目标 → `uniq` 为空并已提前返回 []
+    //   （**按既有规则不激活**，不报错）。
     const forced = forcedTopUnit(ship);
-    const forcedIn = forced && selectable.some((u) => u.id === forced.id) ? forced : null;
+    const forcedIn = forced && uniq.some((u) => u.id === forced.id) ? forced : null;
     const selIds = new Set(
       inst.target && inst.target.mode === 'units' ? inst.target.ids || [] : []
     );
@@ -663,7 +781,7 @@ export function createBattle(preset) {
       if (stickIds.has(u.id)) return 4;
       return 5;
     };
-    const ordered = selectable
+    const ordered = uniq
       .map((u, i) => ({ u, i }))
       .sort((a, b) => rankOf(a.u) - rankOf(b.u) || a.i - b.i)
       .map((x) => x.u);
@@ -690,8 +808,10 @@ export function createBattle(preset) {
 
   /* ---------- 潜行（`type` 标签 `stealth` · 目标选择向）----------
    * ★ 语义：被标记单位**不得被选为主要攻击目标**（其它单位的目标解析一律跳过它）。
-   *   下列**唯一口径** `stealthBlocksTargeting` 同时被 `moduleTargetList`（模块目标优先级链）与
-   *   `shipEffectiveTarget`（船级主要目标）使用 —— 两处同口径，避免“显示能打、实际不打”。
+   *   下列**唯一口径** `stealthBlocksTargeting` 是潜行的**判定函数**，由**统一过滤判据** `targetAllowed`
+   *   调用（role 分离与之**调用同一处**）→ `moduleTargetList`（模块目标优先级链）与
+   *   `shipEffectiveTarget`（船级主要目标）/`fleetPreview`/UI 候选池（`targetableBy`）**同口径**，
+   *   避免“显示能打、实际不打”。
    * ★ **豁免（仍受“目标锁定”影响）**：`lockTargetId`（一次性火箭/导弹弹体）与
    *   `lock_target_on_activate` 的锁定集合 `inst._lockIds`（**激活瞬间已锁定**的目标）在各自分支
    *   **直接返回**、不经过本判据 → 潜行**不影响**这些既有锁定（潜行是“事后生效”，不推翻锁定）。
@@ -719,8 +839,9 @@ export function createBattle(preset) {
    *  ★ 优先级链与 `moduleTargetList` **同口径**（船级视角）：
    *    **锁定单位 > 激活锁定(`lock_target_on_activate`·首个锁定中的攻敌模块) > 强制目标 >
    *      船手动目标 `targetId` > 首个能攻击敌方的模块的实时解析结果 > 全队策略队首**。
-   *  ★ **潜行过滤同口径**（`stealthBlocksTargeting`）：**锁定单位与激活锁定豁免**，其余来源
-   *    （强制目标 / 船 `targetId` / 模块解析结果 / 全队策略队首）一律跳过潜行单位。
+   *  ★ **潜行 + role 过滤同口径**（`targetAllowed(ship, u, 'enemy')`）：**锁定单位与激活锁定豁免**，
+   *    其余来源（强制目标 / 船 `targetId` / 模块解析结果 / 全队策略队首）一律跳过潜行单位，
+   *    并跳过“目标方仍有可选战斗单位（存活且未被潜行屏蔽）时的其后勤”（role 分离，见文首 role 口径块）。
    *  （模块内部的手动目标/`prefer_self` 由 `moduleTargetList` 自己按完整链解析，此处不再重复。）
    *  `shipEffectiveTarget` 是**船级“主要攻击目标”显示**：只返回**敌方**单位 ——
    *  支援类模块（如时间扭曲选中友军/自己）不得把船的主要目标显示成友方。 */
@@ -739,11 +860,12 @@ export function createBattle(preset) {
       }
     }
     const forced = forcedTopUnit(ship); // 被强制时 UI 与战斗解析必须显示同一目标
-    // ★ 潜行同口径：被强制指向的单位若已潜行 → 不可作为主要攻击目标（继续下探正常链）
-    if (forced && !stealthBlocksTargeting(ship, forced)) return forced;
+    // ★ 潜行 + role 同口径（`targetAllowed`）：被强制指向的单位若已潜行、或落在“目标方仍有可选战斗单位时的
+    //   其后勤”上 → 不可作为主要攻击目标（继续下探正常链）
+    if (forced && targetAllowed(ship, forced, 'enemy')) return forced;
     if (ship.targetId) {
       const u = foes.find((f) => f.id === ship.targetId && f.alive);
-      if (u && !stealthBlocksTargeting(ship, u)) return u; // ★ 潜行 → 跳过，继续下探（targetId 本身不改写）
+      if (u && targetAllowed(ship, u, 'enemy')) return u; // ★ 同上：跳过，继续下探（targetId 本身不改写）
     }
     if (ship.modules && ship.modules.length) {
       for (const inst of ship.modules) {
@@ -759,21 +881,28 @@ export function createBattle(preset) {
         if (u) return u;
       }
     }
-    // ★ 全队策略队首：同样跳过潜行单位（潜行不可作为主要攻击目标）
-    return orderedFoes(foes, policyOf(ship)).find((f) => !stealthBlocksTargeting(ship, f)) || null;
+    // ★ 全队策略队首：同样跳过潜行单位与“目标方仍有可选战斗单位时的其后勤”（role 分离同口径）
+    return orderedFoes(foes, policyOf(ship)).find((f) => targetAllowed(ship, f, 'enemy')) || null;
   }
 
-  /** 阵营策略预览：该阵营当前全队首个命中目标（★ 同口径跳过潜行单位） */
+  /** 阵营策略预览：该阵营当前全队首个命中目标（★ 同口径跳过潜行单位；★ role 分离：目标方仍有
+   *  **可选战斗单位**（存活 且 未被潜行屏蔽）时不把其后勤单位当作命中目标 —— 与 `shipEffectiveTarget`
+   *  同一判据 `roleBlocksInFoes`，潜行判据用阵营级 `tickStealthed`） */
   function fleetPreview(side) {
     const foes = side === 'ally' ? enemies : allies;
-    return orderedFoes(foes, policies[side]).find((u) => !tickStealthed(u)) || null;
+    return (
+      orderedFoes(foes, policies[side]).find(
+        (u) => !tickStealthed(u) && !roleBlocksInFoes(u, foes, tickStealthed)
+      ) || null
+    );
   }
 
   /** ★ **共享的“作用集合（effect set）”计算** —— 供**上限类词条**与**时间加速**等
    *  “按集合成批落地”的非伤害词条组共用（避免各处重复实现同一套扩展规则）。
    *  作用集合 = 三个来源的**并集**（按单位 id 去重，冻结于本次激活瞬间）：
    *    ① 目标选择器解析出的目标（`moduleTargetList`，含 excludes/粘性/强制目标/激活锁定等全部既有语义）；
-   *    ② `blast_range > 0` 时，**各目标所在队列**（该目标自己那一侧的视觉顺序队列）前后各 N 个存活单位；
+   *    ② `blast_range > 0` 时，**各目标所在队列**（★ 该目标**自己那一侧、自己那一 role** 的视觉顺序队列，
+   *       见 `orderedQueueFor`/`unitsOfRole`；**不跨 role 波及**）前后各 N 个存活单位；
    *    ③ `type` 标签 `include_self` 时，模块所属单位自身（★ **按标签识别**，与目标选择器无关：
    *       即使 `kinds` 不含 `self`/`any`，带该标签也一定作用于自身）。
    *  ★ **“自身是否产生溅射”取决于它是怎么进集合的（精确规则）**：
@@ -784,6 +913,8 @@ export function createBattle(preset) {
    *    实现上不需要任何 `primary === ship` 特判：溅射循环只遍历 `targets`，标签补入发生在循环之后。
    *  ★ 用**目标自己的**队列做波及（而不是“施放方的敌方队列”）：对“选中友方/任意”的词条
    *    （如时间加速）才是正确语义；对 EMP 这类“选中敌方”的词条，二者**完全等价**（原有行为不变）。
+   *    ★ 该队列本身**按 role 分离**（`orderedQueueFor`）：主目标为战斗单位则只在战斗队列内波及，
+   *    为后勤单位则只在后勤队列内波及 —— **不跨 role**；**无后勤单位时与既有整条队列完全一致（零变化）**。
    *  ★ 只用只读信息（存活状态 + 队列顺序），不修改任何数值 → 可在 Pass1 安全调用；
    *    返回的数组由结算阶段消费（并写入 `inst._xxxRefs` 作为撤销依据）。 */
   function effectSetOf(ship, targets, fx) {
@@ -797,7 +928,10 @@ export function createBattle(preset) {
       //   反之，**由 `include_self` 标签补入的自身不进 `targets`**（见函数末尾），故**不产生任何溅射**。
       for (const primary of targets) {
         if (!primary) continue;
-        const roster = primary.side === 'ally' ? allies : enemies; // 目标所在队列（视觉顺序）
+        // ★ 队列＝**与主目标同侧、同 role** 的视觉顺序队列（`orderedQueueFor`，与战斗界面分区渲染一致）：
+        //   主目标是**战斗单位** → 只在战斗队列内前后各 N 个位置波及；是**后勤单位** → 只在后勤队列内波及；
+        //   **绝不跨 role 波及**。无后勤单位时该队列 ≡ 既有“目标自己那一侧的整条队列” → 既有行为零变化。
+        const roster = orderedQueueFor(primary);
         const idx = roster.findIndex((u) => u.id === primary.id);
         if (idx < 0) continue;
         for (let k = 1; k <= r; k += 1) {
@@ -1033,6 +1167,17 @@ export function createBattle(preset) {
     return true;
   }
 
+  /** ★ **召唤者当前生效的单位系数快照**（唯一口径）——召唤物“直接继承召唤者系数数值”的取值来源：
+   *  逐类别取 `coeff(ship, 类别)` 的**当前结果**（含船型基础 + 模块加性/乘性 + 当刻目标级系数修饰）。
+   *  类别集合＝`COEFF_CATEGORIES` ∪ 召唤者 `coefficients` 既有键（如 `drone`）→ 注入后召唤物系数表**完整确定**。
+   *  **只读**：不改召唤者任何数值，不写任何缓存（Pass1 零数值变化铁律）。 */
+  function inheritCoefficientsOf(ship) {
+    const out = {};
+    for (const c of COEFF_CATEGORIES) out[c] = coeff(ship, c);
+    for (const c of Object.keys((ship && ship.coefficients) || {})) out[c] = coeff(ship, c);
+    return out;
+  }
+
   function doSummon(ship, inst, fx, boundId, ignoreCap, ctx) {
     const sum = (fx.summon && typeof fx.summon === 'object') ? fx.summon : {};
     if (!sum.type) return;
@@ -1048,10 +1193,25 @@ export function createBattle(preset) {
     if (!payEnergy(ctx, inst, cost)) return; // 能量不足（用单位内运行计数门控，消耗记账到结算）
     // —— 用召唤模块给通用无人机"覆写模板"：attrs 按船型结构整条可覆写，缺省沿用模板 ——
     const A = (sum.attrs && typeof sum.attrs === 'object') ? sum.attrs : {};
+    // ★ 召唤物**直接继承召唤者的单位系数数值**（激活瞬间快照，唯一口径）：
+    //   · 取值＝`coeff(ship, 类别)` 的**当前结果**（含船型基础 + 模块加性/乘性 + 当刻目标级系数修饰）；
+    //   · 可继承类别＝**全部**（`attack`/`shield`/`function`/`transport`/`mining` + 船型条目里另有的类别，
+    //     如 `drone`）——缺项按 `coeff()` 口径取 1，故写入后召唤物的系数表**完整确定**；
+    //   · **注入落点与 `attrs` 同一条覆写链**：写进 `ov.coefficients` → `createShip` 的
+    //     `buildTypeCfg` 全条目覆写（`coefficients` 深合并）→ 召唤物实例系数；
+    //   · **优先级**：召唤者快照 **覆盖模板默认系数**；`attrs.coefficients` 若显式给出则**逐类别压过**快照
+    //     （attrs 是“该召唤品种的显式定义”，比继承值更具体；现网数据无一处使用 → 零回归）；
+    //   · **之后不再同步**：召唤者后续系数变化 / 修饰来源失效**都不影响**已召唤单位
+    //     （召唤物自身之后只叠加它自己的等级与词条，走既有 `coeff()`）。
+    //   · 纯**只读**取值（不改召唤者任何数值）→ 不破坏 Pass1 零数值变化。
+    const inheritCoeffs = inheritCoefficientsOf(ship);
     const ov = {
       ...(A.nameKey ? { nameKey: A.nameKey } : {}),
       ...(A.base && typeof A.base === 'object' ? { base: A.base } : {}),
-      ...(A.coefficients && typeof A.coefficients === 'object' ? { coefficients: A.coefficients } : {}),
+      coefficients: {
+        ...(inheritCoeffs || {}),
+        ...(A.coefficients && typeof A.coefficients === 'object' ? A.coefficients : {}),
+      },
     };
     // temp：缺省 true（临时单位，存在时间到期自动死亡+阵亡直接移除）；
     //     设 false 则召出的是一艘普通单位（无存在时间限制，阵亡保留灰色卡片）
@@ -2151,14 +2311,17 @@ export function createBattle(preset) {
       }
       // —— 爆炸范围 blast_range：命中主目标后，对其所在队列"视觉顺序中的前后"各 blast_range 个位置内
       //    的存活单位同时造成同额爆炸伤害。目标在发射时锁定，爆炸不另行选目标、不随目标改变。 ——
+      //    ★ **队列口径与 `effectSetOf` 完全一致**（共享 `orderedQueueFor`）：主目标**同侧、同 role** 的队列，
+      //      **不跨 role 波及**。既有伤害类模块均为 `kinds:['enemy']` → 主目标必在敌方队列，
+      //      故与旧写法（施放方的敌方队列）**等价**，既有行为零变化。
       //    防爆护盾：若主目标命中被防爆池吸收(isBlastMod)，blast_range 被抑制（不再波及相邻单位）——
       //    Pass1 无法预知是否被防爆吸收，故一律按“条件爆炸(带 gate)”挂账，Pass2 按主目标结果决定是否跳过。
       const blastR = ((fx.blast_range || 0) | 0);
       if (blastR > 0) {
-        const roster = ship.side === 'ally' ? enemies : allies; // 敌方队列（视觉顺序）
         const hitSet = new Set(targets.map((u) => u.id));       // 主目标已结算，不再重复受爆炸
         const actKey = `${ship.id}:${inst.id}`;                 // 每次激活唯一 gate（爆炸抑制按整次激活）
         for (const primary of targets) {
+          const roster = orderedQueueFor(primary);              // ★ 目标同侧同 role 的视觉顺序队列
           const idx = roster.findIndex((u) => u.id === primary.id);
           if (idx < 0) continue;
           for (let k = 1; k <= blastR; k += 1) {
@@ -2243,7 +2406,7 @@ export function createBattle(preset) {
     //    ★ 唯一口径 timeCoeffOf(ship)；每 tick 推进量恒为 1，只有“需求量”随系数变化。 ——
     ship._timeCoeffTick = timeCoeffOf(ship);
     // —— 本 tick 的**潜行快照**（`type` 标签 `stealth`）：Pass1 单位开头取一次，供本 tick 全部
-    //    目标解析（`moduleTargetList` / `shipEffectiveTarget` → `stealthBlocksTargeting`）统一使用 →
+    //    目标解析（`moduleTargetList` / `shipEffectiveTarget` → `targetAllowed` → `stealthBlocksTargeting`）统一使用 →
     //    “本 tick 的目标解析按 tick 起始的潜行状态进行，本 tick 结算阶段落地的潜行从下一 tick 起体现”，
     //    与受伤减免/时间系数完全同一范式（且不引入任何数值修改，仅只读缓存）。
     //    ★ 唯一读口径 isStealthed(ship)。 ——
@@ -2811,6 +2974,28 @@ export function createBattle(preset) {
     return { value, max };
   }
 
+  /** 汇总某阵营**货舱（货物 / 矿物）**容量与已装载量：`{ value（已用）, max（容量合计）,
+   *  base（本体合计）, modules（模块部分合计） }` —— 与 `poolTotalFor` **同一体例**（只统计**存活单位**，
+   *  逐单位走 `ship.js` 唯一口径 `cargoCapPartsOf`/`oreCapPartsOf`，战斗层不复制算式）。
+   *  UI（指挥栏「货舱总量」）只读它；`max <= 0` 时由 UI 整行隐藏（与共享护盾条“无则隐藏”同一规则）。 */
+  function cargoTotalFor(side, kind) {
+    const partsOf = kind === 'ore' ? oreCapPartsOf : cargoCapPartsOf;
+    const loadOf = kind === 'ore' ? oreLoadOf : cargoLoadOf;
+    let value = 0;
+    let max = 0;
+    let base = 0;
+    let modules = 0;
+    for (const u of sidesOf(side)) {
+      if (!u.alive) continue;
+      const p = partsOf(u);
+      value += loadOf(u);
+      max += p.total;
+      base += p.base;
+      modules += p.modules;
+    }
+    return { value, max, base, modules };
+  }
+
   return {
     get phase() { return phase; },
     get result() { return result; },
@@ -2838,6 +3023,14 @@ export function createBattle(preset) {
       return poolTotalFor(side, (p) => p.blastproof);
     },
     blastPoolTotal(side) { return this.blastPool(side).value; },
+    /** ★ 某阵营**货物**容量合计 `{value,max,base,modules}`（唯一口径：逐单位走 ship.js `cargoCapPartsOf`）。 */
+    cargoPool(side) {
+      return cargoTotalFor(side, 'cargo');
+    },
+    /** ★ 某阵营**矿物**容量合计 `{value,max,base,modules}`（唯一口径：逐单位走 ship.js `oreCapPartsOf`）。 */
+    orePool(side) {
+      return cargoTotalFor(side, 'ore');
+    },
     moduleTargetList,
     moduleTargetLocked, // ★ “激活锁定中”的唯一判据（UI 用：显示 已锁定 / 下次生效）
     shipEffectiveTarget,
@@ -2846,10 +3039,105 @@ export function createBattle(preset) {
     disableModule,
     moduleEffective, // 状态型模块“当前是否生效”的唯一判据（UI 用；非状态型返回 null）
     moduleGateMet, // ★ 触发门控（`hp_below_activate`）“当前是否满足”的唯一判据（UI 用；非门控型返回 null）
-    targetableBy: (ship, u) => !stealthBlocksTargeting(ship, u), // ★ 目标可选口径（唯一）：u 能否被 ship 选为主要攻击目标
+    targetableBy: (ship, u, kind) => targetAllowed(ship, u, kind), // ★ 目标可选口径（唯一）：潜行 + role 分离（「可选战斗单位」＝存活且未被潜行屏蔽）
+    //   （`kind` ＝ 候选来源选择器桶 'self'|'enemy'|'ally'|'any'；缺省/2 参调用按 'enemy' 对敌语义判定，
+    //     与既有 2 参调用完全兼容；UI 候选池只需把桶名带过来，**不自算任何过滤规则**）
     start,
     stop,
   };
+}
+
+/* ================= ★ 唯一的「进入战斗」接口（数据/引擎侧） =================
+ * 契约：**所有开战路径都必须经此入口**（演练编队界面、结算面板「再战」、将来的关卡/剧情入口…），
+ * 不允许在别处直接 `createBattle` / 自行拼 preset（否则会出现“第二条开战路径”）。
+ * 分层：
+ *   · `normalizeFormation(formation)` —— **纯函数**：校验并规范化双方编队（不改动入参、不建单位）。
+ *     UI 的“编队预检/不允许确认”也调用它 → **UI 与引擎同一校验口径**，不会出现两套判定。
+ *   · `startBattle(formation)` —— 规范化 + 建单位（复用 `createBattle` → `spawnList` → `createShip`，
+ *     等级经 `cfg.level`、定位经 `cfg.role` 传入），返回句柄供调用方查询/接管 UI。
+ * 编队条目结构（`ShipCfg`）：
+ *   { type:'combat', level:1, role?:'combat'|'logistics', modules:[{ moduleId:'cannon', level:1 }] }
+ *   · `type`   船型 id（`data/ships/index.js SHIPS` 的键；未知 → 丢弃并记 warning）
+ *   · `level`  船型等级，**钳制**到 [1, shipMaxLevel(type)]
+ *   · `role`   单位定位；缺省时用船型默认（`data/ships/<id>.js role`，再兜底 'combat'）
+ *   · `modules` 数组；字符串元素等价于 {moduleId, level:1}；未知模块丢弃；
+ *              模块等级钳制到 [1, moduleMaxLevel]；**超出该等级槽位数的部分截断**（槽位口径＝
+ *              `resolveShipAtLevel(type, level).slots`，与建单位后的 `ship.slots` 完全一致）
+ * 返回值（`normalizeFormation`）：{ allies:[ShipCfg], enemies:[ShipCfg], warnings:[Warning] }
+ *   Warning = { side:'ally'|'enemy', index:number, code:string, ...细节 }
+ *   code ∈ unknownType | levelClamped | unknownModule | moduleLevelClamped | slotOverflow
+ * 返回值（`startBattle`）：{ ok:boolean, error:null|'noUnits', battle:Battle|null,
+ *                           formation:{allies,enemies}, warnings:[Warning] }
+ *   · `ok:false`（error='noUnits'：任一方为空）→ **不创建战斗**（避免“空编队瞬间结算”）
+ *   · `ok:true` → `battle` 即既有句柄（phase/result/allies/enemies/units()/start()/stop()…），
+ *     但**尚未 start**：由调用方决定何时 `battle.start()`（战斗屏开战即暂停的既有交互由 UI 负责）。
+ * 调用示例：
+ *   const r = startBattle({ allies:[{type:'combat',level:5,modules:[{moduleId:'cannon',level:3}]}],
+ *                           enemies:[{type:'combat',role:'logistics'}] });
+ *   if (r.ok) { r.battle.start(); renderStage(r.battle); } */
+
+/** ★ 编队规范化（纯函数）：校验 + 等级钳制 + 模块合法性 + 槽位截断；UI 预检与引擎开战共用。 */
+export function normalizeFormation(formation = {}) {
+  const warnings = [];
+  const side = (list, sideKey) => {
+    const out = [];
+    if (!Array.isArray(list)) return out;
+    list.forEach((raw, index) => {
+      const type = raw && typeof raw === 'object' ? raw.type : null;
+      if (!getShip(type)) {
+        warnings.push({ side: sideKey, index, code: 'unknownType', type: type == null ? null : String(type) });
+        return;
+      }
+      const maxLv = shipMaxLevel(type);
+      const wantLv = Math.max(1, (raw.level | 0) || 1);
+      const level = Math.min(maxLv, wantLv);
+      if (level !== wantLv) warnings.push({ side: sideKey, index, code: 'levelClamped', from: wantLv, to: level });
+      // 槽位上限＝**该船型该等级**的解析结果（与建单位后的 `ship.slots` 同一口径）
+      const slots = Math.max(1, (resolveShipAtLevel(type, level) || {}).slots || 1);
+      const modules = [];
+      for (const m of Array.isArray(raw.modules) ? raw.modules : []) {
+        const spec = m && typeof m === 'object' ? m : { moduleId: m };
+        const mid = spec.moduleId ?? spec.id;
+        if (!mid || !MODULES[mid]) {
+          warnings.push({ side: sideKey, index, code: 'unknownModule', moduleId: mid == null ? null : String(mid) });
+          continue;
+        }
+        if (modules.length >= slots) {
+          warnings.push({ side: sideKey, index, code: 'slotOverflow', moduleId: mid, slots });
+          continue;
+        }
+        const mMax = moduleMaxLevel(MODULES[mid]);
+        const wantMl = Math.max(1, (spec.level | 0) || 1);
+        const mlv = Math.min(mMax, wantMl);
+        if (mlv !== wantMl) {
+          warnings.push({ side: sideKey, index, code: 'moduleLevelClamped', moduleId: mid, from: wantMl, to: mlv });
+        }
+        modules.push({ moduleId: mid, level: mlv });
+      }
+      const cfg = { type, level, modules };
+      // 单位定位：仅接受两个合法值；缺省（undefined）→ 建单位时回退船型默认值
+      const role = raw.role === 'logistics' ? 'logistics' : raw.role === 'combat' ? 'combat' : undefined;
+      if (role) cfg.role = role;
+      out.push(cfg);
+    });
+    return out;
+  };
+  return {
+    allies: side(formation.allies ?? formation.ally, 'ally'),
+    enemies: side(formation.enemies ?? formation.enemy, 'enemy'),
+    warnings,
+  };
+}
+
+/** ★ 唯一的「进入战斗」接口（数据/引擎侧）：规范化编队 → 创建双方单位 → 返回句柄。
+ *  详见上方契约注释；UI 侧的唯一入口是 `ui/battleView.js enterBattle()`（内部调用本函数）。 */
+export function startBattle(formation = {}) {
+  const norm = normalizeFormation(formation);
+  if (!norm.allies.length || !norm.enemies.length) {
+    return { ok: false, error: 'noUnits', battle: null, formation: norm, warnings: norm.warnings };
+  }
+  const battle = createBattle({ ally: norm.allies, enemy: norm.enemies });
+  return { ok: true, error: null, battle, formation: norm, warnings: norm.warnings };
 }
 
 export default createBattle;

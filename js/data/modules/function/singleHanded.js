@@ -15,6 +15,7 @@ export default {
   id: 'singleHanded',
   nameKey: 'module.singleHanded', // i18n -> 单枪匹马 / Single-Handed
   name: '单枪匹马',
+  icon: 'assets/img/单枪匹马.svg',
   category: 'function',
   target: {
     kinds: ['self'],   // 作用于自身（增益对象＝自身单位的攻击系数）
