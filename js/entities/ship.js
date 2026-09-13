@@ -396,6 +396,10 @@ function fxHasTag(fx, tag) {
  *    （避免误删条件型路径写入的同 key 记录）。
  *  ★ `shield` 类别参与模块护盾池容量（`modulePoolCapOf` → `coeff(ship,'shield')`）→ 系数真变化后
  *    同步 `recalcDerived`（与 `applyCoeffOp` 同一条重算路径）；无变化不重算。
+ *  ★ `mining` 类别（`mining_coeff_add`，如「矿物压缩」）**无需 `recalcDerived`**：其影响面
+ *    （矿物容量模块部分 `oreCapacityOf`、采矿激光实采量 `ore_gain × coeff(ship,'mining')`）
+ *    全部是**按需读取、无任何缓存派生值** ⇒ 写上 `coeffMods` 即生效（装上/启停即时、不逐 tick）。
+ *    故本函数只在 `shield` 系数变化时重算，其余类别（`attack`/`mining`…）无需额外分支。
  *  ★ 只在“结构变化”（安装/启停）时调用：**不逐 tick 写值**（Pass1 零数值变化铁律）。 */
 const COEFF_ADD_SUFFIX = '_coeff_add';
 export function syncStaticCoeffs(ship) {
@@ -416,7 +420,7 @@ export function syncStaticCoeffs(ship) {
       setCoeffMod(ship, inst.id, k.slice(0, -COEFF_ADD_SUFFIX.length), add);
     }
   }
-  if (coeff(ship, 'shield') !== before) recalcDerived(ship); // 护盾池容量随护盾系数变化
+  if (coeff(ship, 'shield') !== before) recalcDerived(ship); // 护盾池容量随护盾系数变化（其它类别无需重算，见函数注释）
   return ship;
 }
 
@@ -476,7 +480,9 @@ export function oreCapPartsOf(ship) {
 export function cargoLoadOf(ship) {
   return Math.max(0, (ship && ship.hull && ship.hull.cargo) || 0);
 }
-/** 当前**已装载矿物量**的唯一读口径（同 `cargoLoadOf`） */
+/** 当前**已装载矿物量**的唯一读口径（同 `cargoLoadOf`）：
+ *  ★ **唯一写入方**＝战斗层「采矿」结算（`battle.js` 结算步骤 3b `settleOreGains`：按比例分配后入 `hull.ore`）；
+ *    单位阵亡时由判死唯一出口 `onDeath` 把携带矿物**全额返还星区储量**并归 0（只返还矿物、不返还货物）。 */
 export function oreLoadOf(ship) {
   return Math.max(0, (ship && ship.hull && ship.hull.ore) || 0);
 }

@@ -19,7 +19,7 @@ export default {
   },
   coefficients: {
     attack: 0.5,             // 攻击类模块效果系数
-    shield: 1,               // 护盾类模块效果系数
+    shield: 0.8,               // 护盾类模块效果系数
     function: 1,             // 功能类模块效果系数
     transport: 1,            // 运输类模块效果系数（★ 货物容量 = 本体 + Σ(模块 cargo_cap_bonus × 本系数)）
     mining: 0.5,             // 采矿类模块效果系数（★ 矿物容量用本系数缩放模块部分）

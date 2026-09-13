@@ -17,11 +17,18 @@
  *   · `role`  单位定位：**不写＝用船型默认值**（`data/ships/<id>.js` 的 `role`，兜底 'combat'）；
  *     一旦在界面里选择即写入本字段（覆盖船型默认）。战斗界面据此决定显示在【战斗单位栏】或【后勤单位栏】。
  *   · `modules` 模块数组（超槽位由引擎规范化时截断，并在预检中先行提示）。
+ *
+ * ★ 星区（战斗场景）设定：`{ sector: { name, oreReserve } }` **与双方编队同级**随开战入口一起提交
+ *   （`getFormation()` / `onStart(formation)` / `normalizeFormation()` 同一条链）。
+ *   · `name`      用户自定义名称：**原样提交、UI 不做 i18n**（战斗屏按引擎 `battle.sector` 原样显示）；
+ *   · `oreReserve` 矿物储量：**输入格式校验＝非负整数**（本文件唯一自校验项；非法 → 提示 + 禁用「开战」），
+ *     真实缺省/钳制仍由引擎唯一口径 `normalizeSector()` 负责（缺省值登记在 `data/sector.js`）。
  */
 import { el } from '../core/utils.js';
 import { i18n } from '../i18n/index.js';
 import { SHIPS, SHIP_IDS, shipLevels, resolveShipAtLevel } from '../data/ships.js';
 import { MODULES } from '../data/modules.js';
+import { SECTOR_DEFAULTS } from '../data/sector.js';
 import { moduleMaxLevel } from '../entities/module.js';
 import { normalizeFormation } from '../systems/battle.js';
 
@@ -34,6 +41,11 @@ const DEFAULT_SHIPS = () => [{ type: 'combat', level: 1, modules: [] }];
 
 let allyShips = DEFAULT_SHIPS();  // 我方编队（编辑态）
 let enemyShips = DEFAULT_SHIPS(); // 敌方编队（编辑态）
+/* 星区（战斗场景）编辑态：名称＝用户自定义字符串（UI **原样显示、不做 i18n**）；
+ * 储量＝**输入框原文**（字符串，便于做“非负整数”校验；提交时再转 Number，交给引擎规范化钳制）。
+ * 缺省值取自 `data/sector.js SECTOR_DEFAULTS`（数值不在本文件硬编码）。 */
+let sectorName = SECTOR_DEFAULTS.name;
+let sectorOreText = String(SECTOR_DEFAULTS.oreReserve);
 let host = null;                  // 挂载点（战斗屏的 stageArea）
 let hooks = { onStart: null, onExit: null };
 
@@ -63,6 +75,55 @@ function cloneShips(list) {
     if (s.role) o.role = s.role;
     return o;
   });
+}
+/** 星区数据 → 快照（随编队一并交给开战入口；钳制/缺省由引擎 `normalizeFormation` 统一处理） */
+function cloneSector() {
+  return { name: sectorName, oreReserve: oreReserveValid(sectorOreText) ? Number(sectorOreText.trim()) : null };
+}
+/** ★ 矿物储量输入校验（唯一口径）：**非负整数**（纯数字；空串/小数/负号/其它字符 → 非法）。 */
+function oreReserveValid(text) {
+  return /^\d+$/.test(String(text == null ? '' : text).trim());
+}
+/** 星区设定编辑行（名称输入框 + 矿物储量输入框 + 非法提示）：
+ *  · 输入即写回编辑态；储量非法 → 就地提示「须为非负整数」并由调用方**禁用「开战」**（与预检告警同一处置）；
+ *  · 不在输入时整屏重绘（避免丢焦点）：就地更新提示，并通过 `onValidityChange(ok)` 通知调用方刷新开战按钮。 */
+function sectorBlock(onValidityChange) {
+  const nameInput = el('input', {
+    class: 'drill-sector-name',
+    type: 'text',
+    maxlength: '40',
+    placeholder: i18n.t('battle.drill.sectorNamePh'),
+    'aria-label': i18n.t('battle.drill.sectorName'),
+  });
+  nameInput.value = sectorName; // property 赋值（避免被当作字符串属性）
+  const oreInput = el('input', {
+    class: 'drill-sector-ore',
+    type: 'text',
+    inputmode: 'numeric',
+    'aria-label': i18n.t('battle.drill.sectorOreLabel'),
+  });
+  oreInput.value = sectorOreText;
+  const oreErr = el('div', { class: 'drill-warn-text' });
+  const syncOre = () => {
+    const ok = oreReserveValid(sectorOreText);
+    oreErr.textContent = ok ? '' : i18n.t('battle.drill.sectorOreInvalid');
+    oreErr.classList.toggle('hidden', ok);
+    oreInput.classList.toggle('invalid', !ok);
+    if (typeof onValidityChange === 'function') onValidityChange(ok);
+  };
+  nameInput.addEventListener('input', () => { sectorName = nameInput.value; });
+  oreInput.addEventListener('input', () => { sectorOreText = oreInput.value; syncOre(); });
+  syncOre();
+  return el('div', { class: 'drill-sector' }, [
+    el('div', { class: 'zone-label', text: i18n.t('battle.drill.sector') }),
+    el('div', { class: 'drill-sector-row' }, [
+      el('span', { class: 'drill-sector-cap', text: i18n.t('battle.drill.sectorName') }),
+      nameInput,
+      el('span', { class: 'drill-sector-cap', text: i18n.t('battle.drill.sectorOreLabel') }),
+      oreInput,
+    ]),
+    oreErr,
+  ]);
 }
 
 /* ---------- 渲染 ---------- */
@@ -231,9 +292,10 @@ function warnText(w) {
   }
 }
 
-/** 预检：**调用引擎同一函数** `normalizeFormation` 得告警（UI 不自算规则） */
+/** 预检：**调用引擎同一函数** `normalizeFormation` 得告警（UI 不自算规则）。
+ *  星区随编队一并传入 → 引擎按唯一口径 `normalizeSector` 填缺省/钳制（UI 只校验“非负整数”这一输入格式）。 */
 function preflight() {
-  const current = { allies: cloneShips(allyShips), enemies: cloneShips(enemyShips) };
+  const current = { allies: cloneShips(allyShips), enemies: cloneShips(enemyShips), sector: cloneSector() };
   const norm = normalizeFormation(current);
   const warnByShip = new Map();
   for (const w of norm.warnings) {
@@ -244,11 +306,12 @@ function preflight() {
   return { current, norm, warnByShip };
 }
 
-/** 演练配置屏：双方编队编辑 + 预检提示 + 开战/返回 */
+/** 演练配置屏：双方编队编辑 + 星区设定 + 预检提示 + 开战/返回 */
 function renderLaunch() {
   if (!host) return;
   const { current, norm, warnByShip } = preflight();
-  const blocked = norm.warnings.length > 0 || !current.allies.length || !current.enemies.length;
+  const fleetBlocked = norm.warnings.length > 0 || !current.allies.length || !current.enemies.length;
+  const oreOk = oreReserveValid(sectorOreText);
 
   const warnList = el('div', { class: 'drill-warn-list' });
   if (norm.warnings.length) {
@@ -269,19 +332,27 @@ function renderLaunch() {
   const startBtn = el('button', {
     class: 'btn primary',
     text: i18n.t('battle.drill.start'),
-    title: blocked ? i18n.t('battle.drill.blocked') : '',
+    title: fleetBlocked || !oreOk ? i18n.t('battle.drill.blocked') : '',
     onclick: () => {
       const pf = preflight();
-      if (pf.norm.warnings.length || !pf.current.allies.length || !pf.current.enemies.length) return; // 不允许确认
+      // 不允许确认：编队预检有告警 / 双方任一为空 / 星区储量非法（三者同一处置）
+      if (pf.norm.warnings.length || !pf.current.allies.length || !pf.current.enemies.length) return;
+      if (!oreReserveValid(sectorOreText)) return;
       if (typeof hooks.onStart === 'function') hooks.onStart(pf.current);
     },
   });
-  startBtn.disabled = blocked; // property 赋 disabled，避免被当作字符串属性写入
+  startBtn.disabled = fleetBlocked || !oreOk; // property 赋 disabled，避免被当作字符串属性写入
+  /** 储量输入变化时就地刷新「开战」可用性（不整屏重绘，避免丢焦点） */
+  const syncStartBtn = (ok) => {
+    startBtn.disabled = fleetBlocked || !ok;
+    startBtn.title = fleetBlocked || !ok ? i18n.t('battle.drill.blocked') : '';
+  };
 
   host.replaceChildren(
     el('div', { class: 'drill-builder' }, [
       el('h3', { text: i18n.t('battle.drill.title') }),
       el('p', { class: 'drill-hint', text: i18n.t('battle.drill.hint') }),
+      sectorBlock(syncStartBtn),
       el('div', { class: 'drill-grid' }, [renderFleetColumn('ally', warnByShip), renderFleetColumn('enemy', warnByShip)]),
       warnList,
       el('div', { class: 'drill-actions' }, [
@@ -304,9 +375,9 @@ export const setupView = {
     hooks = { onStart: opts.onStart || null, onExit: opts.onExit || null };
     renderLaunch();
   },
-  /** 当前编辑态编队（深拷贝快照，可直接作为 `startBattle` 入参） */
+  /** 当前编辑态编队（深拷贝快照，可直接作为 `startBattle` 入参）；含星区数据 `sector` */
   getFormation() {
-    return { allies: cloneShips(allyShips), enemies: cloneShips(enemyShips) };
+    return { allies: cloneShips(allyShips), enemies: cloneShips(enemyShips), sector: cloneSector() };
   },
   /** 覆盖编辑态（如从“再战”快照或将来关卡预设载入）；传 null 则恢复默认 */
   setFormation(formation = {}) {
@@ -314,16 +385,26 @@ export const setupView = {
     const e = Array.isArray(formation.enemies) ? formation.enemies : null;
     if (a) allyShips = cloneShips(a);
     if (e) enemyShips = cloneShips(e);
+    if (formation.sector && typeof formation.sector === 'object') {
+      // 星区：名称原样、储量按引擎规范化后的数值回填输入框（非法/缺省 → 缺省占位值）
+      const sec = normalizeFormation({ sector: formation.sector }).sector;
+      sectorName = sec.name;
+      sectorOreText = String(sec.oreReserve);
+    }
     if (!a && !e) {
       allyShips = DEFAULT_SHIPS();
       enemyShips = DEFAULT_SHIPS();
+      sectorName = SECTOR_DEFAULTS.name;
+      sectorOreText = String(SECTOR_DEFAULTS.oreReserve);
     }
     if (host) renderLaunch();
   },
-  /** 恢复默认编队（每次从战斗“离开”回到配置界面时不清空，仅显式调用时重置） */
+  /** 恢复默认编队与星区（每次从战斗“离开”回到配置界面时不清空，仅显式调用时重置） */
   reset() {
     allyShips = DEFAULT_SHIPS();
     enemyShips = DEFAULT_SHIPS();
+    sectorName = SECTOR_DEFAULTS.name;
+    sectorOreText = String(SECTOR_DEFAULTS.oreReserve);
     if (host) renderLaunch();
   },
   /** 卸载宿主（避免离屏后仍被重绘） */

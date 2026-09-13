@@ -121,6 +121,23 @@
 .drill-warn-list { display: flex; flex-direction: column; gap: 3px; }
 .drill-warn-title { font-size: 12px; color: var(--hp); }
 .drill-warn-text { font-size: 11px; color: #ffb0b8; line-height: 1.45; }
+.drill-warn-text.hidden { display: none; } /* 星区储量为合法值时隐藏提示行 */
+/* ---------- 星区（战斗场景）设定：名称 + 矿物储量 ---------- */
+.drill-sector {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: linear-gradient(180deg, rgba(20, 27, 51, 0.5), rgba(10, 14, 30, 0.5));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.drill-sector-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.drill-sector-cap { font-size: 11px; color: var(--text-dim); }
+.drill-sector-name { flex: 1 1 180px; min-width: 0; }
+.drill-sector-ore { flex: 0 1 110px; min-width: 80px; }
+/* 非法取值（非负整数之外的输入）：红框提示，且「开战」被禁用 */
+.drill-sector-ore.invalid { border-color: rgba(255, 93, 108, 0.75); }
 .drill-actions { display: flex; gap: 10px; justify-content: center; margin-top: 4px; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
@@ -599,6 +616,19 @@
 }
 .mod-status { margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
 
+/* ★ 星区资源栏（指挥栏**下方**独立一栏：星区名 + 矿物储量 剩余/初始）
+ *   行体例**完全复用**指挥栏共享条（`command-alliance-row/fill/num` + `is-ore` 配色），
+ *   仅外框沿用矿物绿的浅色描边以区分于指挥栏（暖黄）。 */
+.battle-zone.sector { border-color: rgba(126, 226, 154, 0.28); }
+/* ★ 星区资源栏内「星区冷却」小节：位于**储量条上方**、与储量条**独立成组**
+ *   —— 仅极小间距 + 组内标题（复用既有 `.zone-label` 小标体例，不自造重型样式）；
+ *   行体例仍复用 `command-alliance-row`（无进度条，仅「模块名 + 剩余冷却」）。 */
+.sector-cd-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 3px; }
+.sector-cd-group.hidden { display: none; }
+/* 「不可停用」标签（`undeactivatable`）：启停开关灰显（引擎侧同样拒绝停用请求） */
+.btn.tiny.locked,
+.btn.tiny:disabled.locked { opacity: 0.4; cursor: not-allowed; }
+
 /* 模块行操作控件（启停 / 齿轮 AI 预留） */
 .mod-controls { display: inline-flex; gap: 4px; margin-left: 8px; }
 .btn.tiny { padding: 1px 8px; font-size: 11px; line-height: 1.5; border-radius: 6px; }
@@ -708,6 +738,9 @@
 /* 平局（双方全灭）：中性黄，既非胜色也非败色 */
 .settle-panel .result-title.draw { color: #ffd24a; text-shadow: 0 0 12px rgba(255, 210, 74, 0.5); }
 .settle-panel .result-desc { margin: 0; color: var(--text-dim); font-size: 12px; }
+/* 结算面板的星区行（按星区命名：显示星区名称；无名称时整行隐藏） */
+.settle-panel .result-sector { margin: 0; color: var(--ore); font-size: 12px; letter-spacing: 1px; }
+.settle-panel .result-sector.hidden { display: none; }
 .settle-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn.ghost { background: transparent; }
 

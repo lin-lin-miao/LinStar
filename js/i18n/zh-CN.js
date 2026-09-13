@@ -62,6 +62,10 @@ export default {
   'module.energyTransfer': '能量输送',
   'module.cargoHold': '货舱',
   'module.oreHold': '矿舱',
+  'module.miningLaser': '采矿激光',
+  'module.oreCompressor': '矿物压缩', // 采矿 · 常驻增幅器（自身采矿系数 mining_coeff_add）
+  'module.genesis': '创世纪', // 采矿 · 无目标主动（星区剩余储量**加法** sector_ore_add）
+  'module.oreEnrichment': '矿藏富集', // 采矿 · 无目标主动（星区剩余储量**乘法** sector_ore_mul）
   'module.emp': '电磁脉冲',
   'module.alphaShield': '阿尔法护盾',
   'module.regenShield': '再生护盾',
@@ -113,6 +117,12 @@ export default {
   'battle.drill.role.combat': '战斗单位',
   'battle.drill.role.logistics': '后勤单位',
   'battle.drill.slots': '模块 {n}/{m}',
+  // 星区（战斗场景）设定：名称＝用户自定义字符串（**原样提交/显示、不做 i18n**）；储量＝非负整数
+  'battle.drill.sector': '星区设定',
+  'battle.drill.sectorName': '星区名称',
+  'battle.drill.sectorNamePh': '（留空则不显示名称）',
+  'battle.drill.sectorOreLabel': '矿物储量',
+  'battle.drill.sectorOreInvalid': '矿物储量须为 0 或正整数',
   'battle.drill.blocked': '存在无效配置，无法开战',
   'battle.drill.warn.title': '配置存在问题（{n} 项），修正后方可开战：',
   'battle.drill.warn.slotOverflow': '模块数超出该等级槽位（上限 {n}），请卸除多余模块或提高单位等级',
@@ -124,6 +134,14 @@ export default {
   'battle.zone.combat': '我方战斗单位',
   'battle.zone.logistics': '我方后勤单位',
   'battle.zone.command': '指挥栏',
+  // 星区资源栏（指挥栏下方独立一栏）：栏目标题无名称时用「星区」；行标签＝矿物储量（剩余/初始）
+  'battle.zone.sector': '星区',
+  'battle.sector.ore': '矿物储量',
+  'battle.sector.line': '星区：{name}',
+  // 星区冷却组（储量条**上方**的独立小节标题）：组内每模块一行，**仅冷却中显示**、就绪隐藏
+  'battle.sector.cdTitle': '星区冷却',
+  // 星区资源栏·星区冷却行（每个星区冷却模块各一行，**仅在冷却中显示**）：剩余冷却 tick 数
+  'battle.sector.cd': '冷却 {n}t',
   'battle.command.fleet': '全队主要目标',
   'battle.command.preview': '当前命中：{name}',
   'battle.command.noTarget': '（无存活目标）',
@@ -233,6 +251,8 @@ export default {
   'battle.detail.buffing': '效果持续 {n}t',
   'battle.detail.disable': '停用',
   'battle.detail.enable': '启用',
+  // 「不可停用」标签（`undeactivatable`）：开关灰显时的悬停说明（引擎判据 `moduleUndeactivatable`）
+  'battle.detail.undeactivatable': '该模块不可停用',
   'battle.detail.disabled': '已停用',
   'battle.detail.ended': '战斗已结束，操作锁定（仅可浏览）',
   'battle.detail.aiGear': '模块 AI 策略（开发中预留入口）',
@@ -247,6 +267,10 @@ export default {
   'battle.detail.statBlast': '爆炸范围 {n}',
   'battle.detail.statInvincible': '无敌 {n}t',
   'battle.detail.statRegen': '回盾 {n}/次',
+  'battle.detail.statOreGain': '采矿量 {n}/次', // 采矿激光：每次激活的采矿量（× 采矿系数后取整）
+  'battle.detail.statMiningCoeff': '采矿系数 {v}', // 矿物压缩：自身采矿系数加性（不加取整、不乘船级系数）
+  'battle.detail.statSectorOreAdd': '星区矿物 {v}/次', // 创世纪：星区剩余储量加法（绝对增量、无上限）
+  'battle.detail.statSectorOreMul': '星区矿物 ×{v}/次', // 矿藏富集：星区剩余储量乘法（展示实际乘数 1+比例）
   'battle.detail.statCap': '护盾上限 +{n}',
   // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
   //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
@@ -300,5 +324,12 @@ export default {
   // ★ 按阵亡数回血（`hp_regen_per_death`，如「回收利用」）：**低频**——必须有阵亡才会出现，
   //   且仅“实际回血 > 0”时每 tick 每模块至多一条；带模块拥有者。
   'battle.log.recycleRegen': '{owner}的{module}回收利用：阵亡 {n} 个单位，恢复 {amount} 点生命',
+  // ★ 采矿 / 星区储量类**低频战报**（成句体例：`{owner}的{module}：…`，owner 着色、module 恒绿）：
+  //   · `miningGain`：每次激活**实际入库量 > 0** 才记；按**模块实例**聚合成一条（每实例每 tick ≤ 1 条）；
+  //   · `sectorOreAdd`：仅实际增量 > 0 时记（`n`＝该条实际增量，已乘采矿系数）；
+  //   · `sectorOreMul`：仅该条真正改变储量时记（`mul`＝实际乘数如 1.1、`n`＝该条落地前后差值）。
+  'battle.log.miningGain': '{owner}的{module}：采集 {n} 点矿物',
+  'battle.log.sectorOreAdd': '{owner}的{module}：星区矿物 +{n}',
+  'battle.log.sectorOreMul': '{owner}的{module}：星区矿物 ×{mul}（+{n}）',
   'battle.result.close': '收起',
 };

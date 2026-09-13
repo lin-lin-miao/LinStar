@@ -30,7 +30,7 @@ export default {
   // 常驻被动：无命中目标（自身词条不需要目标）
   target: {},
   effects: {
-    type: ['passive'], // 常驻被动（无激活/冷却/持续/耗能）：引擎跳过“激活-触发”流程
+    type: ['passive', 'undeactivatable'], // 常驻被动（无激活/冷却/持续/耗能）：引擎跳过“激活-触发”流程
     shield_coeff_add: 0.1,   // Lv1 占位：自身护盾系数 +0.1
     energy_cap_bonus: -100,  // Lv1 占位：自身能量上限 −100（常驻削减）
   },

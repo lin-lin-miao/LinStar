@@ -10,6 +10,9 @@
  *   - `type: ['passive']`：**常驻被动**标签——引擎据标签跳过“激活-触发”流程；UI 据此把该行标为
  *     状态型（成本列「状态型」），生效判据由 `moduleEffective` 给出。
  *   - `target: {}`：无命中目标（自身词条无需目标）。
+ *   - `type: ['passive','undeactivatable']`：**不可停用**标签——引擎（`battle.js disableModule`）按**标签**
+ *     拒绝任何来源的停用请求（模块恒保持启用）；UI 把该行开关**灰显**并以悬停说明「该模块不可停用」。
+ *     ⚠ 语义是“不能被停用”（区别 `passive`＝不激活），据标签识别、不按模块 id 硬编码。
  *   - ⚠ 本词条**不得**与 `duration_ticks` 搭配（时长型不属常驻，见 ship.js 常驻判据）；
  *     也不得写成 `cargo_cap_target`（目标级词条不属本路径）。
  *   - 对应开发清单 **C25 货舱**（运输类：运输量/容量提升）。
@@ -25,7 +28,9 @@ export default {
   // 常驻被动：无命中目标（自身词条不需要目标）
   target: {},
   effects: {
-    type: ['passive'], // 常驻被动（无激活/冷却/持续/耗能）：引擎跳过“激活-触发”流程
+    // `passive`＝常驻被动（无激活/冷却/持续/耗能）：引擎跳过“激活-触发”流程；
+    // `undeactivatable`＝**不可停用**（引擎按**标签**拒绝停用请求、UI 开关灰显 + 悬停说明）
+    type: ['passive', 'undeactivatable'],
     cargo_cap_bonus: 120, // Lv1 占位：自身货物容量 +120（× 本船运输系数后计入总量）
   },
   maxLevel: 16,

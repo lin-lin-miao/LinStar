@@ -15,6 +15,8 @@
  *              + 潜行标记 stealthOps，**先于伤害结算**）；
  *       步骤 2b 强制目标统一落地（forceOps：把选定目标压入施放者的强制来源栈，只改目标指向）；
  *       步骤 3 能量统一落地（回充 → 模块消耗 → energy_target 量值）；
+ *       步骤 3b 星区矿物采集统一落地（oreGains：按比例分配 → 入 `hull.ore` → 扣减星区储量，唯一分配点）；
+ *       步骤 3c 星区储量词条统一落地（sectorOps：**先加法、后乘法**，**无上限**；星区侧模块冷却同批写入）；
  *       步骤 4 护盾/模块池填充/血量/自毁/临时寿命统一落地。
  *     Phase B（相内子步，迭代命中条目）：按“普通/爆炸”吸收链结算真·武器/爆炸命中；
  *     Phase B2：反射返程统一在本 tick 命中全部结算完之后补打回（不递归、逐笔 noReflect）。
@@ -25,6 +27,39 @@
  *   模块在 data/modules.js 中用 effects 词条声明效果——
  *     damage     → 对每个选定目标造成伤害（×船类系数）
  *     shield_gain → **自身**恢复护盾（×船类系数；作用于模块所属自身）
+ *     ore_gain   → **自身**开采矿物（×**采矿系数**；无目标、不进入目标选择链）：
+ *        Pass1 只记“采集请求”（`__pending.oreGains`，按**剩余矿物容量**截断，**零数值变化**）→
+ *        **结算步骤 3b** 跨单位一次算清：星区储量足额则各按请求量、不足则**按请求量比例均分**
+ *        （floor + 余数按“请求量大者优先”）→ 入 `hull.ore`（读口径 `oreLoadOf`）→ 扣减星区储量；
+ *        剩余容量为 0 / 星区储量为 0 → 不激活（`canImpact` 同一出口）；单位阵亡 → 携带矿物全额返还储量。
+ *        ★ 战报（低频）：**仅实际入库量 > 0** 时记 1 条 `battle.log.miningGain`（`{owner}的{module}：采集 {n} 点矿物`），
+ *          按**模块实例**聚合成一条（每实例每 tick ≤ 1 条，上限＝实际入库的“单位×模块实例”对数）。
+ *     mining_coeff_add → **自身**采矿系数加性修饰（**自身**词条，与 `attack_coeff_add`/`shield_coeff_add`
+ *        同族同表 `COEFF_ADD`）；常驻路径 `ship.js syncStaticCoeffs`（`_coeff_add` 后缀自动识别）。
+ *        影响面全是**按需读取**（矿物容量模块部分 `oreCapacityOf`、采矿激光实采量 `ore_gain × coeff`），
+ *        无任何缓存派生值 ⇒ **无需 `recalcDerived`**、装上/启停即时生效。
+ *     sector_ore_add → **星区**剩余矿物储量**加法**（绝对增量 `sector_ore_add: 100` ⇒ 剩余 +100）：
+ *        实际增量＝`round(词条值 × coeff(拥有者,'mining'))`（**乘采矿系数**，与采矿激光实采量/矿舱容量同口径；
+ *        在 **Pass1 记账时**算好并取整一次 ⇒ 与采矿激光“同口径、同位置”，tick 内系数变化不影响已记意图）；
+ *     sector_ore_mul → **星区**剩余矿物储量**乘法**（增量比例 `sector_ore_mul: 0.1` ⇒ 剩余 ×1.1，结果取整；
+ *        **纯比例、不乘任何系数**）：
+ *        二者作用于**星区**（既非自身也非目标词条）、模块需**无目标**（`target: {}`、不进目标选择链）；
+ *        **混合冷却口径**：模块**实例自身冷却**（`cooldown_ticks`）＋**星区侧该模块冷却**
+ *        （**独立词条 `sector_cd_ticks`**，星区只接受一次触发）**同时就绪**才能生效 —— 两把冷却互相独立、
+ *        各自计时，同词条的各模块在星区上的冷却也各自独立（key ＝ 模块 id）；
+ *        门控落在 `canImpact`（唯一出口）：不满足 → **不激活、不耗能、不进冷却**；
+ *        同 tick 多个单位携带同一模块 → 固定顺序**只接受第一个**。
+ *        Pass1 只记意图（`__pending.sectorOps`，**零数值变化**）→ **结算步骤 3c** 统一落地
+ *        （先加法求和加入、再乘法逐条作用在当前剩余上并各取整一次；**星区储量无上限**），
+ *        星区冷却同批写入（绝对到期 tick 模型，时长取 `sector_cd_ticks`）；
+ *        只读口径＝`battle.sector.cd`（**UI 只读**）。
+ *        ★ 战报（低频，**只在真正生效时**）：加法 `battle.log.sectorOreAdd`（`{owner}的{module}：星区矿物 +{n}`，
+ *          `n`＝该条实际增量）、乘法 `battle.log.sectorOreMul`（`{owner}的{module}：星区矿物 ×{mul}（+{n}）`，
+ *          `n`＝该条落地前后差值）——每模块每次激活至多 1 条，且被星区侧冷却限频。
+ *     sector_cd_ticks → **星区侧冷却词条**（**独立词条**，见 `data/sector.js`「星区侧冷却词条」）：
+ *        **词条存在即代表该模块参与星区冷却**（按词条识别、不硬编码模块 id）——以后任何模块带上它
+ *        就自动受星区侧冷却约束（门控 / 落地 / UI 冷却行枚举**同源**，识别函数 `hasSectorCdFx`）；
+ *        时长＝**本词条值**（不再取 `cooldown_ticks`，后者只管实例自身冷却）；`0` 也算参与。
  *     shield_gain_target → 对每个选定目标恢复/汲取护盾（目标级）
  *     force_target_self（`type` 标签）→ 把每个选定目标压入“强制来源栈”（栈顶＝最后激活者优先被集火；
  *       撤销只出栈，不恢复旧目标）
@@ -121,6 +156,8 @@ import { i18n } from '../i18n/index.js';
 // ★ 唯一开战接口的入参校验口径：船型注册表 + 等级解析（`data/ships.js` 转发 `data/ships/index.js`）、
 //   模块注册表与模块等级上限。UI 的编队预检也调用本文件导出的 `normalizeFormation`（同一口径，不各自实现）。
 import { MODULES } from '../data/modules.js';
+// ★ 星区（战斗场景）数据的**缺省值登记处**（名称/储量缺省值只放 data/，引擎不硬编码数值）
+import { SECTOR_DEFAULTS, hasSectorCdFx, sectorCdTicksFx } from '../data/sector.js';
 import { getShip, resolveShipAtLevel, shipMaxLevel } from '../data/ships.js';
 import { moduleMaxLevel } from '../entities/module.js';
 import {
@@ -231,6 +268,12 @@ function damageTypeTag(fx) {
 function modTok(inst) {
   return { label: i18n.t(inst.cfg.nameKey), mod: true };
 }
+/** 战报里的**小数数值段**（乘数/系数类）：取 3 位小数并去掉尾随 0（1.1 / 1.15 / 0.95；整数原样）。
+ *  仅用于战报文案的数值呈现，**不参与任何计算**。 */
+function fmtLogNum(v) {
+  const n = Number(Number(v).toFixed(3));
+  return String(n);
+}
 /** 一个吸收段 → 填入 {abs} 的值：自身护盾模块=绿段对象；舰载护盾/共享同盟/防爆/舰体=纯文本标签 */
 function segAbs(s) {
   if (s.k === 'mod') return modTok(s.inst);
@@ -289,6 +332,14 @@ let activeAllies = [];
 let activeEnemies = [];
 const teamOf = (s) => (s.side === 'ally' ? activeAllies : activeEnemies);
 const isType = (fx, k) => Array.isArray(fx && fx.type) && fx.type.includes(k);
+
+/* ---------- ★「不可停用」标签（`type` 含 `undeactivatable`）----------
+ * 语义：带该标签的模块**不能被停用**——引擎侧一律**拒绝**停用请求（模块恒保持启用、不产生任何侧效/战报），
+ *      UI 侧只做**呈现**（开关灰显 + 悬停说明），故任何来源（UI、控制台调试、将来脚本/关卡）都无法绕过。
+ * 识别方式：**按标签**（与 `passive`/`solo`/`stealth` 同一体例），**不按模块 id 硬编码**。 */
+const TAG_UNDEACTIVATABLE = 'undeactivatable';
+const isUndeactivatable = (inst) =>
+  !!(inst && inst.cfg && isType(inst.cfg.effects, TAG_UNDEACTIVATABLE));
 
 /** 目标“自己的护盾池”按【使用顺序】列表：
  *  - 时长型护盾模块池：按激活顺序(_shieldSeq 先激活先使用)；allowBp=false 时跳过防爆池（普通伤害不碰防爆）；
@@ -462,11 +513,48 @@ function drainBlastproof(target, amount) {
 
 /**
  * 创建一场战斗。
- * @param {{ally: [{type, modules}], enemy: [{type, modules}]}} preset 双方编队配置
+ * @param {{ally: [{type, modules}], enemy: [{type, modules}], sector?: {name, oreReserve}}} preset
+ *        双方编队配置 + 星区（战斗场景）数据（缺省按 `data/sector.js SECTOR_DEFAULTS` 兜底并钳制）
  */
 export function createBattle(preset) {
   const allies = [];
   const enemies = [];
+  /* ---------- 星区（战斗场景）：名称 + 矿物储量 ----------
+   * · `sectorName`      用户自定义名称（UI/战报**原样显示、不做 i18n**；空串＝不显示名称前缀）
+   * · `oreReserve`      当前**剩余**矿物储量（初值＝`oreReserveInit`，开采扣减、阵亡返还）
+   * · `oreReserveInit`  **初始**储量（只读快照，供 UI「剩余/初始」显示）
+   * ★ 读取口径：`battle.sector`（只读快照，见下方 return）；**UI 不计算储量**，只读它。
+   * ★ 守恒（**仅对“采矿/阵亡返还”这一对**）：扣减＝本 tick **实际入库**总量；返还＝单位阵亡时携带的
+   *    矿物（不设上限）⇒ 二者相抵，矿物不会因同 tick 阵亡丢失。
+   *   ⚠ **星区储量没有上限**（用户口径）：星区词条（`sector_ore_add` / `sector_ore_mul`，结算步骤 3c）
+   *     可把剩余储量推到**高于初始储量**（`oreReserveInit` 仍是初始快照、不随之变化）
+   *     ⇒ 因此**不存在“剩余 ≤ 初始”这一不变量**（星区资源栏的条幅按 100% 封顶，仅显示层处理）。 */
+  const sectorInit = normalizeSector(preset && preset.sector);
+  const sectorName = sectorInit.name;
+  const oreReserveInit = sectorInit.oreReserve;
+  let oreReserve = oreReserveInit;
+  /* ---------- ★ 星区侧「模块冷却」（**独立词条 `sector_cd_ticks`** 驱动，与模块 id 解耦）----------
+   * ★ 用户确认口径：模块要生效必须**同时**满足
+   *     ① 模块实例自身冷却已就绪（`cooldown_ticks`，与普通模块完全一致，走既有 `inst.cooldown`）；
+   *     ② **星区侧该模块的冷却已结束**（星区**只接受一次触发**）——参与判据＝**模块是否带词条
+   *        `sector_cd_ticks`**（**按词条识别、不硬编码模块 id**，识别口径唯一实现在
+   *        `data/sector.js hasSectorCdFx`；引擎薄封装 `hasSectorCd`/`sectorCdTicksOf`），
+   *        时长＝**该词条值**（不再取 `cooldown_ticks`）。
+   *   两把冷却互相独立、各自计时；**同词条的多个模块在星区上的冷却也各自独立**（key ＝ 模块 id）。
+   * ★ 数据结构＝`sectorCdUntil: Map<模块id, 到期 tick>`（**绝对到期 tick 模型**）：
+   *     · 就绪判据 `runTicks >= until`；剩余 `max(0, until − runTicks)`；
+   *     · **没有逐 tick 递减**（故不存在“递减落在 Pass1 还是结算”的顺序问题，也**不会逐 tick 抖动**）；
+   *     · 到期 tick 在**结算步骤 3c** 写入，取值＝`timeScaled(sector_cd_ticks, tickTimeCoeff(ship))`
+   *       —— 与同一实例自身冷却的 `startCooldown`（取 `cooldown_ticks`）**完全同算法**
+   *       ⇒ 两个词条取同值时，对**被接受的那个单位**而言两把冷却**在同 tick 到期**
+   *       （星区冷却只额外约束**其它**单位）；
+   *     · `runTicks` 在 `step()` 起始 +1、全 tick 恒定（Pass1 / 结算 / 战报后 UI 读数同值）⇒
+   *       门控与 UI 读数**同口径**、与遍历顺序无关、双方镜像对等。
+   * ★ `sectorClaimedTick`＝**本 tick**已被星区接受的模块 id 集合（Pass1 记账，**零数值变化**）：
+   *    同一 tick 多个单位携带同一模块时，按固定结算顺序（我方→敌方）**只接受第一个**，
+   *    其余单位本 tick 不激活（不耗能、不进冷却）；`step()` 起始清空。 */
+  const sectorCdUntil = new Map(); // 模块 id -> 到期 tick（含）；无记录＝就绪
+  const sectorClaimedTick = new Set(); // 本 tick 已被星区接受的模块 id（Pass1 记账，每 tick 起始清空）
   let phase = 'idle'; // idle | running | settled
   let result = null;
   let tickOff = null;
@@ -959,11 +1047,13 @@ export function createBattle(preset) {
   const CAPFIELD = { shield_cap_target: 'sh', hp_cap_target: 'hp', energy_cap_target: 'en' };
   /** 类别系数加性修饰词条 → 系数类别（可扩展：加性增益词条名 → `coeff()` 的 category）
    *  如 `attack_coeff_add: 0.2` = **自身** attack 系数 +0.2（base 1.0 → 1.2）；
-   *  `shield_coeff_add: 0.1` = **自身** shield 系数 +0.1（作用于护盾池容量，见 modulePoolCapOf）。
+   *  `shield_coeff_add: 0.1` = **自身** shield 系数 +0.1（作用于护盾池容量，见 modulePoolCapOf）；
+   *  `mining_coeff_add: 0.1` = **自身** mining 系数 +0.1（作用于矿物容量模块部分与采矿激光实采量）。
    *  ★ 本表服务于**结算阶段**的条件型/时长型路径（`coeffOps` → `applyCoeffOp`）；
    *    **常驻**（`passive`，无 `duration_ticks`）的同类词条由 ship.js `syncStaticCoeffs` 直接写
-   *    同一张 `coeffMods` 表（安装/启停时），二者共用 `setCoeffMod` 与 `clearAllSourceMods` 撤销入口。 */
-  const COEFF_ADD = { attack_coeff_add: 'attack', shield_coeff_add: 'shield' };
+   *    同一张 `coeffMods` 表（安装/启停时），二者共用 `setCoeffMod` 与 `clearAllSourceMods` 撤销入口
+   *    ——（`_coeff_add` 后缀规则，故新增同族词条**无需**另加特判）。 */
+  const COEFF_ADD = { attack_coeff_add: 'attack', shield_coeff_add: 'shield', mining_coeff_add: 'mining' };
   /** 类别系数**乘性**修饰词条 → 系数类别（**预留扩展点，当前无任何词条映射**）。
    *  ★ 注意：`damage_coeff_mul` **不属于**本表 —— 它是**受伤减免系数**（见 DAMAGE_TAKE_MUL），
    *    作用于该单位**受到的**一切伤害、不参与 `coeff()`；本乘性表仅保留给未来“按类别乘性”的词条。 */
@@ -1068,6 +1158,11 @@ export function createBattle(preset) {
     if (o) recomputeCap(o); // 重新计入自身常驻加成（含血量/能量上限、能量恢复）
   }
   function disableModule(inst) {
+    // ★ 「不可停用」标签（`type` 含 `undeactivatable`）：**引擎侧唯一拒绝点**——
+    //   任何来源（UI 开关、控制台调试、将来脚本）调用停用都直接忽略：模块保持启用、
+    //   不改任何数值/计时/修饰、不产生战报（因此无需 UI 之外的额外防护）。
+    //   返回 false 表示“本次停用被拒绝”（既有调用方忽略返回值，行为不变）。
+    if (isUndeactivatable(inst)) return false;
     inst.enabled = false;
     if (inst._ramp) inst._ramp = { key: '', count: 0 }; // 停用 → 逐步伤害成长归零
     dropSourceMods(inst); // 移除其施加在其它单位上的护盾上限影响
@@ -1273,9 +1368,94 @@ export function createBattle(preset) {
     );
   }
 
+  /** 单位**剩余矿物容量**（唯一口径：`oreCapacityOf(ship)`【本体 + Σ模块×采矿系数，取整】− `oreLoadOf(ship)`）。
+   *  `claimed`＝本 tick 该单位**已认领**的采集量（单位内运行计数，与能量门控 `ctx.avail` 同一体例：
+   *   只存在于 Pass1 的局部语境，**不写任何游戏状态**）——同一单位多个采矿模块据此**累加截断**，
+   *   保证该单位本 tick 的入库总量不超过剩余容量。 */
+  function oreRoomOf(ship, claimed = 0) {
+    return Math.max(0, oreCapacityOf(ship) - oreLoadOf(ship) - Math.max(0, claimed || 0));
+  }
+
+  /* ---------- ★ 星区词条（直接改**星区矿物储量**的模块：创世纪 / 矿藏富集）---------- */
+  /** 星区词条 → 归一化操作类型（**唯一登记表**，与既有 `COEFF_ADD`/`AMOUNT` 同一体例）：
+   *  · `sector_ore_add` ＝ **绝对增量**（＋固定值）；
+   *  · `sector_ore_mul` ＝ **增量比例**（0.1 ⇒ 当前剩余储量 ×(1+0.1)）。
+   *  ⚠ 作用对象＝**星区**（战场全局）：既非自身词条也非目标词条 —— 无 `_target` 后缀、
+   *    也不作用于模块所属单位；模块需**无目标**（`target: {}`）、不进目标选择链。 */
+  const SECTOR_WORDS = { sector_ore_add: 'add', sector_ore_mul: 'mul' };
+  /** 该模块实例的星区词条（无则 `null`）：`{ key, kind }`，kind='add'|'mul'。 */
+  function sectorWordOf(inst) {
+    const fx = inst && inst.cfg && inst.cfg.effects;
+    if (!fx) return null;
+    for (const k of Object.keys(SECTOR_WORDS)) {
+      if ((fx[k] || 0) !== 0) return { key: k, kind: SECTOR_WORDS[k] };
+    }
+    return null;
+  }
+  /* ---------- ★ 星区侧冷却词条（`sector_cd_ticks`）——与模块 id **解耦** ----------
+   * ★ 用户口径：**词条存在即代表该模块参与星区冷却**（按词条识别、不硬编码模块 id）——
+   *   以后任何模块只要带上该词条，就自动受星区侧冷却约束（门控 + 落地 + UI 冷却行枚举**同源**）。
+   *   识别口径的唯一实现在 `data/sector.js`（`hasSectorCdFx` / `sectorCdTicksFx`），
+   *   本层只做两个薄封装：
+   *     · `sectorCdTicksOf(inst)` → 该模块的星区侧冷却**基础时长**（`null`＝不参与）；
+   *     · `hasSectorCd(inst)`     → 是否参与星区冷却（引擎门控与 UI 枚举共用同一判据）。
+   * ★ 时长来源＝**本词条**（不再取 `cooldown_ticks`）：`cooldown_ticks` 只管**实例自身**冷却；
+   *   两把冷却相互独立、需**同时就绪**才可激活（门控见 `canImpact`）。 */
+  function sectorCdTicksOf(inst) {
+    return sectorCdTicksFx(inst && inst.cfg && inst.cfg.effects);
+  }
+  function hasSectorCd(inst) {
+    return hasSectorCdFx(inst && inst.cfg && inst.cfg.effects);
+  }
+  /** 战报里的**模块拥有者名段**（`ownerOf` + `uTok`；异常兜底为中性占位）——
+   *  与 `stealthStart` 等处同一写法，供星区/采矿类战报共用，避免各处重复兜底。 */
+  function ownerTok(inst) {
+    const holder = inst ? ownerOf(inst) : null;
+    return holder ? uTok(holder) : { side: null, label: '—' };
+  }
+  /** **星区侧**该模块的冷却是否已结束（唯一读口径；`runTicks` 为当前 tick 号、tick 内恒定）。 */
+  function sectorCdReady(moduleId) {
+    const until = sectorCdUntil.get(moduleId);
+    return until == null || runTicks >= until;
+  }
+  /** **星区侧**该模块的剩余冷却 tick 数（唯一读口径；0＝就绪）。**UI 只读它，不自算**。 */
+  function sectorCdRemain(moduleId) {
+    const until = sectorCdUntil.get(moduleId);
+    return until == null ? 0 : Math.max(0, until - runTicks);
+  }
+
   /** 激活前可行性：时长型加盾模块（未在持续期即可激活）；纯增益须对某目标生效。
-   *  `ship` ＝施放方自身（自身词条的判定对象），`targets` ＝本次解析出的目标（目标级词条的判定对象）。 */
-  function canImpact(ship, targets, fx, inst) {
+   *  `ship` ＝施放方自身（自身词条的判定对象），`targets` ＝本次解析出的目标（目标级词条的判定对象）。
+   *  `ctx`（可选）＝本 tick 的单位内运行语境（仅采矿词条的“已认领量”用；其它词条不读）。 */
+  function canImpact(ship, targets, fx, inst, ctx) {
+    // ★ **星区侧冷却门控**（独立词条 `sector_cd_ticks`，或带星区效果词条 `sector_ore_add`/`sector_ore_mul`）：
+    //   **混合冷却门控**的**唯一落点**（Pass1 唯一门控出口），**先于其它效果词条判定**——
+    //   ① 实例自身冷却 由既有的 `inst.cooldown > 0` 前置判定承担（本函数之前）；
+    //   ② **星区侧该模块冷却**（时长取 `sector_cd_ticks`）：未结束 → 不激活；
+    //   ③ 本 tick 星区**已被同一模块接受**（固定顺序只取第一个）→ 不激活。
+    //   不满足一律**不激活、不耗能、不进冷却**（沿用既有口径）。
+    //   ⚠ 只带星区冷却词条、效果另算的模块：本门控照旧生效，随后**继续走下面的常规判定**
+    //     （不在此提前 `return true`）。
+    const secW = sectorWordOf(inst);
+    const secCd = sectorCdTicksOf(inst);
+    if (secW || secCd != null) {
+      if (!sectorCdReady(inst.cfg.id)) return false;
+      if (sectorClaimedTick.has(inst.cfg.id)) return false;
+    }
+    // ★ 自身词条·采矿（`ore_gain`，无 `_target` 后缀 ⇒ 作用于模块所属自身）：按施放方
+    //   **剩余矿物容量**与**星区剩余储量**判定 —— 二者任一为 0 → 不可影响 → 本次不激活（不耗能、不进冷却）。
+    //   与“无可生效目标不激活”共用本函数这一**唯一出口**，不新造第二套判定。
+    //   注：储量读的是**本 tick 起始**值（储量只在结算步骤 3b 变化）→ 同 tick 内恒定、与遍历顺序无关。
+    if ((fx.ore_gain || 0) > 0) {
+      return oreRoomOf(ship, ctx && ctx.oreClaimed) > 0 && oreReserve > 0;
+    }
+    // ★ 星区效果词条（创世纪 / 矿藏富集）：无目标级判定，双冷却就绪即可激活；
+    //   ④ `sector_ore_mul` 额外要求**星区剩余储量 > 0**（储量 0 时乘法恒无效果，不白耗能、不进冷却；
+    //      与采矿“剩余容量为 0 → 不激活”完全同体例。加法 `sector_ore_add` 不受此限）。
+    if (secW) {
+      if (secW.kind === 'mul' && Math.floor(oreReserve) <= 0) return false;
+      return true;
+    }
     if ((fx.damage || 0) > 0) return true;
     // 目标级量值词条（shield/hp/energy）：负(削减)恒可影响；正(增益)需存在未满目标
     for (const k of Object.keys(AMOUNT)) {
@@ -1352,7 +1532,17 @@ export function createBattle(preset) {
    *   stealthOps:    本 tick 的**潜行意图**（`type` 标签 `stealth` 激活时记账，结算步骤 2 与
    *                   上限/系数/时间系数同批落地）：每条 { inst, targets:[单位引用…]（＝effectSetOf 的作用集合） }
    *                   —— 给各单位的 `ship.stealthMods` 打来源 key（潜行＝不可作为主要攻击目标），
-   *                   供其**下一 tick 起**的目标解析（`stealthBlocksTargeting`）使用；**零数值变化**。 */
+   *                   供其**下一 tick 起**的目标解析（`stealthBlocksTargeting`）使用；**零数值变化**。
+   *   oreGains:      本 tick 的**矿物采集请求**（自身词条 `ore_gain` 激活时记账，**结算步骤 3b** 统一分配/入库）：
+   *                   每条 { inst, amount }（amount 已按“剩余矿物容量”截断、且已扣本 tick 本单位已认领量）。
+   *                   **不是**即时数值修改：Pass1 零数值变化；储量不足时由 3b 按请求量比例均分（跨单位一次算清）。
+   *   sectorOps:     本 tick 的**星区变更意图**（带星区效果词条 `sector_ore_add`/`sector_ore_mul` 或
+   *                   **星区侧冷却词条** `sector_cd_ticks` 的模块在其激活时记账，**结算步骤 3c** 统一落地）：
+   *                   每条 { inst, ship（模块拥有者，供时间系数/冷却时长）, kind:'add'|'mul'|null
+   *                   （`null` ＝本次只有冷却要落地）, value（**该等级原值**：加法＝**已乘采矿系数并取整**的
+   *                   绝对增量、乘法＝增量比例）, cdTicks（星区侧冷却基础量，`null`＝不参与） }。
+   *                   落地顺序固定＝**先加法（求和后一次性加入）、再乘法（逐条作用在当前剩余上、各取整一次）**；
+   *                   星区储量**无上限**；星区侧冷却也在 3c 同批写入（`sectorCdUntil`）。Pass1 零数值变化。 */
   function freshPending() {
     return {
       dmg: [],
@@ -1370,6 +1560,8 @@ export function createBattle(preset) {
       forceOps: [],
       timeOps: [],
       stealthOps: [],
+      oreGains: [],
+      sectorOps: [],
     };
   }
   /** 惰性取某单位 pending（召唤新单位当 tick 被锁定命中时也能挂账） */
@@ -1550,6 +1742,15 @@ export function createBattle(preset) {
   function moduleGateMet(inst) {
     const fx = inst && inst.cfg && inst.cfg.effects;
     if (!fx) return null;
+    // ★ **带星区冷却词条**（`sector_cd_ticks`）或星区效果词条（创世纪 / 矿藏富集）的模块：
+    //   **除自身冷却外还受「星区侧该模块冷却」门控**（星区只接受一次触发）→ 星区冷却未结束 → `false`
+    //   （UI 按既有体例显示「条件未满足」、不显示“就绪”）。与低血门控**同一键、同一套呈现**，
+    //   不新造第二套口径；识别走**同一函数** `hasSectorCd`（与 `canImpact` 门控同源）。
+    //   注：UI 只读本判据；剩余 tick 数由星区资源栏读 `battle.sector.cd` 显示。
+    if (sectorWordOf(inst) || hasSectorCd(inst)) {
+      if (phase !== 'running') return null; // 未开战/已结束：无运行期门控状态
+      return sectorCdReady(inst.cfg.id);
+    }
     const need = fx.hp_below_activate || 0;
     if (!(need > 0)) return null; // 无门控词条：非门控型模块
     if (phase !== 'running') return null; // 未开战/已结束：无运行期门控状态
@@ -1938,6 +2139,18 @@ export function createBattle(preset) {
    *    以及它自身获得的自身词条系数修饰；强制目标只解除来源（被强制者按来源栈回落或回正常优先级）；
    *  - 清除仍指向“该死者(作为被叠加目标，已死)”的 cap 叠加。 */
   function onDeath(ship) {
+    // ★ 死亡返还（星区矿物）：本舰**携带的矿物**（本舰矿物仓 `hull.ore`）**全额返还星区储量**。
+    //   · 落点＝**判死唯一出口**本函数：四个判死点（applyHpTo / applySelfDestruct / applyTempTick /
+    //     applyHit）各自以 `X.alive` 门控后才置 `alive=false` 并调用本函数 ⇒ **每单位至多一次**；
+    //   · 幂等性：返还后立即把 `hull.ore` 归 0 ⇒ 即便将来出现新的重复调用路径，携带量为 0、不再重复返还；
+    //   · **只返还矿物、不返还货物**（`hull.cargo` 与星区储量无关）；
+    //   · 守恒（**仅“采集 ↔ 返还”这一对**）：返还量 ≤ 该单位本场从本储量采集量之和 ⇒
+    //     **返还自身不会让储量超过初始**，故此处**不设上限**（⚠ 星区词条可抬高储量、与此无关）。
+    const oreCarried = oreLoadOf(ship);
+    if (oreCarried > 0) {
+      ship.hull.ore = 0;
+      oreReserve += oreCarried;
+    }
     // ★ 死亡计数（唯一出口）：排除召唤/临时单位（判据与 soloConditionHolds 的"召唤物不计入"同一口径）。
     //   结算阶段累加、tick 收尾提交为 lastTickDeaths → 供**下一 tick** 的 Pass1 读取（"按上一 tick 死亡数"）。
     if (!ship.summonMod && !ship.isSummon) deathsThisTick += 1;
@@ -2081,8 +2294,19 @@ export function createBattle(preset) {
     const targets = moduleTargetList(ship, inst);
     // 自毁词条(self_destruct_damage)：即使无可命中目标也必须引爆自毁（始终触发）
     const isSuicide = (fx.self_destruct_damage || 0) !== 0;
-    if (!isSuicide && !targets.length) return; // 无足够目标：本次不激活
-    if (!isSuicide && !canImpact(ship, targets, fx, inst)) return; // 无可生效目标：不激活不耗能
+    // ★ **无需目标的自身/星区词条**（自毁 `self_destruct_damage` / 采矿 `ore_gain` / 星区 `sector_ore_add`
+    //   `sector_ore_mul` / 仅带星区冷却词条且未声明 `kinds` 者）：`target` 缺省 ⇒ 候选池为空，
+    //   但它们**不进入目标选择链** → 跳过“必须有目标”这一前置判定。
+    //   ⚠ 与自毁的区别：自毁连可行性判定都跳过（始终触发）；采矿与星区词条**仍走 `canImpact`**
+    //     （容量/储量/双冷却门控都在那里）。
+    //   ⚠ 只带星区冷却词条**但声明了 `kinds`** 的模块（效果另算）**不**跳过该判定（避免空放）。
+    const sectorW = sectorWordOf(inst);
+    const secCd = sectorCdTicksOf(inst);
+    const declaresKinds = Array.isArray((inst.cfg.target || {}).kinds) && (inst.cfg.target || {}).kinds.length > 0;
+    const selfTargeted =
+      isSuicide || (fx.ore_gain || 0) > 0 || !!sectorW || (secCd != null && !declaresKinds);
+    if (!selfTargeted && !targets.length) return; // 无足够目标：本次不激活
+    if (!isSuicide && !canImpact(ship, targets, fx, inst, ctx)) return; // 无可生效目标/条件：不激活不耗能
 
     // ★ 激活锁定（`type` 标签 `lock_target_on_activate`）：把**本次解析结果**记为锁定集合 ——
     //   · 持续期内 `moduleTargetList` 直接返回该集合（优先级高于强制目标与手动目标）；
@@ -2119,6 +2343,54 @@ export function createBattle(preset) {
       }
     } else {
       startCooldown(inst, tickTimeCoeff(ship)); // 瞬时模块：激活后进入冷却（需求量按当前时间系数）
+    }
+
+    // —— ★ 自身词条·采矿（`ore_gain`）：本 tick 的**采集请求**（Pass1 只记账，**零数值变化**）——
+    //   · 请求量 = `ore_gain × coeff(ship,'mining')` **取整**（`Math.round`：与货仓容量唯一口径
+    //     `cargoCapacityOf`/`oreCapacityOf` 同族；矿物是**离散数量**，储量/入库量恒为整数）
+    //     —— 与矿物容量的缩放类别**同一口径**（乘**采矿系数**，不是模块自身类别系数；当前二者同值）。
+    //   · 再按**剩余矿物容量**（扣掉本 tick 本单位已认领量）截断；剩余为 0 的情形已在 `canImpact` 挡住。
+    //   · 真正的**分配与入库**在结算步骤 3b 统一次算清（跨单位一次算清 → 储量不足时按比例均分）。
+    if ((fx.ore_gain || 0) > 0) {
+      const want = Math.round(fx.ore_gain * coeff(ship, 'mining'));
+      const room = oreRoomOf(ship, ctx.oreClaimed);
+      const claim = Math.max(0, Math.min(want, room));
+      if (claim > 0) {
+        ctx.oreClaimed = (ctx.oreClaimed || 0) + claim; // 单位内运行计数：同单位多模块累加截断
+        const P = pendOf(ship);
+        if (P) P.oreGains.push({ inst, amount: claim });
+      }
+    }
+
+    // —— ★ 星区词条（`sector_ore_add` / `sector_ore_mul`）＋ **星区侧冷却词条**（`sector_cd_ticks`）——
+    //   本 tick 的**星区变更意图**（Pass1，**零数值变化**）：
+    //   · 只要模块**带星区效果词条或星区冷却词条**，激活成功后就记一条 `__pending.sectorOps`
+    //     （`kind` 为 `'add'|'mul'`；**仅带冷却词条者 `kind = null`**，即本次只有冷却要落地）；
+    //   · 同时把「本 tick 星区已被该模块接受」写进 `sectorClaimedTick`（Pass1 记账、非数值）→
+    //     同一 tick 后续单位携带同一模块时，`canImpact` 的门控会挡住 → **固定顺序只接受第一个**；
+    //   · **加法量在此按采矿系数缩放并取整一次**：`round(词条值 × coeff(ship,'mining'))`
+    //     —— 与**采矿激光实采量完全同口径、同位置**（`ore_gain` 也是 Pass1 用本 tick 快照算好再记账），
+    //     故本 tick 内系数变化（结算步骤 2 的 coeffOps）不会改动已经记好的意图量 ⇒ 快照稳定、可复现；
+    //     乘法仍为**纯比例**（不乘任何系数，用户口径）。
+    //   · 星区冷却**不在此写**（与实例冷却一样“激活时先不动、结算阶段统一落地”）：由 3c 写入 `sectorCdUntil`，
+    //     时长取 `sector_cd_ticks`、算法与同一实例的 `startCooldown` 完全一致 ⇒ 两把冷却对同一单位**同 tick 到期**；
+    //   · 意图照常由 Phase A 收集（**不按 alive 门控**）：与既有口径一致 ——
+    //     “施放方本 tick 已死其意图仍照常落地”（激活成功即生效，随后阵亡不影响本次结果）。
+    if (sectorW || secCd != null) {
+      const P = pendOf(ship);
+      const raw = sectorW ? fx[sectorW.key] || 0 : 0;
+      // 加法＝绝对增量（乘采矿系数、取整）；乘法＝增量比例（原样，不乘系数）
+      const value = sectorW && sectorW.kind === 'add' ? Math.round(raw * coeff(ship, 'mining')) : raw;
+      if (P) {
+        P.sectorOps.push({
+          inst,
+          ship,
+          kind: sectorW ? sectorW.kind : null,
+          value,
+          cdTicks: secCd, // null ＝ 该模块不参与星区冷却
+        });
+      }
+      sectorClaimedTick.add(inst.cfg.id);
     }
 
     // —— 目标级受伤减免词条（`damage_coeff_mul_target`）：对**每个解析目标**写其自身的受伤减免 ——
@@ -2763,6 +3035,129 @@ export function createBattle(preset) {
     else if (!anyAlly) settle('lose');
   }
 
+  /** ★ 结算步骤 3b：星区矿物采集的**唯一分配/入库点**（跨单位一次算清、与遍历顺序无关）。
+   *  输入＝本 tick 全部采集请求（固定结算顺序收集，`want` 已在 Pass1 按剩余矿物容量截断）。
+   *  流程：① 足额（星区剩余 ≥ 总请求）→ 各按请求量全额；② 不足 → **按请求量比例均分**：
+   *        先 `floor(请求量 × 剩余 / 总请求)`，再把未分配的余数按「**请求量从大到小，同量按固定结算顺序**」
+   *        逐个 +1 补足 ⇒ **Σ入库 = 剩余储量**（整数、不超发、无遗漏；每方至多 +1）。
+   *  ③ 逐请求入库（防御性再钳一次剩余容量）→ ④ 星区储量扣减＝本次**实际入库总量**（不超发）。
+   *  · 镜像对等：规则对双方完全相同，且不读任何“当前存活/血量”等可变状态（Pass1 的截断量与
+   *    tick 起始储量都是快照）→ 同一局面镜像后结果完全对称。
+   *  · 储量守恒（**仅“采矿 ↔ 阵亡返还”这一对**）：扣减＝实际入库量；单位阵亡时由其唯一判死出口
+   *    `onDeath` 全额返还 ⇒ 矿物不会因同 tick 阵亡丢失（⚠ 星区储量**无上限**，星区词条可把剩余推到高于初始）。 */
+  function settleOreGains(claims) {
+    if (!claims.length) return;
+    const demand = claims.reduce((s, c) => s + c.want, 0);
+    if (demand <= 0) return;
+    const avail = Math.max(0, Math.floor(oreReserve)); // 本 tick 起始剩余储量（整数）
+    if (avail <= 0) return; // 星区矿物耗尽：全部不采集（`canImpact` 已按同一口径挡住激活，此处复核）
+    let grants; // 逐请求的实际分配量（与 claims 同序）
+    if (avail >= demand) {
+      grants = claims.map((c) => c.want); // 足额：按请求量全额
+    } else {
+      const base = claims.map((c) => Math.floor((c.want * avail) / demand)); // 先按比例取整（floor）
+      let left = avail - base.reduce((s, v) => s + v, 0); // 未分配的余数（恒 < 请求数）
+      // 余数补足顺序：**请求量大者优先**，同量按固定结算顺序（收集顺序）——稳定、确定性、可复现
+      const order = claims.map((c, i) => i).sort((a, b) => claims[b].want - claims[a].want || a - b);
+      for (const i of order) {
+        if (left <= 0) break;
+        base[i] += 1;
+        left -= 1;
+      }
+      grants = base;
+    }
+    let granted = 0;
+    const byInst = new Map(); // 实际入库量按**模块实例**聚合（见下方战报聚合边界）
+    for (let i = 0; i < claims.length; i += 1) {
+      const c = claims[i];
+      if (!c.ship || !c.ship.alive) continue; // 结算复核存活（正常恒存活：判死都在本步骤之后）
+      const amt = Math.min(grants[i], oreRoomOf(c.ship)); // 防御性再钳：正常恒为 0 差额（Pass1 已按容量截断）
+      if (amt <= 0) continue;
+      c.ship.hull.ore = (c.ship.hull.ore || 0) + amt; // 入库＝本舰矿物仓（读口径 `oreLoadOf`）
+      granted += amt;
+      byInst.set(c.inst, (byInst.get(c.inst) || 0) + amt); // 同实例多请求合并（Map 保序＝首次入库顺序）
+    }
+    oreReserve = Math.max(0, oreReserve - granted); // 扣减＝**实际入库总量**（不超发、守恒）
+    // ★ 采矿战报（低频，**每模块实例每 tick 至多 1 条**）：成句＝`{owner}的{module}：采集 {n} 点矿物`
+    //   · **触发条件＝实际入库量 > 0**（星区储量不足导致比例分配为 0、或容量已满 → 不记）；
+    //   · **聚合边界**：按**模块实例**（单位 × 模块配置对象）聚合成一条，`n` ＝ 该实例本 tick
+    //     **实际**入库总量（比例分配 + 容量复核后的真值，非请求量）——同一实例本 tick 至多激活 1 次
+    //     （激活后自身冷却 ≥ 1 tick），故“聚合”只在防御性场景生效；
+    //   · **条数上限**＝本 tick **实际入库**的（单位 × 模块实例）对数 ≤ 该单位采矿模块总数，
+    //     且模块自身冷却（`cooldown_ticks`，采矿激光＝20t）天然限频 ⇒ 不会刷屏；
+    //   · 与其它低频战报同体例：`owner`＝模块拥有者（`uTok`，着色）、`module`＝模块名（`modTok` 绿字）。
+    for (const [inst, amt] of byInst) {
+      battleLog(
+        'battle.log.miningGain',
+        { owner: ownerTok(inst), module: modTok(inst), n: amt },
+        ['owner']
+      );
+    }
+  }
+
+  /** ★ 结算步骤 3c：星区储量词条（创世纪 `sector_ore_add` / 矿藏富集 `sector_ore_mul`）的
+   *  **唯一落地/冷却点**（跨单位一次算清、与遍历顺序无关）。
+   *  输入＝本 tick 全部星区意图（固定结算顺序收集：allies → enemies；Pass1 已按“星区只接受一次”去重）；
+   *  每条＝`{ inst, ship, kind:'add'|'mul'|null, value, cdTicks }`（`kind=null`＝仅落冷却）。
+   *  落地顺序（★ 用户确认的固定顺序）：
+   *    ① **先加法**：全部加法意图**求和后一次性加入**（加法可交换 ⇒ 与顺序无关、确定）；
+   *       每条加法量已在 **Pass1** 按 `round(词条值 × coeff(拥有者,'mining'))` 算好（与采矿激光同口径同位置）
+   *       ⇒ 本步骤只做求和，**不再乘系数、不再取整**；
+   *    ② **再乘法**：按固定结算顺序**逐条**作用于**当前剩余储量**，**每条各取整一次**
+   *       （`Math.round(剩余 × (1+比例))`；多条乘法＝连乘、逐次取整；单条时等价于“结算时取整一次”）；
+   *    ③ 星区储量**不做任何封顶**（用户口径：无上限），只保持**非负整数**
+   *       （`Math.max(0, …)` 仅防负，与既有“储量恒为非负整数”一致）。
+   *  冷却落地（同一步）：凡带**星区侧冷却词条** `sector_cd_ticks` 的意图（含 `kind=null` 者），
+   *    写入 `sectorCdUntil.set(模块id, runTicks + need)`，其中
+   *    `need = timeScaled(sector_cd_ticks, tickTimeCoeff(模块拥有者))` —— 与同一实例自身冷却的
+   *    `startCooldown`（取 `cooldown_ticks`）**完全同算法**（只差词条来源、同一 tick 的快照时间系数）
+   *    ⇒ 两个词条取同值时，对被接受的那个单位而言两把冷却**同 tick 到期**；
+   *    星区冷却因此只额外约束**其它**单位的同模块触发（key ＝ 模块 id，各模块独立）。
+   *  · 绝对到期 tick 模型 ⇒ **无逐 tick 递减、无抖动**；`runTicks` 全 tick 恒定 ⇒ 与遍历顺序无关、镜像对等。
+   *  · 归属：模块意图即使其拥有者在本 tick 后续判死，也**照常落地**（与既有“施放方已死其意图仍落地”一致）。
+   *  · **战报（低频）**：加法记 `battle.log.sectorOreAdd`（`n`＝该条实际增量，即 Pass1 定好的整数增量）；
+   *    乘法记 `battle.log.sectorOreMul`（`mul`＝实际乘数 `1+比例`、`n`＝该条**落地前后差值**，逐条精确）。
+   *    二者都**只在真正生效时**记：加法仅 `n > 0`、乘法仅在该条改变了储量时记（`n > 0`）⇒
+   *    每模块每次激活至多 1 条，且受星区侧冷却限频，天然低频。 */
+  function settleSectorOps(ops) {
+    if (!ops.length) return;
+    // ① 加法：全部求和后一次性加入
+    let addSum = 0;
+    for (const op of ops) if (op.kind === 'add') addSum += op.value || 0;
+    if (addSum !== 0) oreReserve = Math.max(0, Math.round(oreReserve + addSum)); // 无上限；取整仅守“储量恒为非负整数”不变量（整数词条下为恒等）
+    // ①′ 加法战报：逐条记（各条增量互相独立、求和即总量 ⇒ 逐条归属精确；仅实际增量 > 0 才记）
+    for (const op of ops) {
+      if (op.kind !== 'add' || !(op.value > 0)) continue;
+      battleLog(
+        'battle.log.sectorOreAdd',
+        { owner: ownerTok(op.inst), module: modTok(op.inst), n: op.value },
+        ['owner']
+      );
+    }
+    // ② 乘法：按固定结算顺序逐条作用于“当前剩余储量”，每条各取整一次
+    for (const op of ops) {
+      if (op.kind !== 'mul') continue;
+      const before = oreReserve;
+      const mul = 1 + (op.value || 0);
+      oreReserve = Math.max(0, Math.round(oreReserve * mul)); // 取整＝每条乘法作用时各一次
+      const gain = oreReserve - before; // 该条**实际**增量（逐条精确，取落地前后差值）
+      if (gain > 0) {
+        battleLog(
+          'battle.log.sectorOreMul',
+          { owner: ownerTok(op.inst), module: modTok(op.inst), mul: fmtLogNum(mul), n: gain },
+          ['owner']
+        );
+      }
+    }
+    // ③ 星区侧冷却：凡带该词条的意图各写一份（key＝模块 id）——各模块独立计时
+    for (const op of ops) {
+      if (op.cdTicks == null) continue;
+      const need = timeScaled(op.cdTicks, tickTimeCoeff(op.ship));
+      const id = op.inst && op.inst.cfg ? op.inst.cfg.id : null;
+      if (id != null) sectorCdUntil.set(id, runTicks + Math.max(0, need));
+    }
+  }
+
   /** 每 tick 主入口：Pass 1 行动遍历（单遍单位 for）→ Pass 2 结算（单遍单位 for + 命中子步 + 收尾单遍）。 */
   function step() {
     if (phase !== 'running') return;
@@ -2770,6 +3165,9 @@ export function createBattle(preset) {
     activeAllies = allies; // 同盟护盾跨单位结算用的当前阵营引用
     activeEnemies = enemies;
     reflectQueue = []; // 每 tick 清空反射返程记账，避免跨 tick 残留/重复
+    // ★ 星区「本 tick 已被接受的模块」集合：每 tick 起始清空（Pass1 记账用，非数值状态）——
+    //   同一 tick 多个单位携带同一星区模块时，按固定结算顺序（allies → enemies）**只接受第一个**。
+    sectorClaimedTick.clear();
 
     // 固定行动快照（tick 起始存活全体）＋一次性建好本 tick 挂账。
     // ★ 必须在任何记账(Pass1 激活把伤害/回盾写进目标 __pending)之前为全体建好，
@@ -2805,6 +3203,8 @@ export function createBattle(preset) {
     const forceOps = [];
     const timeOps = [];
     const stealthOps = [];
+    const oreClaims = []; // 本 tick 的矿物采集请求（按固定结算顺序收集 → 步骤 3b 统一按比例分配）
+    const sectorOps = []; // 本 tick 的星区储量变更意图（按固定结算顺序收集 → 步骤 3c 先加后乘统一落地）
     for (const u of allNow) {
       const P = u.__pending;
       if (!P) continue; // 本 tick 未参与(无挂账)者跳过
@@ -2822,6 +3222,11 @@ export function createBattle(preset) {
       if (P.forceOps.length) forceOps.push(...P.forceOps);
       if (P.timeOps.length) timeOps.push(...P.timeOps);
       if (P.stealthOps.length) stealthOps.push(...P.stealthOps);
+      if (P.oreGains.length) {
+        // 采集请求带上所属单位引用（分配/入库要落到具体单位）；收集顺序＝固定结算顺序（allies → enemies）
+        for (const g of P.oreGains) oreClaims.push({ ship: u, inst: g.inst, want: g.amount });
+      }
+      if (P.sectorOps.length) sectorOps.push(...P.sectorOps); // 星区词条意图（记录内已含 ship；顺序＝固定结算顺序）
     }
 
     // ── 结算步骤 1：计时推进（全单位模块时长/冷却递减、窗口累计）──
@@ -2892,6 +3297,17 @@ export function createBattle(preset) {
       // energy_target 量值词条：**不做受伤减免**（能量削减不是血/盾伤害），与 applyHit 的减免口径分开
       for (const e of P.energyDeltas) applyEnergyTo(u, e.amount);
     }
+
+    // ── 结算步骤 3b：星区矿物采集统一落地（**唯一分配/入库点**）──
+    //   放在“能量之后、护盾/血量之前”：本 tick 的判死都发生在其后（步骤 4c/4e、Phase B），
+    //   故此刻所有请求方都还存活（请求已在 Pass1 按存活单位记入）；本 tick 采集后又同 tick 阵亡者
+    //   「先入库、再由唯一判死出口 onDeath 全额返还」→ 净效果＝星区储量不变（矿物不会因同 tick 阵亡丢失）。
+    settleOreGains(oreClaims);
+
+    // ── 结算步骤 3c：星区储量词条（创世纪/矿藏富集）统一落地（**唯一落地/星区冷却点**）──
+    //   顺序固定：3b 采矿入库/扣减 → 3c 星区词条（**先加法、后乘法**）→ 步骤 4 护盾/血量；
+    //   放在判死之前 ⇒ 本步骤的落地与“谁先谁后死”无关（镜像对等、与遍历顺序无关）。
+    settleSectorOps(sectorOps);
 
     // ── 结算步骤 4：护盾 / 模块池填充 / 血量 / 自毁 / 临时寿命统一落地 ──
     for (const rec of poolFills) applyPoolFill(rec);            // 4a 模块护盾池创建+填满
@@ -3002,6 +3418,23 @@ export function createBattle(preset) {
     get allies() { return allies; },
     get enemies() { return enemies; },
     get runTicks() { return runTicks; },
+    /** ★ 星区（战斗场景）状态**只读快照**：
+     *  `{ name（用户自定义名称，原样显示、不做 i18n）, oreReserve（当前剩余，非负整数）,
+     *     oreReserveInit（初始储量，只读快照）, cd（星区侧模块冷却剩余：模块 id → ticks，只含冷却中者） }`。
+     *  · 储量变化来源：采矿扣减（结算步骤 3b）＋单位阵亡返还（判死唯一出口 `onDeath`）＋
+     *    星区词条（结算步骤 3c：先加法、后乘法，**无上限**）；
+     *  · `cd` ＝**星区侧冷却**的唯一读口径（**凡带词条 `sector_cd_ticks` 的模块各占一键、各自独立**；
+     *    0/缺省＝就绪）——与「模块自身冷却」（`inst.cooldown`，UI 从模块行读）是**两把独立冷却**，
+     *    两者都就绪才生效；UI 冷却行**按同一识别口径**枚举模块（不硬编码 id）；
+     *  · 每次读取返回**新对象**（含新的 `cd` 快照）⇒ 外部改不到引擎内部状态；**UI 只读本口径、绝不自算**。 */
+    get sector() {
+      const cd = {};
+      for (const id of sectorCdUntil.keys()) {
+        const rem = sectorCdRemain(id);
+        if (rem > 0) cd[id] = rem; // 只暴露“冷却中”的模块（就绪＝不出现）
+      }
+      return { name: sectorName, oreReserve, oreReserveInit, cd };
+    },
     get allyPolicy() { return policies.ally; },
     get enemyPolicy() { return policies.enemy; },
     setShipPolicy,
@@ -3039,6 +3472,7 @@ export function createBattle(preset) {
     disableModule,
     moduleEffective, // 状态型模块“当前是否生效”的唯一判据（UI 用；非状态型返回 null）
     moduleGateMet, // ★ 触发门控（`hp_below_activate`）“当前是否满足”的唯一判据（UI 用；非门控型返回 null）
+    moduleUndeactivatable: isUndeactivatable, // ★「不可停用」标签的唯一判据（UI 用：开关灰显 + 悬停说明；引擎侧由 disableModule 拒绝）
     targetableBy: (ship, u, kind) => targetAllowed(ship, u, kind), // ★ 目标可选口径（唯一）：潜行 + role 分离（「可选战斗单位」＝存活且未被潜行屏蔽）
     //   （`kind` ＝ 候选来源选择器桶 'self'|'enemy'|'ally'|'any'；缺省/2 参调用按 'enemy' 对敌语义判定，
     //     与既有 2 参调用完全兼容；UI 候选池只需把桶名带过来，**不自算任何过滤规则**）
@@ -3063,11 +3497,17 @@ export function createBattle(preset) {
  *   · `modules` 数组；字符串元素等价于 {moduleId, level:1}；未知模块丢弃；
  *              模块等级钳制到 [1, moduleMaxLevel]；**超出该等级槽位数的部分截断**（槽位口径＝
  *              `resolveShipAtLevel(type, level).slots`，与建单位后的 `ship.slots` 完全一致）
- * 返回值（`normalizeFormation`）：{ allies:[ShipCfg], enemies:[ShipCfg], warnings:[Warning] }
+ * 星区（战斗场景）数据（`SectorCfg`，与编队**同级**传入，随编队一起规范化）：
+ *   { sector: { name:string（用户自定义名称·原样显示、不做 i18n）, oreReserve:number（矿物储量·非负整数） } }
+ *   · 缺省（未传/字段缺失）→ `data/sector.js SECTOR_DEFAULTS`（缺省名称＝空串、缺省储量＝占位值）；
+ *   · 钳制口径唯一＝`normalizeSector()`：名称去空白/截断、储量**非负整数**（负数→0、小数→向下取整、非数值→0）；
+ *   · 战斗实例上的**只读读取口径**＝`battle.sector`（`{name, oreReserve（剩余）, oreReserveInit（初始）,
+ *     cd（星区侧模块冷却剩余：模块 id → ticks，只含冷却中者）}`）；**UI 只读、不自算**。
+ * 返回值（`normalizeFormation`）：{ allies:[ShipCfg], enemies:[ShipCfg], sector:SectorCfg, warnings:[Warning] }
  *   Warning = { side:'ally'|'enemy', index:number, code:string, ...细节 }
  *   code ∈ unknownType | levelClamped | unknownModule | moduleLevelClamped | slotOverflow
  * 返回值（`startBattle`）：{ ok:boolean, error:null|'noUnits', battle:Battle|null,
- *                           formation:{allies,enemies}, warnings:[Warning] }
+ *                           formation:{allies,enemies,sector}, warnings:[Warning] }
  *   · `ok:false`（error='noUnits'：任一方为空）→ **不创建战斗**（避免“空编队瞬间结算”）
  *   · `ok:true` → `battle` 即既有句柄（phase/result/allies/enemies/units()/start()/stop()…），
  *     但**尚未 start**：由调用方决定何时 `battle.start()`（战斗屏开战即暂停的既有交互由 UI 负责）。
@@ -3075,6 +3515,24 @@ export function createBattle(preset) {
  *   const r = startBattle({ allies:[{type:'combat',level:5,modules:[{moduleId:'cannon',level:3}]}],
  *                           enemies:[{type:'combat',role:'logistics'}] });
  *   if (r.ok) { r.battle.start(); renderStage(r.battle); } */
+
+/** ★ 星区（战斗场景）数据的**唯一规范化（钳制）口径**（纯函数，不改入参）：
+ *  `{ name, oreReserve }` ——
+ *   · `name`      用户自定义名称：取字符串、**去首尾空白**、超长截断（40 字符）；缺省/`null` → `SECTOR_DEFAULTS.name`
+ *                 （空串＝无名称 ⇒ 战斗屏/结算不显示名称前缀）。**不做 i18n**：显示时原样输出。
+ *   · `oreReserve` 矿物储量：**非负整数**（负数 → 0；小数 → 向下取整；非数值 → 0）；
+ *                 缺省/`null`/空串 → `SECTOR_DEFAULTS.oreReserve`（占位缺省值，登记在 `data/sector.js`）。
+ *  数值一律来自 `data/sector.js`，引擎不硬编码。 */
+export function normalizeSector(raw) {
+  const s = raw && typeof raw === 'object' ? raw : {};
+  const nameRaw = s.name == null ? SECTOR_DEFAULTS.name : String(s.name);
+  const name = nameRaw.trim().slice(0, 40);
+  const oreRaw = s.oreReserve;
+  if (oreRaw == null || oreRaw === '') return { name, oreReserve: SECTOR_DEFAULTS.oreReserve };
+  const n = Number(oreRaw);
+  const oreReserve = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  return { name, oreReserve };
+}
 
 /** ★ 编队规范化（纯函数）：校验 + 等级钳制 + 模块合法性 + 槽位截断；UI 预检与引擎开战共用。 */
 export function normalizeFormation(formation = {}) {
@@ -3125,6 +3583,8 @@ export function normalizeFormation(formation = {}) {
   return {
     allies: side(formation.allies ?? formation.ally, 'ally'),
     enemies: side(formation.enemies ?? formation.enemy, 'enemy'),
+    // ★ 星区（战斗场景）随编队一并规范化（缺省值 + 非负整数钳制，唯一口径 normalizeSector）
+    sector: normalizeSector(formation.sector),
     warnings,
   };
 }
@@ -3136,7 +3596,7 @@ export function startBattle(formation = {}) {
   if (!norm.allies.length || !norm.enemies.length) {
     return { ok: false, error: 'noUnits', battle: null, formation: norm, warnings: norm.warnings };
   }
-  const battle = createBattle({ ally: norm.allies, enemy: norm.enemies });
+  const battle = createBattle({ ally: norm.allies, enemy: norm.enemies, sector: norm.sector });
   return { ok: true, error: null, battle, formation: norm, warnings: norm.warnings };
 }
 

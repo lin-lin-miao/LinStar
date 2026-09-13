@@ -28,7 +28,7 @@ export default {
   // 常驻被动：无命中目标（自身词条不需要目标）
   target: {},
   effects: {
-    type: ['passive'], // 常驻被动（无激活/冷却/持续/耗能）：引擎跳过“激活-触发”流程
+    type: ['passive', 'undeactivatable'], // 常驻被动（无激活/冷却/持续/耗能）：引擎跳过“激活-触发”流程
     hp_cap_bonus: 1000,  // Lv1 占位：自身血量上限 +60
   },
   maxLevel: 16,

@@ -26,7 +26,7 @@ export default {
   role: 'combat',           // ★ 单位定位：'combat'=战斗单位 / 'logistics'=后勤单位 —— 决定战斗界面把该单位
                             //   显示在【战斗单位栏】还是【后勤单位栏】；编队条目的 `role` 可覆盖本值，
                             //   且本条目**与其它条目一样可逐级覆写**（见文件头等级说明）。
-  slots: 5,                 // Lv1 可装模块数
+  slots: 3,                 // Lv1 可装模块数
   base: {
     hp: 120,                // 血量上限
     shieldCap: 50,          // 基础护盾上限
@@ -45,10 +45,10 @@ export default {
   maxLevel: 16,
   levels: [
     // —— 占位：逐级只写差异，未写的条目沿用上一级 ——
-    { level: 5, slots: 6, base: { hp: 180, shieldCap: 80, energyCap: 1200, energyRegen: 24 } },
+    { level: 5, slots: 5, base: { hp: 180, shieldCap: 80, energyCap: 1200, energyRegen: 24 } },
     { level: 10, slots: 7, base: { hp: 260, shieldCap: 120, energyCap: 1500, energyRegen: 30 } },
     {
-      level: 16, slots: 8, base: { hp: 380, shieldCap: 180, energyCap: 1900, energyRegen: 40 },
+      level: 16, slots: 10, base: { hp: 380, shieldCap: 180, energyCap: 1900, energyRegen: 40 },
       coefficients: { attack: 1.1 }, // 占位示例：类别系数同样可逐级覆写
     },
   ],

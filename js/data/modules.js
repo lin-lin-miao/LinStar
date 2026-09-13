@@ -45,6 +45,10 @@ import recycle from './modules/function/recycle.js';
 import energyTransfer from './modules/function/energyTransfer.js';
 import cargoHold from './modules/transport/cargoHold.js';
 import oreHold from './modules/mining/oreHold.js';
+import miningLaser from './modules/mining/miningLaser.js';
+import oreCompressor from './modules/mining/oreCompressor.js';
+import genesis from './modules/mining/genesis.js';
+import oreEnrichment from './modules/mining/oreEnrichment.js';
 
 export const MODULES = {
   cannon,
@@ -80,6 +84,10 @@ export const MODULES = {
   energyTransfer,   // 功能 · 能量输送（主动·单体友方：消耗自身能量给目标加能量 energy_target，钳到目标上限）
   cargoHold,        // 运输 · 货舱（C25 常驻增幅器：自身货物容量 cargo_cap_bonus，无冷却/耗能/持续）
   oreHold,          // 采矿 · 矿舱（C34 语义「采矿载货强化」常驻增幅器：自身矿物容量 ore_cap_bonus）
+  miningLaser,      // 采矿 · 采矿激光（M4：无目标主动模块，每次激活开采 ore_gain × 采矿系数 → 装入本舰矿物仓）
+  oreCompressor,    // 采矿 · 矿物压缩（常驻增幅器：自身采矿系数 mining_coeff_add，无冷却/耗能/持续）
+  genesis,          // 采矿 · 创世纪（无目标主动模块：星区剩余储量**加法** sector_ore_add，自身+星区双冷却）
+  oreEnrichment,    // 采矿 · 矿藏富集（无目标主动模块：星区剩余储量**乘法** sector_ore_mul，自身+星区双冷却）
 };
 
 /** 模块类别展示顺序（后续 UI/筛选用）：攻击/护盾/功能/运输/采矿/无人机 */

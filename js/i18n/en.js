@@ -62,6 +62,10 @@ export default {
   'module.energyTransfer': 'Energy Transfer',
   'module.cargoHold': 'Cargo Hold',
   'module.oreHold': 'Ore Hold',
+  'module.miningLaser': 'Mining Laser',
+  'module.oreCompressor': 'Ore Compressor', // Mining · passive booster (own mining coefficient)
+  'module.genesis': 'Genesis', // Mining · targetless active (sector ore reserve, additive)
+  'module.oreEnrichment': 'Ore Enrichment', // Mining · targetless active (sector ore reserve, multiplicative)
   'module.emp': 'EMP',
   'module.alphaShield': 'Alpha Shield',
   'module.regenShield': 'Regenerative Shield',
@@ -113,6 +117,12 @@ export default {
   'battle.drill.role.combat': 'Combat Unit',
   'battle.drill.role.logistics': 'Logistics Unit',
   'battle.drill.slots': 'Modules {n}/{m}',
+  // Sector (battle scene) setup: the name is a user-typed string (shown verbatim, never translated)
+  'battle.drill.sector': 'Sector',
+  'battle.drill.sectorName': 'Sector name',
+  'battle.drill.sectorNamePh': '(empty = no name shown)',
+  'battle.drill.sectorOreLabel': 'Ore reserve',
+  'battle.drill.sectorOreInvalid': 'Ore reserve must be 0 or a positive whole number',
   'battle.drill.blocked': 'Invalid setup — cannot start',
   'battle.drill.warn.title': 'Setup issues ({n}) — fix them to start:',
   'battle.drill.warn.slotOverflow': 'More modules than slots at this level (max {n}) — remove modules or raise the unit level',
@@ -124,6 +134,14 @@ export default {
   'battle.zone.combat': 'Our Combat Units',
   'battle.zone.logistics': 'Our Logistics Units',
   'battle.zone.command': 'Command',
+  // Sector resource bar (one row below the command bar): title falls back to "Sector" when unnamed
+  'battle.zone.sector': 'Sector',
+  'battle.sector.ore': 'Ore reserve',
+  'battle.sector.line': 'Sector: {name}',
+  // Sector bar · sector-cooldown group (a separate sub-section ABOVE the reserve row)
+  'battle.sector.cdTitle': 'Sector cooldown',
+  // Sector bar · sector-cooldown rows (one per sector-cooldown module, shown only while cooling)
+  'battle.sector.cd': 'Cooldown {n}t',
   'battle.command.fleet': 'Fleet Primary Target',
   'battle.command.preview': 'Current: {name}',
   'battle.command.noTarget': '(No living targets)',
@@ -233,6 +251,8 @@ export default {
   'battle.detail.buffing': 'Active {n}t',
   'battle.detail.disable': 'Disable',
   'battle.detail.enable': 'Enable',
+  // "Undeactivatable" tag: tooltip on the greyed-out toggle (engine predicate moduleUndeactivatable)
+  'battle.detail.undeactivatable': 'This module cannot be deactivated',
   'battle.detail.disabled': 'Disabled',
   'battle.detail.ended': 'Battle over - actions locked (view only)',
   'battle.detail.aiGear': 'Module AI strategy (reserved, in development)',
@@ -247,6 +267,10 @@ export default {
   'battle.detail.statBlast': 'Blast range {n}',
   'battle.detail.statInvincible': 'Invincible {n}t',
   'battle.detail.statRegen': 'Shield +{n}/shot',
+  'battle.detail.statOreGain': 'Mining {n}/shot', // Mining Laser: ore gained per activation (× mining coeff.)
+  'battle.detail.statMiningCoeff': 'Mining coeff {v}', // Ore Compressor: own mining coefficient, additive
+  'battle.detail.statSectorOreAdd': 'Sector ore {v}/shot', // Genesis: sector reserve, additive (uncapped)
+  'battle.detail.statSectorOreMul': 'Sector ore ×{v}/shot', // Ore Enrichment: sector reserve, multiplicative
   'battle.detail.statCap': 'Shield cap +{n}',
   // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
   //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
@@ -300,5 +324,12 @@ export default {
   // ★ Per-death regen (`hp_regen_per_death`, e.g. "Recycling"): low-frequency — requires deaths,
   //   and at most one line per module per tick, only when the heal actually restored HP.
   'battle.log.recycleRegen': "{owner}'s {module} recycled: {n} unit(s) died, restored {amount} HP",
+  // ★ Mining / sector-reserve low-frequency logs (`{owner}'s {module}: …`; owner colored, module green):
+  //   · miningGain: only when the actual ore stored > 0; aggregated per module instance (≤1 line/instance/tick);
+  //   · sectorOreAdd: only when the actual delta > 0 (n = that entry's delta, already × mining coeff.);
+  //   · sectorOreMul: only when that entry really changed the reserve (mul = actual multiplier, n = its delta).
+  'battle.log.miningGain': "{owner}'s {module}: mined {n} ore",
+  'battle.log.sectorOreAdd': "{owner}'s {module}: sector ore +{n}",
+  'battle.log.sectorOreMul': "{owner}'s {module}: sector ore ×{mul} (+{n})",
   'battle.result.close': 'Dismiss',
 };

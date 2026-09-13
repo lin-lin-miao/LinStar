@@ -1,6 +1,6 @@
 /* ===== ui/battleView.js —— 战斗屏（对战 Demo + 视觉/交互增强） =====
  * 布局（自上而下）：标题行(含「离开」) → 敌方后勤 → 敌方战斗 → 分隔线 → 我方战斗 → 我方后勤
- *                  → 指挥栏 → 单位详情面板（点击单位后出现，可指定主目标）→ 战报
+ *                  → 单位详情面板（点击单位后出现，可指定主目标）→ 指挥栏 → 星区资源栏 → 战报
  * 单位实体卡（矩形，从上到下）：单位图标(SVG) → 状态条(HP/护盾/能量/**货物/矿物**，容量 0 的条自动隐藏)
  *   → 简约模块图标
  * 实时信息：模块冷却倒计时徽标 / 就绪脉冲；"下一步"行动提示（敌方将做什么一望可知）
@@ -34,6 +34,8 @@ import {
 import { bar } from './widgets.js';
 import { router } from './router.js';
 import { setupView } from './setupView.js'; // ★ 演练编队配置屏（单一职责；本文件只挂载它并接收回调）
+// ★ 星区侧冷却词条的**唯一识别口径**（与引擎同源）：UI 枚举「星区冷却」行时不自行判词条
+import { hasSectorCdFx } from '../data/sector.js';
 import { log, formatRich } from '../core/log.js';
 import { ticker } from '../core/tick.js';
 
@@ -78,6 +80,7 @@ let listenersBound = false;
 /* 模块级 DOM 引用 */
 let stageArea = null;
 let stageHeadEl = null;        // 战斗标题行（标题 + 状态 + 「离开」按钮）
+let titleEl = null;            // 战斗标题节点（标题 + 星区名称前缀；有战斗时按引擎 `battle.sector` 追加）
 let leaveBtn = null;           // 「离开」按钮（有战斗时显示；回编队配置界面）
 let overlay = null;            // { overlay, show }
 let enemyZone = null;          // 敌方【战斗单位】栏
@@ -106,6 +109,8 @@ let cmdCargoNum = null;
 let cmdOre = null;
 let cmdOreFill = null;
 let cmdOreNum = null;
+// ★ 星区资源栏（指挥栏**下方**独立一栏：星区名 + 矿物储量 剩余/初始）——数据唯一来源＝引擎 `battle.sector`
+let sectorZ = null; // { zone, label, cdGroup, cdRows, row, fill, num }
 
 /* 迷你护盾池条（详情/长期池用）：无标签小横条 + 数值 */
 function makeMiniPool() {
@@ -237,6 +242,13 @@ const STATE_TAGS = ['solo', 'passive'];
 function isStateModuleFx(fx) {
   const t = Array.isArray(fx && fx.type) ? fx.type : fx && fx.type ? [fx.type] : [];
   return STATE_TAGS.some((k) => t.includes(k));
+}
+/** ★ **星区冷却模块**（带**星区侧冷却词条** `sector_cd_ticks` 的模块）的**静态识别**：
+ *  与引擎 `battle.js hasSectorCd` **同一口径、同一函数**（`data/sector.js hasSectorCdFx`）
+ *  —— 词条存在即参与星区冷却（**按词条识别、不硬编码模块 id**）⇒ UI 冷却行枚举与引擎门控**同源**。
+ *  用途：星区资源栏为**每个**此类模块各建一行「星区冷却」（按 `MODULES` 自动枚举）。 */
+function isSectorCdModuleFx(fx) {
+  return hasSectorCdFx(fx);
 }
 /** 目标词条是否仅作用于自身（self only） */
 function rowSelfOnly(inst) {
@@ -611,9 +623,84 @@ function renderSharedRow(row, fill, num, pool) {
   }
 }
 
+/** ★ 星区资源栏（指挥栏**下方**独立一栏）：显示星区**矿物储量（剩余 / 初始）**——最短体例。
+ *  · 数据唯一来源＝引擎只读口径 `battle.sector`（`{name, oreReserve（剩余）, oreReserveInit（初始）,
+ *    cd（星区侧模块冷却剩余：模块 id → ticks，只含冷却中者）}`）
+ *    —— UI **只读、绝不自算储量/冷却**（百分比只是条形呈现的换算，与其它条同一体例）。
+ *  · 「有星区数据」＝储量 > 0 或名称非空；否则整栏隐藏（沿用既有“为空则隐藏”的唯一规则）。
+ *  · 行体例复用指挥栏共享条（`command-alliance-row` + `is-ore` 配色），不新造视觉语言；
+ *    栏目标题＝**星区名称原样显示**（用户自定义字符串，不做 i18n）；无名称时回退通用文案「星区」。
+ *  · **星区冷却组**（任务 3，位于**储量条上方**）：为**每个带星区冷却词条 `sector_cd_ticks` 的模块**
+ *    各一行（识别函数与引擎门控**同源**：`data/sector.js hasSectorCdFx`；按 `MODULES` **自动枚举、
+ *    不硬编码模块 id**），整组带一个**小节标题**、与储量条**视觉上独立成组**（同一栏内、储量条之前）；
+ *    行体例复用 `command-alliance-row`（无进度条，仅「模块名 + 剩余冷却」）；
+ *    **只在冷却中显示该行、就绪即隐藏**，各模块**各显各的**；无星区数据 → 整栏（含整组）一并隐藏；
+ *    数值只读 `battle.sector.cd`。 */
+function buildSectorZone() {
+  const label = el('div', { class: 'zone-label', text: '' });
+  // ★ 星区冷却组（储量条**上方**、独立成组）：小节标题 + 各模块一行（仅冷却中显示）
+  const cdTitle = el('div', { class: 'zone-label', text: i18n.t('battle.sector.cdTitle') });
+  const cdRows = Object.values(MODULES)
+    .filter((m) => isSectorCdModuleFx(m.effects))
+    .map((m) => {
+      const tickEl = el('span', { class: 'command-alliance-num', text: '' });
+      const r = el('div', { class: 'command-alliance-row hidden' }, [
+        el('span', { class: 'command-alliance-label', text: i18n.t(m.nameKey) }),
+        tickEl,
+      ]);
+      return { id: m.id, row: r, tickEl };
+    });
+  const cdGroup = el('div', { class: 'sector-cd-group hidden' }, [
+    cdTitle,
+    ...cdRows.map((c) => c.row),
+  ]);
+  // 储量条（冷却组之下）
+  const fill = el('div', { class: 'command-alliance-fill is-ore' });
+  const num = el('span', { class: 'command-alliance-num', text: '' });
+  const row = el('div', { class: 'command-alliance-row is-ore hidden' }, [
+    el('span', { class: 'command-alliance-label', text: i18n.t('battle.sector.ore') }),
+    el('div', { class: 'command-alliance-track' }, [fill]),
+    num,
+  ]);
+  const zone = el('div', { class: 'battle-zone sector hidden' }, [label, cdGroup, row]);
+  return { zone, label, cdGroup, cdRows, row, fill, num };
+}
+
+/** 刷新星区资源栏（有星区数据才显示；含星区冷却组：仅冷却中显示、就绪隐藏）。
+ *  ★ 「星区冷却组」的显示规则：**组内至少有一行冷却中**才显示该组（含小节标题）；全就绪 → 整组隐藏；
+ *    **无星区数据 → 整组隐藏**（随整栏隐藏）。所有数值只读引擎口径 `battle.sector.cd`，UI 不自算。 */
+function refreshSectorZone() {
+  if (!sectorZ) return;
+  const sec = battle && battle.sector ? battle.sector : null;
+  const hasName = !!(sec && sec.name);
+  const hasOre = !!(sec && sec.oreReserveInit > 0);
+  const has = !!(sec && (hasName || hasOre));
+  sectorZ.zone.classList.toggle('hidden', !has);
+  // 星区冷却组：**无星区数据 → 整组隐藏**；否则逐行「剩余 > 0 才显示」，并据此决定整组显隐
+  let anyCd = false;
+  for (const c of sectorZ.cdRows || []) {
+    const rem = has ? (sec.cd && sec.cd[c.id]) || 0 : 0;
+    c.row.classList.toggle('hidden', !(rem > 0));
+    c.tickEl.textContent = rem > 0 ? i18n.t('battle.sector.cd', { n: rem }) : '';
+    if (rem > 0) anyCd = true;
+  }
+  if (sectorZ.cdGroup) sectorZ.cdGroup.classList.toggle('hidden', !anyCd);
+  if (!has) {
+    sectorZ.fill.style.width = '0%';
+    sectorZ.num.textContent = '';
+    return;
+  }
+  sectorZ.label.textContent = hasName ? sec.name : i18n.t('battle.zone.sector');
+  sectorZ.row.classList.toggle('hidden', !hasOre); // 储量为 0 → 该行隐藏（与“为空则隐藏”同规则）
+  const pct = hasOre ? Math.max(0, Math.min(100, (sec.oreReserve / sec.oreReserveInit) * 100)) : 0;
+  sectorZ.fill.style.width = pct.toFixed(1) + '%';
+  sectorZ.num.textContent = `${Math.round(sec.oreReserve)} / ${Math.round(sec.oreReserveInit)}`;
+}
+
 /** 刷新指挥栏：策略下拉值与当前命中目标预览；非对战中禁用 */
 function refreshCommand() {
   if (!cmdSel || !cmdPreview) return;
+  refreshSectorZone(); // 星区资源栏与指挥栏同批刷新（每 tick 只读引擎口径）
   if (!battle) {
     cmdPreview.textContent = '';
     cmdSel.disabled = true;
@@ -655,6 +742,8 @@ function buildStage() {
   const logisticsZ = zoneEl('battle.zone.logistics', 'ally', null);
   allZones = [enemyLogZ, enemyZ, combatZ, logisticsZ];
   const cmdZ = buildCommandZone();
+  sectorZ = buildSectorZone(); // 星区资源栏（指挥栏下方独立一栏；有星区数据才显示）
+  refreshSectorZone();
 
   // 详情面板（选中单位后填充）
   detailEl = el('div', { class: 'battle-detail hidden' });
@@ -690,14 +779,20 @@ function buildStage() {
   grip.addEventListener('pointerup', endDrag);
   grip.addEventListener('pointercancel', endDrag);
 
+  // ★ 区块顺序（自上而下）：敌方战报/敌方 → 分隔 → 我方战斗/后勤 → **单位详情栏** → 指挥栏 → **星区资源栏** → 战报。
+  //   「单位详情栏」上移至指挥栏**之前**（原本在指挥栏之后）：详情是“选中单位的即时读数”，
+  //   紧贴单位栏更符合阅读顺序；指挥栏及其下方的星区资源栏属“全局设置/全局读数”，统一靠下聚拢。
+  //   纯 DOM 顺序调整：`.battle-stage` 是 flex 纵向列 + 统一 gap，无任何 order/margin 依赖 → 无需 CSS 改动；
+  //   窄屏媒体查询也只改卡片/字号，不涉及区块顺序，故响应式行为不变。
   const stage = el('div', { class: 'battle-stage' }, [
     enemyLogZ.zone,
     enemyZ.zone,
     el('div', { class: 'battle-sep' }),
     combatZ.zone,
     logisticsZ.zone,
-    cmdZ.zone,
     detailEl,
+    cmdZ.zone,
+    sectorZ.zone,
     logPanel,
   ]);
   return { stage, enemyZ, enemyLogZ, combatZ, logisticsZ, logLines };
@@ -954,9 +1049,30 @@ function perActText(ship, inst) {
       i18n.t('battle.detail.statOreCapBonus', { v: fmtSigned(fx.ore_cap_bonus * coeff(ship, 'mining')) })
     );
   }
+  // ★ 采矿词条（自身·无目标）：每次激活的**采矿量**——同样是**自身词条**（无 `_target` 后缀）、
+  //   按**采矿系数**缩放（与引擎 Pass1 的 `ore_gain × coeff(ship,'mining')` 同一口径）。
+  if ((fx.ore_gain || 0) > 0) {
+    parts.push(i18n.t('battle.detail.statOreGain', { n: Math.round(fx.ore_gain * coeff(ship, 'mining')) }));
+  }
   if ((fx.shield_coeff_add || 0) !== 0) {
     // 类别系数**加性**词条（自身）：与 `attack_coeff_add` 同体例——**不经类别系数缩放**（它本身就是系数项）
     parts.push(i18n.t('battle.detail.statShieldCoeff', { v: fmtSignedNum(fx.shield_coeff_add) }));
+  }
+  if ((fx.mining_coeff_add || 0) !== 0) {
+    // 采矿系数**加性**词条（自身，与护盾电池同体例）：同为系数项 → **不经类别系数缩放**。
+    // 影响面（引擎按需读取）：矿物容量模块部分 `oreCapacityOf`、采矿激光实采量 `ore_gain × coeff(ship,'mining')`。
+    parts.push(i18n.t('battle.detail.statMiningCoeff', { v: fmtSignedNum(fx.mining_coeff_add) }));
+  }
+  // ★ **星区词条**（直接改星区矿物储量，无目标）：创世纪（加法）/ 矿藏富集（乘法）。
+  //   两者都**不随船级系数缩放**（作用于星区而非本单位）→ 直接展示该等级的原值；
+  //   乘法按“实际乘数”展示（增量比例 0.1 → ×1.1），与引擎 3c 的 `1+value` 同一口径。
+  if ((fx.sector_ore_add || 0) !== 0) {
+    parts.push(i18n.t('battle.detail.statSectorOreAdd', { v: fmtSigned(fx.sector_ore_add) }));
+  }
+  if ((fx.sector_ore_mul || 0) !== 0) {
+    parts.push(
+      i18n.t('battle.detail.statSectorOreMul', { v: fmtCoeffMul(1 + fx.sector_ore_mul) })
+    );
   }
   if ((fx.hp_regen_per_death || 0) > 0) {
     // 按阵亡数回血（`hp_regen_per_death`，如「回收利用」）：只放**每次恢复量**，不含“上一 tick 阵亡数”
@@ -1141,10 +1257,16 @@ function moduleRows(ship) {
     let gearEl = null;
     const controls = el('span', { class: 'mod-controls' });
     if (controllable) {
+      // ★「不可停用」标签（`undeactivatable`，引擎判据 `stateModuleUndeactivatable`）：
+      //   开关**灰显**（`disabled` + `.locked`）并带悬停说明；点击在 UI 侧直接返回，
+      //   引擎 `disableModule` 亦会拒绝（双层，任何来源都改不动）。
+      const locked = stateModuleUndeactivatable(inst);
       toggleEl = el('button', {
-        class: 'btn tiny',
+        class: `btn tiny${locked ? ' locked' : ''}`,
         text: '',
+        title: locked ? i18n.t('battle.detail.undeactivatable') : '',
         onclick: () => {
+          if (stateModuleUndeactivatable(inst)) return; // 不可停用：UI 侧不发起（引擎侧同样拒绝）
           // 走引擎启停：处理自身被动重算 + 撤销其目标级护盾上限影响/结束自身时长
           if (inst.enabled) battle.disableModule(inst);
           else battle.enableModule(inst);
@@ -1157,6 +1279,7 @@ function moduleRows(ship) {
           if (detail) detail.refreshStats();
         },
       });
+      toggleEl.disabled = locked;
       gearEl = el('button', {
         class: 'icon-btn',
         title: i18n.t('battle.detail.aiGear'),
@@ -1233,6 +1356,13 @@ function stateModuleState(inst) {
 function stateModuleGate(inst) {
   if (!battle || typeof battle.moduleGateMet !== 'function') return null;
   return battle.moduleGateMet(inst);
+}
+
+/** ★ **「不可停用」模块**（`type` 标签 `undeactivatable`）的**引擎判据**（唯一口径，UI 绝不自查标签）：
+ *  true = 该模块不可停用（开关灰显 + 悬停说明「该模块不可停用」）；false = 可正常启停。
+ *  · 引擎侧同样拒绝停用（`battle.disableModule` 直接忽略）→ UI 灰显只是**呈现**，不是唯一防线。 */
+function stateModuleUndeactivatable(inst) {
+  return !!(battle && typeof battle.moduleUndeactivatable === 'function' && battle.moduleUndeactivatable(inst));
 }
 
 function modStatusText(ship, inst) {
@@ -1456,9 +1586,14 @@ function buildDetail(ship) {
     for (const r of modRows) {
       if (r.statusEl) r.statusEl.textContent = modStatusText(ship, r.inst);
       if (r.toggleEl) {
+        // ★「不可停用」：开关灰显 + 说明（与创建时同一引擎判据；状态恒定，不会因数值变化而变）
+        const locked = stateModuleUndeactivatable(r.inst);
         r.toggleEl.textContent = r.inst.enabled
           ? i18n.t('battle.detail.disable')
           : i18n.t('battle.detail.enable');
+        r.toggleEl.disabled = locked;
+        r.toggleEl.classList.toggle('locked', locked);
+        r.toggleEl.title = locked ? i18n.t('battle.detail.undeactivatable') : '';
       }
       if (r.chipEl) {
         r.chipEl.classList.toggle('off', r.inst.enabled === false);
@@ -1785,6 +1920,7 @@ export function leaveBattle() {
   allyLogZone = null;
   allZones = [];
   logPanelEl = null;
+  sectorZ = null; // 星区资源栏引用随舞台一并失效（下次开战重建）
   barTints.clear();
   overlay?.overlay.classList.add('hidden');
   ticker.setSpeed(1);
@@ -1807,6 +1943,7 @@ function exitToMenu() {
   detail = null;
   updateCards = null;
   logPanelEl = null;
+  sectorZ = null;
   allZones = [];
   barTints.clear();
   setupView.detach(); // 卸载配置屏宿主：离屏后不再重绘
@@ -1818,7 +1955,7 @@ function exitToMenu() {
 /* ================= 根节点 ================= */
 
 function root() {
-  const titleEl = el('div', { class: 'battle-title', text: i18n.t('battle.title') });
+  titleEl = el('div', { class: 'battle-title', text: i18n.t('battle.title') });
   statusEl = el('div', { class: 'battle-status', text: '' });
   // 「离开」：仅在对局中/已结算时出现（配置界面无战斗可离开）→ 回编队/演练配置界面
   leaveBtn = el('button', {
@@ -1848,6 +1985,12 @@ function root() {
 /** 战斗状态行：阶段 + 双方存活数（并同步「离开」按钮显隐：有战斗才显示） */
 function refreshStatus() {
   if (leaveBtn) leaveBtn.classList.toggle('hidden', !battle);
+  // ★ 战斗场景以星区命名：标题追加星区名称（唯一来源＝引擎只读口径 `battle.sector.name`）。
+  //   名称为**用户自定义字符串**：**原样显示、不做 i18n**；无名称（空串）时只显示基础标题，不加前缀。
+  if (titleEl) {
+    const secName = battle && battle.sector && battle.sector.name ? battle.sector.name : '';
+    titleEl.textContent = secName ? `${i18n.t('battle.title')} · ${secName}` : i18n.t('battle.title');
+  }
   if (!statusEl) return;
   if (!battle) {
     statusEl.textContent = i18n.t('battle.status', {
@@ -1892,6 +2035,8 @@ function renderRunning() {
 function overlayEl() {
   const resultTitle = el('h2', { class: 'result-title' });
   const resultDesc = el('p', { class: 'result-desc' });
+  // ★ 结算面板同样按星区命名：显示星区名称（引擎口径 `battle.sector.name`，原样、不做 i18n；无名称则隐藏）
+  const resultSector = el('p', { class: 'result-sector hidden' });
   const actions = el('div', { class: 'settle-actions' }, [
     el('button', {
       class: 'btn primary small',
@@ -1912,6 +2057,7 @@ function overlayEl() {
   const overlayDiv = el('div', { class: 'battle-overlay hidden' }, [
     el('div', { class: 'settle-panel' }, [
       el('div', { class: 'settle-line' }, [resultTitle, resultDesc]),
+      resultSector,
       actions,
     ]),
   ]);
@@ -1924,6 +2070,9 @@ function overlayEl() {
     resultTitle.textContent = i18n.t(`battle.result.${kind}.title`);
     resultTitle.className = `result-title ${kind}`;
     resultDesc.textContent = i18n.t(`battle.result.${kind}.desc`);
+    const secName = battle && battle.sector && battle.sector.name ? battle.sector.name : '';
+    resultSector.textContent = secName ? i18n.t('battle.sector.line', { name: secName }) : '';
+    resultSector.classList.toggle('hidden', !secName);
     overlayDiv.classList.remove('hidden');
   }
   return { overlay: overlayDiv, show };
