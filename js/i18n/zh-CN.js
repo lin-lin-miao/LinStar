@@ -40,6 +40,7 @@ export default {
   'ship.rocket': '火箭',
   'ship.missile': '导弹',
   'ship.omegaMissile': '欧米茄导弹',
+  'ship.slagMissile': '矿渣导弹',
 
   /* 模块 */
   'module.cannon': '火炮',
@@ -55,15 +56,19 @@ export default {
   'module.missileWarhead': '导弹爆炸',
   'module.omegaMissileLauncher': '欧米茄导弹发射器',
   'module.omegaMissileWarhead': '欧米茄导弹爆炸',
+  'module.slagMissileLauncher': '矿渣导弹发生器', // 采矿 · 召唤矿渣导弹（**只耗自身携带矿物 ore_cost**、不耗能）
+  'module.slagMissileWarhead': '矿渣导弹爆炸', // 内部：矿渣导弹携带的爆炸弹头（picker:false）
   'module.reactorCoil': '强辐线圈',
   'module.shieldBattery': '护盾电池',
   'module.hullArmor': '船体装甲',
   'module.recycle': '回收利用',
   'module.energyTransfer': '能量输送',
+  'module.oreTransfer': '矿物输送', // 采矿 · 主动单体友方（把自身携带矿物 **1:1** 输送给目标 ore_target）
   'module.cargoHold': '货舱',
   'module.oreHold': '矿舱',
   'module.miningLaser': '采矿激光',
   'module.oreCompressor': '矿物压缩', // 采矿 · 常驻增幅器（自身采矿系数 mining_coeff_add）
+  'module.oreRepair': '矿物维修', // 采矿 · 主动单体友方（含自身；耗自身矿物 ore_cost 修复目标 hp_target，量值按词条原值）
   'module.genesis': '创世纪', // 采矿 · 无目标主动（星区剩余储量**加法** sector_ore_add）
   'module.oreEnrichment': '矿藏富集', // 采矿 · 无目标主动（星区剩余储量**乘法** sector_ore_mul）
   'module.emp': '电磁脉冲',
@@ -220,6 +225,13 @@ export default {
   'battle.detail.noModules': '未安装模块',
   'battle.detail.costCycle': '耗能 {n} · 每 {cd}t',
   'battle.detail.costCycleDur': '耗能 {n} · 持续 {d}t + 冷却 {cd}t',
+  // ★ 含「矿物成本」（`ore_cost`）的模块：成本段与周期段**分别成词、按需拼接**（最短体例）——
+  //   好处：① 不会出现“耗能 0”的误导；② `costCycle`/`costCycleDur` 原样保留，
+  //   不含矿物成本的既有模块文案**逐字不变**（零回归）。
+  'battle.detail.costOre': '耗矿 {n}',
+  'battle.detail.costEnergy': '耗能 {n}',
+  'battle.detail.perCycle': '每 {cd}t',
+  'battle.detail.perCycleDur': '持续 {d}t + 冷却 {cd}t',
   'battle.detail.cooling': '冷却 {n}t',
   'battle.detail.ready': '就绪',
   'battle.detail.stateActive': '生效中',
@@ -271,6 +283,7 @@ export default {
   'battle.detail.statMiningCoeff': '采矿系数 {v}', // 矿物压缩：自身采矿系数加性（不加取整、不乘船级系数）
   'battle.detail.statSectorOreAdd': '星区矿物 {v}/次', // 创世纪：星区剩余储量加法（绝对增量、无上限）
   'battle.detail.statSectorOreMul': '星区矿物 ×{v}/次', // 矿藏富集：星区剩余储量乘法（展示实际乘数 1+比例）
+  'battle.detail.statOreT': '目标矿物 +{n}', // 矿物输送：1:1 输送给目标的矿物量（**不乘任何系数**，原样显示）
   'battle.detail.statCap': '护盾上限 +{n}',
   // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
   //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
@@ -331,5 +344,13 @@ export default {
   'battle.log.miningGain': '{owner}的{module}：采集 {n} 点矿物',
   'battle.log.sectorOreAdd': '{owner}的{module}：星区矿物 +{n}',
   'battle.log.sectorOreMul': '{owner}的{module}：星区矿物 ×{mul}（+{n}）',
+  // ★ 矿物输送（`ore_target`，1:1）：低频——**仅在实际输送量 > 0** 时记一条（`n`＝实际转移量，非请求量），
+  //   每模块每 tick 至多 1 条（单次激活只产生一条输送记录）；成句在结算步骤 3d-2 的**落地处**（与数值同批）；
+  //   owner/target 着色、module 恒绿。与「能量输送」（不记战报）不同：矿物是**成对搬运**的可见资源。
+  'battle.log.oreTransfer': '{owner}的{module}：输送 {n} 点矿物给 {target}',
+  // ★ 治疗型「矿物成本」模块（`ore_cost` + 治疗 `hp_target`，如「矿物维修」）：低频——**仅在实际回血量 > 0** 时记，
+  //   每模块每 tick 至多 1 条；`n`＝**实际扣矿量**、`amount`＝**实际回血量**（含 hpMax 截断，口径唯一）；
+  //   owner/target 着色、module 恒绿；成句在结算步骤 4c 的**回血落地处**（与数值同批）。
+  'battle.log.oreRepair': '{owner}的{module}：消耗 {n} 点矿物，修复 {target} {amount} 点生命',
   'battle.result.close': '收起',
 };

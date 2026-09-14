@@ -35,7 +35,7 @@ export default {
   category: 'function',
   // 召唤类模块：**无命中目标**（走 summon 执行；引擎对“无 `bind_target`/`per_target` 的召唤模块”
   // 不解析模块目标，只做能量/冷却/在场上限门控 —— 与既有 laserDroneSpawn 同一体例）。
-  target: {},
+  target: { kinds: ['enemy'], countMode: 'single', maxCount: 1, exclude: ['projectile'] },
   effects: {
     // 机制标签列表（可多个；引擎按标签识别、不按模块 id 硬编码）：
     //   summon     = 召唤钩子（激活时按 effects.summon 补召一个临时单位）

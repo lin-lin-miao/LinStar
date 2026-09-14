@@ -40,6 +40,7 @@ export default {
   'ship.rocket': 'Rocket',
   'ship.missile': 'Missile',
   'ship.omegaMissile': 'Omega Missile',
+  'ship.slagMissile': 'Slag Missile',
 
   /* Modules */
   'module.cannon': 'Cannon',
@@ -55,15 +56,19 @@ export default {
   'module.missileWarhead': 'Missile Blast',
   'module.omegaMissileLauncher': 'Omega Missile Launcher',
   'module.omegaMissileWarhead': 'Omega Missile Blast',
+  'module.slagMissileLauncher': 'Slag Missile Launcher', // Mining · summons a slag missile (ore_cost only, no energy)
+  'module.slagMissileWarhead': 'Slag Missile Blast', // Internal: warhead carried by the slag missile (picker:false)
   'module.reactorCoil': 'Strong Radiation Coil',
   'module.shieldBattery': 'Shield Battery',
   'module.hullArmor': 'Hull Armor',
   'module.recycle': 'Recycling',
   'module.energyTransfer': 'Energy Transfer',
+  'module.oreTransfer': 'Ore Transfer', // Mining · single ally target (moves own ore 1:1, no coefficient)
   'module.cargoHold': 'Cargo Hold',
   'module.oreHold': 'Ore Hold',
   'module.miningLaser': 'Mining Laser',
   'module.oreCompressor': 'Ore Compressor', // Mining · passive booster (own mining coefficient)
+  'module.oreRepair': 'Ore Repair', // Mining · single ally target incl. self (spends own ore_cost to heal hp_target, raw value)
   'module.genesis': 'Genesis', // Mining · targetless active (sector ore reserve, additive)
   'module.oreEnrichment': 'Ore Enrichment', // Mining · targetless active (sector ore reserve, multiplicative)
   'module.emp': 'EMP',
@@ -220,6 +225,13 @@ export default {
   'battle.detail.noModules': 'No modules installed',
   'battle.detail.costCycle': 'Energy {n} · every {cd}t',
   'battle.detail.costCycleDur': 'Energy {n} · {d}t duration + {cd}t cooldown',
+  // ★ Modules with an ore cost (`ore_cost`): cost and period segments are separate short phrases,
+  //   composed on demand — avoids a misleading "Energy 0" while leaving the existing
+  //   costCycle/costCycleDur wording of every other module byte-identical (zero regression).
+  'battle.detail.costOre': 'Ore {n}',
+  'battle.detail.costEnergy': 'Energy {n}',
+  'battle.detail.perCycle': 'every {cd}t',
+  'battle.detail.perCycleDur': '{d}t duration + {cd}t cooldown',
   'battle.detail.cooling': 'Cooldown {n}t',
   'battle.detail.ready': 'Ready',
   'battle.detail.stateActive': 'Active',
@@ -271,6 +283,7 @@ export default {
   'battle.detail.statMiningCoeff': 'Mining coeff {v}', // Ore Compressor: own mining coefficient, additive
   'battle.detail.statSectorOreAdd': 'Sector ore {v}/shot', // Genesis: sector reserve, additive (uncapped)
   'battle.detail.statSectorOreMul': 'Sector ore ×{v}/shot', // Ore Enrichment: sector reserve, multiplicative
+  'battle.detail.statOreT': 'Target ore +{n}', // Ore Transfer: ore moved 1:1 (no coefficient applied, shown raw)
   'battle.detail.statCap': 'Shield cap +{n}',
   // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
   //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
@@ -331,5 +344,14 @@ export default {
   'battle.log.miningGain': "{owner}'s {module}: mined {n} ore",
   'battle.log.sectorOreAdd': "{owner}'s {module}: sector ore +{n}",
   'battle.log.sectorOreMul': "{owner}'s {module}: sector ore ×{mul} (+{n})",
+  // ★ Ore Transfer (`ore_target`, 1:1): low-frequency — logged only when the ACTUAL amount moved > 0
+  //   (n = actual amount, not the requested one), at most one line per module per tick; the sentence is
+  //   emitted at the settlement landing site (step 3d-2, same batch as the numbers); owner/target colored.
+  'battle.log.oreTransfer': "{owner}'s {module}: transferred {n} ore to {target}",
+  // ★ Ore-cost healing modules (`ore_cost` + healing `hp_target`, e.g. Ore Repair): low-frequency — logged
+  //   only when the ACTUAL healing > 0, at most one line per module per tick; n = ore actually spent,
+  //   amount = HP actually restored (hpMax clamp included, single source of truth); emitted at the
+  //   healing landing site (settlement step 4c, same batch as the numbers); owner/target colored.
+  'battle.log.oreRepair': "{owner}'s {module}: spent {n} ore, restored {amount} HP to {target}",
   'battle.result.close': 'Dismiss',
 };

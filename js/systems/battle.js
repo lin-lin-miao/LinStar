@@ -17,6 +17,8 @@
  *       步骤 3 能量统一落地（回充 → 模块消耗 → energy_target 量值）；
  *       步骤 3b 星区矿物采集统一落地（oreGains：按比例分配 → 入 `hull.ore` → 扣减星区储量，唯一分配点）；
  *       步骤 3c 星区储量词条统一落地（sectorOps：**先加法、后乘法**，**无上限**；星区侧模块冷却同批写入）；
+ *       步骤 3d 矿物支出统一落地（3d-1 `oreSpends`：模块的**矿物成本**从自身矿物仓扣除；
+ *              3d-2 `oreTransfers`：矿物输送 **1:1 成对**搬运「自身 −N / 目标 +N」）；
  *       步骤 4 护盾/模块池填充/血量/自毁/临时寿命统一落地。
  *     Phase B（相内子步，迭代命中条目）：按“普通/爆炸”吸收链结算真·武器/爆炸命中；
  *     Phase B2：反射返程统一在本 tick 命中全部结算完之后补打回（不递归、逐笔 noReflect）。
@@ -60,7 +62,30 @@
  *        **词条存在即代表该模块参与星区冷却**（按词条识别、不硬编码模块 id）——以后任何模块带上它
  *        就自动受星区侧冷却约束（门控 / 落地 / UI 冷却行枚举**同源**，识别函数 `hasSectorCdFx`）；
  *        时长＝**本词条值**（不再取 `cooldown_ticks`，后者只管实例自身冷却）；`0` 也算参与。
+ *     ore_cost → **自身**词条：**一次施放消耗的携带矿物量**（从**自身**矿物仓 `hull.ore` 扣，
+ *        唯一读口径 `oreLoadOf`）——与 `energy_cost` **完全同体例**的“成本”词条，只是成本来源换成矿物：
+ *        · 门控在 **Pass1 成本门控处**（召唤型模块与能量门控同一处；非召唤模块另在 `canImpact` 复核）：
+ *          携带不足 → **不激活、不扣矿物、不进冷却**；
+ *        · 单位内运行计数 `ctx.oreAvail`（tick 起始携带量 − 本 tick 已记账支出）
+ *          ⇒ 同单位多模块按序门控、不会超发（与 `ctx.avail` 的能量口径完全同构）；
+ *        · Pass1 只记账（`__pending.oreSpends`，**零数值变化**）→ **结算步骤 3d-1** 统一扣除；
+ *          ★ 该步骤同时把“**本 tick 实际扣矿量**”写回实例（`_orePaidAmt`/`_orePaidTick`，非数值标记），
+ *            供**治疗型矿物成本模块**（`ore_cost` + 治疗 `hp_target`）在步骤 4c 成句时取用
+ *            → 该类模块记 **1 条低频战报** `battle.log.oreRepair`（仅**实际回血量 > 0**、每模块每 tick ≤ 1 条）；
+ *            成本本身不单独记战报（与 `energy_cost` 同口径）。
+ *     ore_target → **目标级量值词条**：给目标**增加矿物**（已登记进量值词条表 `AMOUNT`，与
+ *        `energy_target` 同族同表）。★ **1:1、不乘任何系数**（单独成支，不走 `fx[k] * co` 通用缩放路径）：
+ *        · 门控（`canImpact` 唯一出口）：① 自身携带矿物 < 词条值 → 不激活；
+ *          ② 目标剩余矿物容量为 0（已满）→ 不激活（沿用“存在可影响目标”口径）；
+ *          ③ 目标容量不足但 > 0 → 照常激活，实际量＝`min(词条值, 自身剩余携带, 目标剩余容量)`；
+ *        · Pass1 只记意图（`__pending.oreTransfers`，**零数值变化**）→ **结算步骤 3d-2** 统一落地
+ *          （一条记录＝一次「自身 −N / 目标 +N」，同额、原子；截断读 Pass1 快照 ⇒ 与遍历顺序无关）；
+ *          ★ 落地处记 **1 条低频战报** `battle.log.oreTransfer`（仅**实际输送量 > 0**、每模块每 tick ≤ 1 条）。
  *     shield_gain_target → 对每个选定目标恢复/汲取护盾（目标级）
+ *     exact_amount（`type` 标签）→ **量值按词条原值**：本模块的**目标级量值词条**（`AMOUNT` 表：
+ *       shield/hp/energy/ore）一律**不乘任何系数**（1:1 口径，如「矿物维修」的回血 `hp_target`）。
+ *       · 引擎按**标签**识别、不按模块 id 硬编码；**只管量值**，不管 `CAPFIELD` 上限类词条；
+ *       · 未带该标签的模块走原 `词条值 × 类别系数` 路径 ⇒ 既有数值**一字不变**（零回归）。
  *     force_target_self（`type` 标签）→ 把每个选定目标压入“强制来源栈”（栈顶＝最后激活者优先被集火；
  *       撤销只出栈，不恢复旧目标）
  *     include_self（`type` 标签）→ 效果**同时施加于自身**（与目标选择器无关；**标签补入的自身不产生
@@ -1034,16 +1059,19 @@ export function createBattle(preset) {
     return [...set.values()];
   }
 
-  /* ---------- 目标级 护盾/血量/能量 词条管理 ----------
+  /* ---------- 目标级 护盾/血量/能量/矿物 词条管理 ----------
    * 指向"选定目标"的词条（kinds 可含 self/ally/enemy/any）：
    *   量值型（每次激活即时 加/减 当前值，正=加负=减）：
-   *       shield_gain_target / hp_target / energy_target
+   *       shield_gain_target / hp_target / energy_target / ore_target
+   *       · 缩放口径：默认 `词条值 × 本模块类别系数`；带 `type` 标签 `exact_amount` 的模块按**词条原值**；
+   *       ★ `ore_target`＝**矿物输送量**：给目标增加矿物，**1:1、不乘任何系数**
+   *         （量值落地处单独成支，见下方 `AMOUNT[k] === 'ore'` 分支；与模块是否带标签无关）。
    *   上限型（抬/压 cap，随本模块停用/时长结束/来源失效撤销）：
    *       shield_cap_target / hp_cap_target / energy_cap_target
    * shield_gain / shield_cap_bonus（只作用于自身的旧词条）仍由 recalcDerived 处理。
    */
   const capOverlays = new Map(); // targetId -> Map(sourceModId, {sh,hp,en})
-  const AMOUNT = { shield_gain_target: 'shield', hp_target: 'hp', energy_target: 'energy' };
+  const AMOUNT = { shield_gain_target: 'shield', hp_target: 'hp', energy_target: 'energy', ore_target: 'ore' };
   const CAPFIELD = { shield_cap_target: 'sh', hp_cap_target: 'hp', energy_cap_target: 'en' };
   /** 类别系数加性修饰词条 → 系数类别（可扩展：加性增益词条名 → `coeff()` 的 category）
    *  如 `attack_coeff_add: 0.2` = **自身** attack 系数 +0.2（base 1.0 → 1.2）；
@@ -1262,6 +1290,17 @@ export function createBattle(preset) {
     return true;
   }
 
+  /** ★ Pass1 **矿物（携带矿物）消耗**：与 `payEnergy` **完全同体例**（唯一区别是成本来源）——
+   *  **只记账不回写**（结算步骤 3d-1 统一落地），同时扣减“单位内运行计数” `ctx.oreAvail`
+   *  以便同单位后续模块按序门控（含矿物输送：二者共用同一预算 ⇒ 总支出不超 tick 起始携带量）。
+   *  返回是否支付成功（携带矿物足够）。成本词条＝`ore_cost`（自身词条，见文件头效果表）。 */
+  function payOre(ctx, inst, cost) {
+    if (ctx.oreAvail < cost) return false;
+    ctx.oreAvail -= cost;
+    ctx.P.oreSpends.push({ inst, amount: cost });
+    return true;
+  }
+
   /** ★ **召唤者当前生效的单位系数快照**（唯一口径）——召唤物“直接继承召唤者系数数值”的取值来源：
    *  逐类别取 `coeff(ship, 类别)` 的**当前结果**（含船型基础 + 模块加性/乘性 + 当刻目标级系数修饰）。
    *  类别集合＝`COEFF_CATEGORIES` ∪ 召唤者 `coefficients` 既有键（如 `drone`）→ 注入后召唤物系数表**完整确定**。
@@ -1285,7 +1324,14 @@ export function createBattle(preset) {
       if (n >= (sum.maxSummoned || 1)) return; // 已达该模块在场召唤数上限
     }
     const cost = fx.energy_cost || 0;
+    // ★ **矿物成本**（`ore_cost`，自身携带矿物）：与能量成本同批、同体例 —— 记账到 `__pending.oreSpends`，
+    //   结算步骤 3d-1 统一扣除。**先复核矿物、后付能量**：保证绝不会出现“能量已付、矿物不够、召唤未发生”。
+    //   （正常路径下 `maybeActivate` 的成本门控已拦过，此处为同一口径的复核；
+    //     `per_target` 齐射逐枚调用本函数 → 逐枚各扣一次，矿物不足时自然中止后续齐射。）
+    const oreCost = fx.ore_cost || 0;
+    if (oreCost > 0 && ctx.oreAvail < oreCost) return;
     if (!payEnergy(ctx, inst, cost)) return; // 能量不足（用单位内运行计数门控，消耗记账到结算）
+    if (oreCost > 0) payOre(ctx, inst, oreCost); // 矿物不足已在上一行拦住 → 此处恒成功
     // —— 用召唤模块给通用无人机"覆写模板"：attrs 按船型结构整条可覆写，缺省沿用模板 ——
     const A = (sum.attrs && typeof sum.attrs === 'object') ? sum.attrs : {};
     // ★ 召唤物**直接继承召唤者的单位系数数值**（激活瞬间快照，唯一口径）：
@@ -1426,7 +1472,8 @@ export function createBattle(preset) {
 
   /** 激活前可行性：时长型加盾模块（未在持续期即可激活）；纯增益须对某目标生效。
    *  `ship` ＝施放方自身（自身词条的判定对象），`targets` ＝本次解析出的目标（目标级词条的判定对象）。
-   *  `ctx`（可选）＝本 tick 的单位内运行语境（仅采矿词条的“已认领量”用；其它词条不读）。 */
+   *  `ctx`（可选）＝本 tick 的单位内运行语境：`oreClaimed`（采矿“本 tick 已认领量”，只进不减）
+   *  与 `oreAvail`（**本 tick 可动用的携带矿物预算**，矿物成本/矿物输送共用，只减不进）；其它词条不读。 */
   function canImpact(ship, targets, fx, inst, ctx) {
     // ★ **星区侧冷却门控**（独立词条 `sector_cd_ticks`，或带星区效果词条 `sector_ore_add`/`sector_ore_mul`）：
     //   **混合冷却门控**的**唯一落点**（Pass1 唯一门控出口），**先于其它效果词条判定**——
@@ -1457,6 +1504,30 @@ export function createBattle(preset) {
       return true;
     }
     if ((fx.damage || 0) > 0) return true;
+    // ★ **自身词条·矿物成本**（`ore_cost`，如矿渣导弹发生器）：从**自身携带矿物**中扣除，
+    //   与能量成本**完全同体例**（唯一读口径 `oreLoadOf`；单位内运行计数 `ctx.oreAvail`）——
+    //   携带不足 → **不可影响 → 不激活、不扣矿物、不进冷却**。
+    //   ⚠ 召唤型模块按既有设计不进入本函数（其成本门控与能量门控同处，见 maybeActivate/doSummon），
+    //     本支为**同一口径的复核与扩展点**：将来任何非召唤模块带 `ore_cost` 也在同一出口拦住。
+    //   ⚠ 不在此提前 `return true`：本词条是**成本**、不是效果，继续走后面的常规效果判定。
+    if ((fx.ore_cost || 0) > 0) {
+      const oreLeft = ctx && ctx.oreAvail != null ? ctx.oreAvail : oreLoadOf(ship);
+      if (oreLeft < fx.ore_cost) return false;
+    }
+    // ★ **目标级量值词条·矿物输送**（`ore_target`，正值＝给目标增加矿物）：**1:1、不乘任何系数**。
+    //   门控（与能量输送的“目标已满不激活”同体例，但多一条“自身携带不足不激活”）：
+    //     ① 自身**剩余携带矿物** < 词条值 → 不可影响（不激活、不耗能、不进冷却）；
+    //        （剩余＝tick 起始携带量 − 本 tick 已记账的矿物支出 `ctx.oreAvail`，单位内运行计数）
+    //     ② 目标**剩余矿物容量**为 0（已满）→ 不可影响（唯一读口径 `oreRoomOf`）；
+    //     ③ 目标容量不足但 > 0 → **照常激活**，实际输送量在 Pass1 按
+    //        `min(词条值, 自身剩余携带, 目标剩余容量)` 截断、按**实际量**结算。
+    //   ⚠ 必须放在下面的通用量值循环**之前**：通用循环按“目标是否未满”判定，不含施放方携带量口径。
+    if ((fx.ore_target || 0) > 0) {
+      const oreLeft = ctx && ctx.oreAvail != null ? ctx.oreAvail : oreLoadOf(ship);
+      if (oreLeft < fx.ore_target) return false;
+      if (!targets.some((t) => oreRoomOf(t) > 0)) return false;
+      return true;
+    }
     // 目标级量值词条（shield/hp/energy）：负(削减)恒可影响；正(增益)需存在未满目标
     for (const k of Object.keys(AMOUNT)) {
       const v = fx[k] || 0;
@@ -1467,7 +1538,9 @@ export function createBattle(preset) {
           ? t.hull.shield >= t.hull.shieldCap
           : f === 'hp'
             ? t.hull.hp >= t.hull.hpMax
-            : t.hull.energy >= t.hull.energyCap;
+            : f === 'ore'
+              ? oreRoomOf(t) <= 0 // 矿物：按**剩余矿物容量**判定（唯一口径 oreRoomOf，UI/引擎同源）
+              : t.hull.energy >= t.hull.energyCap;
       if (v < 0) return true;
       if (targets.some((t) => !atCap(t))) return true;
       return false; // 全满且为正增益 → 无益，不激活
@@ -1542,7 +1615,17 @@ export function createBattle(preset) {
    *                   （`null` ＝本次只有冷却要落地）, value（**该等级原值**：加法＝**已乘采矿系数并取整**的
    *                   绝对增量、乘法＝增量比例）, cdTicks（星区侧冷却基础量，`null`＝不参与） }。
    *                   落地顺序固定＝**先加法（求和后一次性加入）、再乘法（逐条作用在当前剩余上、各取整一次）**；
-   *                   星区储量**无上限**；星区侧冷却也在 3c 同批写入（`sectorCdUntil`）。Pass1 零数值变化。 */
+   *                   星区储量**无上限**；星区侧冷却也在 3c 同批写入（`sectorCdUntil`）。Pass1 零数值变化。
+   *   oreSpends:     本 tick 的**矿物成本消耗序列**（自身词条 `ore_cost`，如矿渣导弹发生器：
+   *                   每成功施放一次记一条；**结算步骤 3d-1** 按序从自身矿物仓 `hull.ore` 扣除）：
+   *                   每条 { inst, amount } —— 与 `energySpends` 完全同体例，只是成本来源为携带矿物。
+   *   oreTransfers:  本 tick 的**矿物输送意图**（目标级量值词条 `ore_target`，**结算步骤 3d-2** 落地）：
+   *                   每条 { inst, from（施放方）, to（目标单位引用）, amount（**实际输送量**，已在 Pass1
+   *                   按 min(词条值, 自身剩余携带, 目标剩余容量) 截断） }。
+   *                   ★ **一条记录＝一次「自身 −N / 目标 +N」**（同额、原子、成对）→ 只记在**施放方** pending 上，
+   *                     目标侧不另记 ⇒ 不重复计数；Pass1 零数值变化。
+   *   ★ 矿物链两处（`oreSpends`/`oreTransfers`）共用**单位内运行计数** `ctx.oreAvail`（tick 起始携带量 −
+   *     本 tick 已记账支出），故同单位多模块的总支出恒不超过 tick 起始携带量（防超发、可复现）。 */
   function freshPending() {
     return {
       dmg: [],
@@ -1562,6 +1645,8 @@ export function createBattle(preset) {
       stealthOps: [],
       oreGains: [],
       sectorOps: [],
+      oreSpends: [],
+      oreTransfers: [],
     };
   }
   /** 惰性取某单位 pending（召唤新单位当 tick 被锁定命中时也能挂账） */
@@ -2263,8 +2348,14 @@ export function createBattle(preset) {
     // ★ 能量门控用“单位内运行计数”（tick 起始能量 + 本 tick 回充 − 本 tick 已记账消耗），
     //   而非 ship.hull.energy（能量已改为结算阶段落地）。保证同单位多模块的依次门控结果与旧即时语义一致，
     //   且该计数是单位局部、不跨单位，故不引入新的顺序差。
-    if (ctx.avail < cost) {
-      // 能量不足：本次不触发；逐步伤害(ramp)成长清零 → 断能后伤害回到基础值
+    // ★ **矿物成本门控**（`ore_cost`，自身词条）与能量成本**同一处、同体例**：
+    //   读“单位内运行计数” `ctx.oreAvail`（tick 起始携带量 − 本 tick 已记账矿物支出）；
+    //   不足 → **不激活、不扣矿物、不进冷却**（与能量不足完全一致，含 ramp 成长清零）。
+    //   ⚠ 召唤型模块按既有设计**不进入 `canImpact`**（无目标级判定），故其成本门控就在此处
+    //     （`doSummon` 内另有一次同口径复核）；非召唤模块的矿物成本同时也在 `canImpact` 拦住。
+    const oreCost = fx.ore_cost || 0;
+    if (ctx.avail < cost || (oreCost > 0 && ctx.oreAvail < oreCost)) {
+      // 成本不足：本次不触发；逐步伤害(ramp)成长清零 → 断能/断矿后伤害回到基础值
       if (inst._ramp) inst._ramp = { key: '', count: 0 };
       return;
     }
@@ -2317,6 +2408,12 @@ export function createBattle(preset) {
 
     // 自身能量消耗：只记账（结算步骤 3 统一落地），并在 Pass1 扣减单位内运行计数以做后续门控
     payEnergy(ctx, inst, cost);
+    // ★ 自身**矿物成本**（`ore_cost`）：与能量消耗**同批、同体例** —— Pass1 只记账
+    //   （`__pending.oreSpends`），由**结算步骤 3d-1** 统一从自身矿物仓扣除（读口径 `oreLoadOf`）；
+    //   `canImpact`（唯一门控出口）已用同一运行计数 `ctx.oreAvail` 拦住不足者 ⇒ 此处恒成功。
+    //   （**非召唤模块**的 `ore_cost` 就在本行扣除 —— 如「矿物维修」`oreRepair`；
+    //     召唤型（矿渣导弹发生器）走上面的召唤分支、由 `doSummon` 记账，两者口径完全一致。）
+    if (oreCost > 0) payOre(ctx, inst, oreCost);
     // ★ 低血触发（`hp_below_activate`）：本次**真正激活**（目标/可行性/能量门控均已通过）→ 打标记；
     //   该标记只在“血量回升过阈值”时被清除（见函数顶部）→ 每个低血区间只触发一次。
     if (hpNeed > 0) inst._firedOnce = true;
@@ -2457,6 +2554,11 @@ export function createBattle(preset) {
 
     // —— 目标级 量值/上限 词条：对每个选定目标同时生效（shield/hp/energy 三类）——
     const co = coeff(ship, inst.cfg.category);
+    // ★ **量值按词条原值**（`type` 标签 `exact_amount`，如「矿物维修」的回血 `hp_target`）：
+    //   本模块的**目标级量值词条**（`AMOUNT` 表：shield/hp/energy/ore）一律**不乘任何系数**（1:1 口径）；
+    //   · 引擎按**标签**识别、不按模块 id 硬编码；**只管量值**，不管 `CAPFIELD` 上限类词条；
+    //   · 未带该标签的既有模块走原 `fx[k] * co` 路径 ⇒ 数值一字不变（零回归）。
+    const exactAmt = isType(fx, 'exact_amount');
     const amtKeys = Object.keys(AMOUNT).filter((k) => (fx[k] || 0) !== 0);
     const capKeys = Object.keys(CAPFIELD).filter((k) => (fx[k] || 0) !== 0);
     if (capKeys.length) {
@@ -2506,8 +2608,28 @@ export function createBattle(preset) {
       const P = pendOf(target);
       if (!P) continue;
       for (const k of amtKeys) {
-        const amt = fx[k] * co;
         const f = AMOUNT[k];
+        // ★ **矿物输送**（`ore_target`）：**1:1、不乘任何系数**（单独成支，不走下面的 `fx[k] * co`）——
+        //   · 实际输送量＝`min(词条值, 自身剩余携带矿物, 目标剩余矿物容量)`；
+        //     `自身剩余携带` ＝ 单位内运行计数 `ctx.oreAvail`（tick 起始携带量 − 本 tick 已记账支出），
+        //     `目标剩余容量` ＝ 唯一口径 `oreRoomOf`（＝ oreCapacityOf − oreLoadOf）；两者都是 **Pass1 快照**读，
+        //     故与遍历顺序无关、镜像对等（`canImpact` 已保证自身携带 ≥ 词条值、目标剩余容量 > 0）。
+        //   · **一条记录＝一次「自身 −N / 目标 +N」**（成对、原子、同额）→ 记在**施放方** pending 上
+        //     （`__pending.oreTransfers`），结算步骤 3d-2 统一落地；不在目标 pending 上另记一条
+        //     ⇒ 天然**不重复计数**。
+        //   · 同单位多模块共用 `ctx.oreAvail` 预算：前一模块的支出会即时减少后一模块可用量（按序、不超发）。
+        if (f === 'ore') {
+          const want = fx[k];
+          const carried = Math.max(0, ctx.oreAvail != null ? ctx.oreAvail : oreLoadOf(ship));
+          const amount = Math.max(0, Math.min(want, carried, oreRoomOf(target)));
+          if (amount <= 0) continue;
+          ctx.oreAvail = carried - amount; // 单位内运行计数：按序扣减（防同单位多模块超发）
+          const Ps = pendOf(ship);
+          if (Ps) Ps.oreTransfers.push({ inst, from: ship, to: target, amount });
+          continue;
+        }
+        // ★ 量值缩放：默认 `词条值 × 本模块类别系数`（`co`）；带 `exact_amount` 标签的模块按**词条原值**（1:1）。
+        const amt = exactAmt ? fx[k] : fx[k] * co;
         if (f === 'shield') P.shieldHeals.push({ inst, amount: amt }); // 目标级护盾量值 → Pass2 作用到池
         else if (f === 'energy') P.energyDeltas.push({ inst, amount: amt });
         else P.hpDeltas.push({ inst, amount: amt }); // hp：正加血负扣血（直接机体，可致死）
@@ -2689,7 +2811,16 @@ export function createBattle(preset) {
     const regen = energyRegenTick(ship, P);
     // ★ 单位内运行计数：本 tick 起始能量 + 本 tick 回充额度 —— 供本 tick 门控/窗口判定使用。
     //   能量本身不改（Pass1 零数值变化）；该计数是单位局部，同单位多模块依次门控结果与旧即时语义一致。
-    const ctx = { ship, P, avail: Math.min(ship.hull.energyCap, ship.hull.energy + regen) };
+    // ★ `oreAvail` ＝**本 tick 可动用的携带矿物预算**（tick 起始携带量，唯一读口径 `oreLoadOf`）：
+    //   供**矿物成本**（`ore_cost`）与**矿物输送**（`ore_target`）在单位内**按序扣减**——
+    //   二者共用同一预算 ⇒ 同单位多模块的总支出**恒不超过 tick 起始携带量**（防超发、可复现）；
+    //   与 `oreClaimed`（**采矿入库**的单位内认领计数）方向相反、各自独立：一个管“进”、一个管“出”。
+    const ctx = {
+      ship,
+      P,
+      avail: Math.min(ship.hull.energyCap, ship.hull.energy + regen),
+      oreAvail: oreLoadOf(ship),
+    };
     // —— 模块：① 结构推进(时长/冷却递减、窗口累计、到期只记撤销意图) ② 判定激活(只记账不改数值)
     //          ③ 条件型自身增益(状态型，只记期望生效状态) ④ 常驻被动(无“激活-触发”流程) ——
     for (const inst of ship.modules) advanceModuleState(ship, inst, ctx);
@@ -3158,6 +3289,81 @@ export function createBattle(preset) {
     }
   }
 
+  /** ★ 结算步骤 3d-1：**模块矿物成本**（自身词条 `ore_cost`）的唯一扣除点。
+   *  输入＝本 tick 全部“施放成功”的矿物成本记录（固定结算顺序收集：allies → enemies），
+   *  每条＝`{ ship（成本承担者）, inst, amount }`（amount 已在 Pass1 由 `payOre` 记账，**未取整需求**：
+   *  词条为整数矿物量，且门控已保证单位内总支出 ≤ tick 起始携带量）。
+   *  · 落点：`hull.ore` 直接扣减（唯一写入口之一；读口径恒为 `oreLoadOf`），**下限 0**（防御性钳制）；
+   *  · 与本 tick 的**采矿入库（3b）互不影响**：3b 只增加、本步骤只减少，且本步骤在 3b **之后**
+   *    ⇒ “本 tick 采到的矿物可即时用于本 tick 的成本”，绝不会透支（Pass1 预算基于 tick 起始量）；
+   *  · 与**矿物输送（3d-2）共用同一 Pass1 预算** `ctx.oreAvail` ⇒ 同单位多模块总支出不超发；
+   *  · **本步骤自身不记战报**：成本消耗与既有 `energy_cost` 同一口径（能量消耗也不记战报）；
+   *    两类由“矿物成本”触发的低频战报各自成句于其**效果落地处**：
+   *      – 召唤事件 → 既有 `battle.log.summon`（矿渣导弹发生器走该链路）；
+   *      – 治疗型（`ore_cost` + 治疗 `hp_target`，如「矿物维修」）→ `battle.log.oreRepair`，
+   *        成句在**结算步骤 4c**（回血落地处，此时才拿得到“实际回血量”）。
+   *  · ★ 为后者在本步骤写一个**非数值的聚合标记**：`inst._orePaidAmt`（本 tick 该实例**实际**扣矿量）
+   *    与 `inst._orePaidTick`（写入时的 tick 号）—— 4c 成句时按 `_orePaidTick === runTicks` 取用，
+   *    保证取的必然是**本 tick** 的真实扣减量（跨 tick 残留值不会被误用）。 */
+  function settleOreSpends(list) {
+    if (!list.length) return;
+    for (const rec of list) {
+      const u = rec.ship;
+      if (!u || !u.alive) continue; // 防御性：正常恒存活（判死都在本步骤之后）
+      const amt = Math.max(0, rec.amount || 0);
+      if (amt <= 0) continue;
+      const beforeOre = Math.max(0, u.hull.ore || 0);
+      u.hull.ore = Math.max(0, beforeOre - amt);
+      // ★ 战报聚合标记（**模块实例上的非数值字段**，与 `_stealthActive`/`_firedOnce` 同类）：
+      //   实际扣减量＝扣前 − 扣后（正常恒等于 amt；仅病态钳制时更小）⇒ “n 取实际量”的唯一来源。
+      if (rec.inst) {
+        rec.inst._orePaidAmt = beforeOre - u.hull.ore;
+        rec.inst._orePaidTick = runTicks;
+      }
+    }
+  }
+
+  /** ★ 结算步骤 3d-2：**矿物输送**（目标级量值词条 `ore_target`）的唯一落地/搬运点。
+   *  输入＝本 tick 全部输送意图（固定结算顺序收集：allies → enemies），
+   *  每条＝`{ inst, from（施放方）, to（目标）, amount（Pass1 已截断的实际输送量） }`。
+   *  · **1:1 成对**：一条记录＝一次「from −N / to +N」，**同额、原子**（同一条内先扣后加，
+   *    不存在只扣不加/只加不扣的中间态）⇒ 矿物总量守恒、不重复计数；
+   *  · **按实际量结算**：在 Pass1 截断量基础上**再钳一次**（自身当前携带 `oreLoadOf`、
+   *    目标当前剩余容量 `oreRoomOf`）——防御性复核（正常恒为恒等，因为 Pass1 已按 tick 起始快照截断、
+   *    且 3b 只增不减；仅在“同一 tick 多方输送给同一目标”超出其剩余容量的极端情形下生效，
+   *    此时以**固定顺序**先到先得、按实际装入量 1:1 结算，规则对双方一致 ⇒ 镜像对等）；
+   *  · 施放方若在本 tick 已死：本步骤仍在其**判死之前**，故恒存活；目标同理；
+   *  · **战报（`battle.log.oreTransfer`）**：★ 仅在**实际输送量 > 0** 时记 1 条
+   *    （`n` 取**实际**转移量，非请求量/词条值），成句带**模块拥有者**（着色）＋模块名（绿）＋目标（着色）。
+   *    ★ **每模块每 tick 至多 1 条**：本词条所在模块为主动模块、单次激活只产生 1 条输送记录
+   *    （冷却 ≥1 tick ⇒ 同实例每 tick 至多激活一次），故“一条记录＝一条战报”即为上限，
+   *    与「采矿激光」的“每 tick 每模块至多 1 条”同一聚合体例（此处甚至无需再聚合）。
+   *    ★ 成句位置＝**落地处**（与数值同一批、同在结算步骤 3d-2）：`n` 就是真正写入的数值，
+   *    与 UI 数值条**天然一致**（不会出现“日志说 50、实际只进 30”的偏差）。
+   *    ⚠ 不记“请求量”也不记“被截断量”：截断原因（自身不足/目标已满）本身就不会激活 ⇒ 无事件。 */
+  function settleOreTransfers(list) {
+    if (!list.length) return;
+    for (const rec of list) {
+      const from = rec.from;
+      const to = rec.to;
+      if (!from || !to || !from.alive || !to.alive) continue; // 防御性：正常恒存活
+      const amt = Math.max(
+        0,
+        Math.min(rec.amount || 0, oreLoadOf(from), oreRoomOf(to))
+      );
+      if (amt <= 0) continue;
+      from.hull.ore = Math.max(0, (from.hull.ore || 0) - amt); // 施放方 −N
+      to.hull.ore = (to.hull.ore || 0) + amt;                  // 目标 +N（同额 ⇒ 1:1）
+      // ★ 低频战报：仅在**实际输送量 > 0** 时记 1 条（每模块每 tick 至多 1 条，见上方说明）。
+      //   成句体例与既有低频战报一致：`{owner}的{module}：…`，owner/target 着色、模块名绿。
+      battleLog(
+        'battle.log.oreTransfer',
+        { owner: ownerTok(rec.inst), module: modTok(rec.inst), n: amt, target: uTok(to) },
+        ['owner', 'target']
+      );
+    }
+  }
+
   /** 每 tick 主入口：Pass 1 行动遍历（单遍单位 for）→ Pass 2 结算（单遍单位 for + 命中子步 + 收尾单遍）。 */
   function step() {
     if (phase !== 'running') return;
@@ -3205,6 +3411,8 @@ export function createBattle(preset) {
     const stealthOps = [];
     const oreClaims = []; // 本 tick 的矿物采集请求（按固定结算顺序收集 → 步骤 3b 统一按比例分配）
     const sectorOps = []; // 本 tick 的星区储量变更意图（按固定结算顺序收集 → 步骤 3c 先加后乘统一落地）
+    const oreSpends = []; // 本 tick 的矿物成本消耗（`ore_cost`，带上所属单位引用 → 步骤 3d-1 统一扣除）
+    const oreTransfers = []; // 本 tick 的矿物输送意图（`ore_target`，记录内已含 from/to → 步骤 3d-2 统一落地）
     for (const u of allNow) {
       const P = u.__pending;
       if (!P) continue; // 本 tick 未参与(无挂账)者跳过
@@ -3227,6 +3435,11 @@ export function createBattle(preset) {
         for (const g of P.oreGains) oreClaims.push({ ship: u, inst: g.inst, want: g.amount });
       }
       if (P.sectorOps.length) sectorOps.push(...P.sectorOps); // 星区词条意图（记录内已含 ship；顺序＝固定结算顺序）
+      // 矿物成本：记录带上所属单位引用（扣减要落到具体单位）；收集顺序＝固定结算顺序（allies → enemies）
+      if (P.oreSpends.length) {
+        for (const s of P.oreSpends) oreSpends.push({ ship: u, inst: s.inst, amount: s.amount });
+      }
+      if (P.oreTransfers.length) oreTransfers.push(...P.oreTransfers); // 记录内已含 from/to；顺序＝固定结算顺序
     }
 
     // ── 结算步骤 1：计时推进（全单位模块时长/冷却递减、窗口累计）──
@@ -3309,9 +3522,24 @@ export function createBattle(preset) {
     //   放在判死之前 ⇒ 本步骤的落地与“谁先谁后死”无关（镜像对等、与遍历顺序无关）。
     settleSectorOps(sectorOps);
 
+    // ── 结算步骤 3d：**矿物支出统一落地**（3d-1 矿物成本消耗 → 3d-2 矿物输送 1:1 成对搬运）──
+    //   位置：3b 采矿入库 / 3c 星区词条**之后**、步骤 4（含全部判死）**之前**，故：
+    //     · 与 3b/3c **互不影响、互不干扰**（3b 只动“本舰矿物仓入库 + 星区储量扣减”、3c 只动“星区储量”，
+    //       3d 只在**两舰之间搬运矿物 / 扣掉模块成本**，三者的写入对象互不重叠 ⇒ 顺序不影响结果）；
+    //     · 3b 在本步骤之前 ⇒ **本 tick 新采的矿物已入库**，可被后续输送/成本使用，且**不会让扣减透支**
+    //       （Pass1 预算 `ctx.oreAvail` ≤ tick 起始携带量，3b 只增不减）；
+    //     · 全部判死都在其后 ⇒ 施放方与目标此刻都还存活（Pass1 也已按存活单位记账）。
+    //   顺序固定：**先成本（3d-1）、后输送（3d-2）** —— 与结算步骤 3「回充 → 消耗 → 量值」的
+    //   “先成本、后效果”体例完全一致；两条链均由固定结算顺序收集 ⇒ 确定性、镜像对等。
+    settleOreSpends(oreSpends);
+    settleOreTransfers(oreTransfers);
+
     // ── 结算步骤 4：护盾 / 模块池填充 / 血量 / 自毁 / 临时寿命统一落地 ──
     for (const rec of poolFills) applyPoolFill(rec);            // 4a 模块护盾池创建+填满
     for (const { u, P } of nonDamageRecs) if (u.alive) applyShieldHeals(u, P); // 4b 补/汲取盾(+破盾)
+    // ★ 低频战报的**每 tick 聚合集合**（治疗型矿物成本模块，见下方 4c 成句处）：
+    //   本 tick 局部（每次 `step()` 新建）⇒ 天然“每模块每 tick 至多 1 条”，无需跨 tick 清理。
+    const oreRepairLogged = new Set();
     for (const { u, P } of nonDamageRecs) {                     // 4c 血量
       if (!u.alive) continue;
       const takeMul = tickTakeMul(u); // 负值(hp_target 扣血)＝受到的伤害 → 乘受伤减免；正值加血不减免
@@ -3326,6 +3554,38 @@ export function createBattle(preset) {
             'battle.log.recycleRegen',
             { owner: uTok(u), module: modTok(h.inst), n: lastTickDeaths, amount: Math.round(u.hull.hp - before) },
             ['owner']
+          );
+        }
+        // ★ **治疗型「矿物成本」模块**（`ore_cost` + 治疗 `hp_target`，如「矿物维修」`oreRepair`）的
+        //   低频战报 —— 成句就在**回血落地处**（与数值同批，`amount` 就是真正写进血量的差值）：
+        //   · 触发判据全部取自“本 tick 实际发生的事实”，**不按模块 id / 词条名硬编码**：
+        //       ① `u.hull.hp > before`：本次是**实际回血 > 0**（`applyHpTo` 前后差值 ⇒ **天然包含 hpMax 截断**，
+        //          “实际回血量”口径唯一；负值/零值一律不成句）；
+        //       ② `h.inst._orePaidTick === runTicks`：该模块实例**本 tick 确实支付了矿物**
+        //          （由结算步骤 3d-1 写入的标记，3d 恒在本步骤之前 ⇒ 同 tick 必已就绪）；
+        //       ③ 二者同时成立 ⇒ 即“以矿物换回血”这一次激活。
+        //   · `n` ＝ **实际扣矿量**（3d-1 写入的 `_orePaidAmt`，非词条值/请求值）；实际扣矿为 0 不会成句
+        //     （判据 ② 已要求 > 0），故不存在“照实显示 0”的歧义 —— 无矿物支出就没有这条战报。
+        //   · **每模块每 tick ≤ 1 条**：`oreRepairLogged` 为本 tick 局部集合，同一实例只成句一次
+        //     （当前模块为 `single` 单目标 ⇒ 恒只有 1 条；该集合同时兜住将来多目标版本的刷屏）。
+        if (
+          u.hull.hp > before &&
+          h.inst &&
+          h.inst._orePaidTick === runTicks &&
+          (h.inst._orePaidAmt || 0) > 0 &&
+          !oreRepairLogged.has(h.inst.id)
+        ) {
+          oreRepairLogged.add(h.inst.id);
+          battleLog(
+            'battle.log.oreRepair',
+            {
+              owner: ownerTok(h.inst),
+              module: modTok(h.inst),
+              n: Math.round(h.inst._orePaidAmt),
+              target: uTok(u),
+              amount: Math.round(u.hull.hp - before),
+            },
+            ['owner', 'target']
           );
         }
       }

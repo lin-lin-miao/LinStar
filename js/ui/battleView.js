@@ -61,15 +61,34 @@ function moduleName(id) {
   const t = i18n.t(m.nameKey);
   return t && !t.startsWith('??') ? t : (m.name || id); // 名称降级占位：i18n 缺失时用模块 name/id
 }
-/** 模块"脸"节点：有 SVG 图标(cfg.icon)用 <img>，否则降级显示名称首字 */
+/** 模块"脸"节点：有 SVG 图标(cfg.icon)用 <img>，否则降级显示名称首字。
+ *  ★ **缺图回退**：写了 `icon` 但素材缺失/路径失效时，`<img>` 触发 `error` → **就地替换**为
+ *    与“无 `icon`”**完全同一条渲染分支**的「名称首字」节点（同一元素形态：无 class 的 `<span>`、
+ *    同取 `moduleName` 首字）⇒ 与无图时的呈现**逐字一致**，不新造视觉、不新增类名。
+ *  ★ 与召唤单位的 `unitIcon`（同样是 `<img>` + `error` 回退 ▲）**同一写法体例**：`addEventListener('error', …)`
+ *    内换掉自身内容。正常路径**零变化**：有图且加载成功时节点/类名/行为与改动前完全一致（`.module-icon-img` 不变）。 */
 function moduleGlyphEl(cfg) {
-  const name = moduleName(cfg.id);
+  // 「名称首字」降级节点（唯一渲染分支：无 `icon` 与 `icon` 加载失败**共用**此函数）
+  const firstCharEl = () => {
+    const name = moduleName(cfg.id);
+    return el('span', { text: name ? Array.from(name)[0] : '?' });
+  };
   if (cfg.icon) {
     const img = el('img', { class: 'module-icon-img', src: cfg.icon, alt: '' });
     img.draggable = false;
+    // 加载失败 → 用「名称首字」节点**原位替换**该 <img>：
+    //   · `replaceWith` 是“换掉自己”，故**不会重复插入**、也不会累积子节点；
+    //   · 替换后该 <img> 已脱离文档，其 `error` 不会再触发（且 `parentNode` 守卫兜住极端时序）
+    //     ⇒ **不残留破图占位**；
+    //   · 元素尚未挂到文档时 `replaceWith` 按规范为**空操作**（不抛错）—— 实践中 `error` 事件总在
+    //     当前任务之后派发，而各调用方都在同一同步块内把筹码挂进 DOM，故回退恒能生效。
+    img.addEventListener('error', () => {
+      if (!img.parentNode) return; // 已脱离文档（已被替换/移除）→ 不再处理
+      img.replaceWith(firstCharEl());
+    });
     return img;
   }
-  return el('span', { text: name ? Array.from(name)[0] : '?' });
+  return firstCharEl();
 }
 /* 注：船型名称/槽位/编队渲染等**编队配置界面专用**的工具函数已随界面一并移入 `ui/setupView.js`（不在此重复实现）。 */
 
@@ -1086,6 +1105,11 @@ function perActText(ship, inst) {
   if ((fx.shield_cap_target || 0) !== 0) {
     parts.push(capTermText('statCapT', 'statCapClear', fx.shield_cap_target * coef));
   }
+  // ★ **矿物输送**（`ore_target`，正值＝给目标增加矿物）：**1:1、不乘任何系数** ——
+  //   故与引擎同一口径，本行**原样显示词条值**（不走下面 `tgtMeta` 的 `× coef` 通用路径）。
+  if ((fx.ore_target || 0) > 0) {
+    parts.push(i18n.t('battle.detail.statOreT', { n: fx.ore_target }));
+  }
   const tgtMeta = [
     ['hp_target', 'statHpT', null],
     ['hp_cap_target', 'statHpCapT', 'statHpCapClear'],
@@ -1194,18 +1218,33 @@ function moduleRows(ship) {
     const statusEl = el('span', { class: 'mod-status' });
     const metaEl = el('span', { class: 'mod-effect', text: perActText(ship, inst) });
     const dur = fx.duration_ticks || 0;
+    // ★ **含矿物成本（`ore_cost`）的模块**：成本段（耗矿/耗能）与周期段**分别成词、按需拼接**——
+    //   ① 不会出现“耗能 0”的误导（矿渣导弹发生器只耗矿、不耗能）；
+    //   ② 不含矿物成本的既有模块**继续走原有整句键**（文案逐字不变 → 零回归）。
+    //   ★ UI **只放数值、只读配置**：不判断冷却/携带量等运行期条件（那是引擎口径，UI 不自算）。
+    const oreCost = fx.ore_cost || 0;
     const costText = isStateModuleFx(fx)
       ? i18n.t('battle.detail.stateCost') // 状态型：无激活周期（不显示“能量/冷却 每 Nt”这种误导信息）
-      : dur > 0
-        ? i18n.t('battle.detail.costCycleDur', {
-            n: fx.energy_cost || 0,
-            d: dur,
-            cd: fx.cooldown_ticks ?? 1,
-          })
-        : i18n.t('battle.detail.costCycle', {
-            n: fx.energy_cost || 0,
-            cd: fx.cooldown_ticks ?? 1,
-          });
+      : oreCost > 0
+        ? [
+            i18n.t('battle.detail.costOre', { n: oreCost }),
+            (fx.energy_cost || 0) > 0 ? i18n.t('battle.detail.costEnergy', { n: fx.energy_cost }) : null,
+            dur > 0
+              ? i18n.t('battle.detail.perCycleDur', { d: dur, cd: fx.cooldown_ticks ?? 1 })
+              : i18n.t('battle.detail.perCycle', { cd: fx.cooldown_ticks ?? 1 }),
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : dur > 0
+          ? i18n.t('battle.detail.costCycleDur', {
+              n: fx.energy_cost || 0,
+              d: dur,
+              cd: fx.cooldown_ticks ?? 1,
+            })
+          : i18n.t('battle.detail.costCycle', {
+              n: fx.energy_cost || 0,
+              cd: fx.cooldown_ticks ?? 1,
+            });
     const contribEl = el('div', { class: 'mod-contrib', text: contribText(ship, inst) });
     // 该模块的独立护盾池条（仅当模块当前持有独立池——时长型护盾激活中——时显示）
     const poolMini = makeMiniPool();

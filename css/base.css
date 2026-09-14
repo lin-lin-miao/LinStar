@@ -15,9 +15,14 @@
   --invincible: #ffffff;   /* 无敌时护盾条颜色 */
   --energy: #ffe066;
   --cargo: #ffb066;        /* 货舱容量条：货物（橙） */
-  --ore: #7ee29a;          /* 货舱容量条：矿物（绿，与采矿类同族） */
+  --ore: #7ee29a;          /* 货舱容量条 / 星区矿物：**资源语义色**（绿）——与模块分类色无关（采矿类模块＝紫） */
   --ok: #4ade80;
   --warn: #fbbf24;
+  /* ★ **模块分类代表色**（模块芯片/详情页分类色）：目前以变量统一的是**采矿类**——
+     采矿＝**紫 `#b06bff`**（与矿渣系图标 `矿渣导弹.svg` / `矿渣导弹发射器.svg` 同色）。
+     唯一来源：改色只改这里；用法见 `battle.css` 的 `.module-chip.mining`。
+     其余分类（攻击/护盾/功能/运输/无人机）仍为 `battle.css` 内联字面量、**颜色一字未改**。 */
+  --cat-mining: #b06bff;
   --radius: 10px;
   --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 }

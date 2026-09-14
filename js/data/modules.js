@@ -24,6 +24,7 @@ import rocketWarhead from './modules/attack/rocketWarhead.js';
 import missileLauncher from './modules/attack/missileLauncher.js';
 import missileWarhead from './modules/attack/missileWarhead.js';
 import omegaMissileWarhead from './modules/attack/omegaMissileWarhead.js';
+import slagMissileWarhead from './modules/attack/slagMissileWarhead.js';
 import alphaShield from './modules/shield/alphaShield.js';
 import regenShield from './modules/shield/regenShield.js';
 import hardShield from './modules/shield/hardShield.js';
@@ -44,11 +45,15 @@ import shieldBattery from './modules/function/shieldBattery.js';
 import recycle from './modules/function/recycle.js';
 import energyTransfer from './modules/function/energyTransfer.js';
 import cargoHold from './modules/transport/cargoHold.js';
+// 采矿模块
+import slagMissileLauncher from './modules/mining/slagMissileLauncher.js';
+import oreTransfer from './modules/mining/oreTransfer.js';
 import oreHold from './modules/mining/oreHold.js';
 import miningLaser from './modules/mining/miningLaser.js';
 import oreCompressor from './modules/mining/oreCompressor.js';
 import genesis from './modules/mining/genesis.js';
 import oreEnrichment from './modules/mining/oreEnrichment.js';
+import oreRepair from './modules/mining/oreRepair.js';
 
 export const MODULES = {
   cannon,
@@ -63,6 +68,7 @@ export const MODULES = {
   missileLauncher,  // 攻击 · 召唤导弹（爆炸范围 blast_range）
   missileWarhead,   // 内部：导弹携带的爆炸弹头（picker:false，不进入编队可选）
   omegaMissileWarhead, // 内部：欧米茄导弹携带的爆炸弹头（picker:false；伤害/blast_range/引信均高于导弹弹头）
+  slagMissileWarhead,  // 内部：矿渣导弹携带的爆炸弹头（picker:false；固定占位伤害 4740、范围 5、引信 70）
   alphaShield,      // 护盾 · 对自身持续的"无敌"护盾
   regenShield,      // 护盾 · 持续型再生护盾（耗能回盾）
   hardShield,       // 护盾 · 厚实大护盾(大上限·持续)
@@ -83,9 +89,12 @@ export const MODULES = {
   recycle,          // 功能 · 回收利用（常驻被动：按**上一 tick**非召唤单位阵亡数恢复自身生命）
   energyTransfer,   // 功能 · 能量输送（主动·单体友方：消耗自身能量给目标加能量 energy_target，钳到目标上限）
   cargoHold,        // 运输 · 货舱（C25 常驻增幅器：自身货物容量 cargo_cap_bonus，无冷却/耗能/持续）
+  slagMissileLauncher,  // 采矿 · 矿渣导弹发生器（召唤矿渣导弹：**只耗自身携带矿物 ore_cost**、不耗能；参数与欧米茄一致）
+  oreTransfer,      // 采矿 · 矿物输送（主动·单体友方：把自身携带矿物 **1:1** 输送给目标 ore_target，不乘任何系数）
   oreHold,          // 采矿 · 矿舱（C34 语义「采矿载货强化」常驻增幅器：自身矿物容量 ore_cap_bonus）
   miningLaser,      // 采矿 · 采矿激光（M4：无目标主动模块，每次激活开采 ore_gain × 采矿系数 → 装入本舰矿物仓）
   oreCompressor,    // 采矿 · 矿物压缩（常驻增幅器：自身采矿系数 mining_coeff_add，无冷却/耗能/持续）
+  oreRepair,        // 采矿 · 矿物维修（主动·单体友方含自身：耗自身矿物 ore_cost 修复目标 hp_target，量值按词条原值）
   genesis,          // 采矿 · 创世纪（无目标主动模块：星区剩余储量**加法** sector_ore_add，自身+星区双冷却）
   oreEnrichment,    // 采矿 · 矿藏富集（无目标主动模块：星区剩余储量**乘法** sector_ore_mul，自身+星区双冷却）
 };
