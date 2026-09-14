@@ -169,6 +169,58 @@
  *       视觉顺序队列（`unitsOfRole`/`orderedQueueFor`），**不跨 role 波及**。
  *   目标不足/无目标 → 本次不激活。
  *
+ * ★★ 货物装载（运输类 `loadingBeam` —— **装载光束**；标签驱动、结算阶段统一落地）★★
+ *   · **能力由标签、速度由词条**：`effects.type` 含 **`cargo_loader`** ⇒ 该模块是**装载器**
+ *     （引擎**按标签识别、不硬编码模块 id**）；`effects.cargo_load` ＝**装载速度加成**（纯数值，可逐级变）。
+ *     无目标（`target:{}`）⇒ **不进入目标选择链**（与采矿激光 `ore_gain` 完全同体例：`selfTargeted`）。
+ *   · **装载对象＝星区货物**，选择顺序（唯一口径 `pickLoadableCargo`，Pass1 读 tick 起始快照）：
+ *       ① **优先队列优先**（按 `cargoQueue` 顺序，**队首最先**）；② 其后＝**未被选入队列者按星区列表顺序**；
+ *       逐件判定，**不可用则跳过并继续找下一件**——不可用＝(a) 已被别的装载器锁定（`cargo._loadBy`）、
+ *       (b) **本 tick 已被认领**（`loadClaimedTick`）、(c) **本舰剩余货舱装不下**（`< 货物 tons`）；
+ *       **全部不可用 ⇒ 不激活、不耗能、不进冷却**。
+ *   · ★ **同 tick 争抢的裁决＝装载速度优先（`resolveLoadClaims`，唯一裁决点）**：
+ *       Pass1 中每个装载器先登记一条**认领申请**（`loadClaims`，Stage A：不耗能/不进冷却/不写意图），
+ *       随后在 **Pass1 末尾、Phase A 之前**统一裁决：**全体申请（跨阵营）按装载速度从高到低**排序，
+ *       同一件货物**只有一个赢家**；**同速**按**固定遍历序**（allies → enemies、组内既定模块顺序）
+ *       先到先得（与 `sectorClaimedTick`/`ctx.oreClaimed` 的既有争抢口径同体例）⇒ 确定、可复现；
+ *       赢家才按既有口径记账（耗能 → 冷却 → 意图 → 激活统计），败者**不激活**（不耗能、不进冷却）
+ *       并继续尝试下一件。速度**只有一个口径** `cargoLoadSpeedOf`（排序与时长公式共用，不另算第二套）。
+ *   · **一次一件**：**每个模块实例同一时刻至多 1 件在装**（`inst._load` 非空即视为“忙”）⇒
+ *     装载期间**不再重复扣能量**；能量门控沿用既有成本门控（不足 ⇒ 不激活、不扣能量；
+ *     裁决时再按同一能量预算复核，能量不足的申请整体作废、货物留给速度次高者）。
+ *   · **装载时长（用户口径，唯一实现 `cargoLoadNeedTicks`）**：
+ *       `需求 tick = max(1, round(货物.loadTicks ÷ 速度))`，**下限 1t**（取整与下限**只此一处**）；
+ *       `速度 = 1 + 词条 cargo_load + (coeff(拥有者,'transport') − 1)`（默认 `1 + 0.1 + 1 − 1 = 1.1`
+ *       ⇒ 300t 货物 ⇒ `round(300/1.1) = 273t` ≈ 13.7s）。**在 Pass1 裁决获胜时按 tick 起始快照算好一次**
+ *       并随意图一起记入 `__pending`（与 `ore_gain` 的“Pass1 用本 tick 快照算好再记账”**同一体例**）
+ *       ⇒ 本 tick 内系数变化不改动已记需求；UI **只读引擎给出的需求/进度**，用
+ *       `core/tick.js formatTickSeconds` 换算展示（**不存在第二套公式**）。
+ *   · **Pass1 零数值变化**：只记 `loadClaims`（认领申请）→ 裁决后写 `__pending.cargoLoadOps`
+ *       （每条 `{ inst, ship, cargo, need }`）＋本 tick 认领集合 `loadClaimedTick`（记账，非数值）。
+ *   · **结算步骤 5（★ 唯一落地，位置＝Phase B2 之后、Phase C 之前）**：`settleCargoLoads(ops)`
+ *       ① **启动**：双向登记锁定（`inst._load = { cargo, elapsed, need, startedTick }` ＋
+ *          `cargo._loadBy = { ship, inst }`）—— 拥有者本 tick 已死/已停用 ⇒ **不启动**（能量不退）；
+ *       ② **进度推进**：每 tick **+1**（`elapsed` 上限＝`need`；**启动那一 tick 不推进** ⇒ 装载恰好
+ *          耗时 `need` tick）；拥有者阵亡 / 模块停用 ⇒ **立即解锁 + 进度归零**（能量不退）；
+ *       ③ **完成**：`elapsed ≥ need` 且拥有者**存活** 且**货舱容得下** ⇒ `landCargoOn()`：
+ *          货物**从星区移除**（同时出 `cargoQueue`）→ 进入该单位 `ship.cargos` ＋ `hull.cargo += tons`
+ *          （**唯一写入者**）→ **`cargo.loadTicks` 永久改写为 `CARGO_FAST_LOAD_TICKS`(20t)** → 解锁；
+ *          容量不足（中途容量变小）⇒ **保持锁定与进度**（`elapsed` 钳在需求上）等下 tick 再判。
+ *       ★ **放在全部判死之后**是“拥有者本 tick 死亡 ⇒ **不完成装载**”的**确定性规则**：
+ *         判死散落在步骤 4c/4d/4e 与 Phase B/B2，只有在本步骤读 `ship.alive` 才能得到**本 tick 终态**，
+ *         与“谁先谁后死”无关（镜像对等、与遍历顺序无关）；启动/推进同样只读 `alive`/`enabled` 结构标记。
+ *       ⚠ 与步骤 3（能量）的关系：**能量在步骤 3 已扣**，本步骤**不再触碰能量**（口径：停用/阵亡**不退能量**）。
+ *   · **解锁（立即）**：模块**停用**（`disableModule`）或**拥有者阵亡**（`onDeath`）⇒ 解锁 + 进度归零。
+ *   · **单位阵亡返还**：已装载货物按 `onDeath` **全额返还星区**（唯一出口、**幂等**：返还后清单与
+ *       `hull.cargo` 立即清空）；**同一 `id`、同一对象**，按 `cargo-<序号>` **确定性插回原位置**，
+ *       且**不再自动入队**（队列是用户的选择）；返还后该货物的 `loadTicks` **保持 20t**（特性永久）。
+ *   · **唯一接口/只读口径**：
+ *       · `battle.unloadCargo(shipId, cargoId)` —— 主动**返还**（详情页点芯片），返回 `{ ok, … }`；
+ *       · `battle.sector.cargos[]` 每项新增 `locked` / `lockedBy` / `loadProgressTicks` / `loadNeedTicks`
+ *         （**引擎派生**，UI 只读、不自算）；被锁定的货物**点击入队无效**（`toggleCargoQueue` 引擎侧拒绝）；
+ *       · 单位侧＝`ship.js cargoListOf(ship)`（已装货物实体清单）＋ `cargoLoadOf(ship)`（吨位口径）。
+ *   · **不产生战报**（本轮口径；装载为低频事件，如需播报再定）。
+ *
  * 契约：开始广播 combat:state{active:true}；结算完成广播 active:false（自动落档）。
  * 事件：'battle:settled' { result:'win'|'lose'|'draw' }
  * ★ 开战入口（唯一）：本文件 `startBattle({allies, enemies})` —— 校验/规范化编队 + 建单位；
@@ -183,6 +235,18 @@ import { i18n } from '../i18n/index.js';
 import { MODULES } from '../data/modules.js';
 // ★ 星区（战斗场景）数据的**缺省值登记处**（名称/储量缺省值只放 data/，引擎不硬编码数值）
 import { SECTOR_DEFAULTS, hasSectorCdFx, sectorCdTicksFx } from '../data/sector.js';
+// ★ 星区**货物（实体化）**：类型注册表/等级解析转发层 + 字段缺省值/钳制上限（引擎不硬编码货物数值）
+import {
+  CARGO_DEFAULTS,
+  CARGO_LIMITS,
+  cargoInstanceId,
+  cargoMaxLevel,
+  getCargo,
+  resolveCargoAtLevel,
+  // ★ 装载完成后的**固有装载时间**（tick）：一件货物装载成功后 `loadTicks` 被永久改写为它
+  //   （数值唯一来源＝data 层常量，引擎不硬编码；见下方「货物装载」）
+  CARGO_FAST_LOAD_TICKS,
+} from '../data/cargo.js';
 import { getShip, resolveShipAtLevel, shipMaxLevel } from '../data/ships.js';
 import { moduleMaxLevel } from '../entities/module.js';
 import {
@@ -228,6 +292,9 @@ import {
   oreCapPartsOf,
   cargoLoadOf,
   oreLoadOf,
+  // ★ 已装载**货物实体**清单的只读口径（数值口径仍是 `cargoLoadOf`；装载体系见文件头「货物装载」）：
+  //   每项＝星区货物实例本身（同一 id/同一对象）；清单增删的唯一写入者＝本文件装载结算步骤 5。
+  cargoListOf,
 } from '../entities/ship.js';
 
 const TPS = 20; // 1 秒 = 20 tick
@@ -538,8 +605,10 @@ function drainBlastproof(target, amount) {
 
 /**
  * 创建一场战斗。
- * @param {{ally: [{type, modules}], enemy: [{type, modules}], sector?: {name, oreReserve}}} preset
- *        双方编队配置 + 星区（战斗场景）数据（缺省按 `data/sector.js SECTOR_DEFAULTS` 兜底并钳制）
+ * @param {{ally: [{type, modules}], enemy: [{type, modules}],
+ *          sector?: {name, oreReserve, cargos?}}} preset
+ *        双方编队配置 + 星区（战斗场景）数据（缺省按 `data/sector.js SECTOR_DEFAULTS` /
+ *        `data/cargo.js` 兜底并钳制；`cargos` ＝星区货物设定项数组，见 `normalizeSectorCargos`）
  */
 export function createBattle(preset) {
   const allies = [];
@@ -558,6 +627,41 @@ export function createBattle(preset) {
   const sectorName = sectorInit.name;
   const oreReserveInit = sectorInit.oreReserve;
   let oreReserve = oreReserveInit;
+  /* ---------- ★ 星区「货物（实体化）」与**优先队列**（纯星区侧状态）----------
+   * ★ 用户确认口径：货物是**独立实体**（不是数值累积），带**唯一稳定 id**（`cargo-<顺序号>`）；
+   *   · `cargos`     货物实体快照（字段＝**等级解析后的值**；只读口径每次返回**新数组 + 新对象**）——
+   *     字段含 `templateId`（类型 id）/ `type` / `colorKey`（类型色＝CSS 变量名）/
+   *     `tons` / `loadTicks` / `level` / `bonus`（后三者＝**该等级解析后的值**，解析在
+   *     `normalizeSectorCargos` 里**只做一次**；唯一解析口径＝`data/cargos/index.js resolveCargoAtLevel`）；
+   *     ★ 例外：`loadTicks` 会被**装载体系**在装载完成时**永久改写**为 `CARGO_FAST_LOAD_TICKS`（20t），
+   *       其余字段在开战后恒不变（装载只搬移实体、不改字段）；
+   *   · `cargoQueue` **优先队列**＝**有序 id 列表**（队首＝最高优先级），点击入队＝追加队尾、再次点击＝出队；
+   *  ★ **不参与任何战斗数值结算**：不写护盾/血量/能量/系数、**不占用 `__pending` 的数值类意图**
+   *    （装载只记结构类意图 `cargoLoadOps`，且全部在结算阶段落地）⇒ **Pass1 零数值变化**；
+   *  ★ 已实现范围＝「实体与字段（一货一文件 + 等级解析）+ 星区货物栏显示 + 队列切换
+   *    ＋ **装载体系（装载光束：锁定 / 时长 / 入舱 / 返还）**」——**运载/卸货等后续环节仍留待后续轮**；
+   *  ★ 唯一接口＝`battle.toggleCargoQueue(id)`（队列切换，锁定中拒绝）、
+   *    `battle.unloadCargo(shipId, cargoId)`（已装货物返还星区）；只读口径＝`battle.sector`
+   *    （`{…, cargos（含 queued/queueIndex/locked/lockedBy/loadProgressTicks/loadNeedTicks）, cargoQueue}`）
+   *    ＋单位侧 `ship.js cargoListOf(ship)`/`cargoLoadOf(ship)`——**UI 只读、绝不自算**。 */
+  const cargos = sectorInit.cargos.map((c) => ({ ...c }));
+  const cargoQueue = []; // 有序 id 列表（队首＝最高优先级）
+  /* ---------- ★ 星区货物**装载**（运输类 `loadingBeam` —— 标签 `cargo_loader` 驱动）----------
+   * ★ 与既有“星区侧纯状态”口径的关系（**本轮唯一的口径扩展**）：
+   *   · `cargos` 里的每件货物**仍是同一批实体对象**（`id` 恒定）—— 装载**不复制、不重建**，
+   *     而是把该对象**从星区列表搬进单位清单**（`ship.cargos`）后再搬回来（返还），
+   *     故“同一件货物”的身份、等级、加成**全程不变**（`loadTicks` 会在装载完成时**永久改写**）；
+   *   · 仍**不写任何单位数值**（`hull.cargo` 只在结算步骤 5 由唯一写入者改）⇒ **Pass1 零数值变化**。
+   * ★ 三个结构标记（全部属**引擎内部**、不进只读快照）：
+   *   · `inst._load = { cargo, elapsed, need, startedTick }`｜undefined —— **该模块实例在装的货物**
+   *     （**同一实例同一时刻至多 1 件**；非空＝“忙”，装载期间不再激活、不再扣能量）；
+   *   · `cargo._loadBy = { ship, inst }`｜undefined —— 货物的**锁定**索引（谁锁着它），
+   *     与 `inst._load` **同源同写**（`inst._load` 是权威记录，本字段仅供 O(1) 查询“这件被锁了吗”）；
+   *   · `loadClaimedTick` —— **本 tick 已被认领的货物 id 集合**（Pass1 记账、**非数值**；
+   *     与星区冷却的 `sectorClaimedTick` **完全同体例**）：同一 tick 内第二个装载器不再抢同一件。
+   * ★ 只在**结算阶段**落地（见文件头「货物装载」与结算步骤 5）：Pass1 只记 `__pending.cargoLoadOps`。 */
+  const loadClaimedTick = new Set(); // 本 tick 已被装载器认领的货物 id（每 tick 起始清空）
+  const loadClaims = [];             // 本 tick 的**装载认领申请**（Stage A 登记 → 裁决后清空；Pass1 记账、非数值）
   /* ---------- ★ 星区侧「模块冷却」（**独立词条 `sector_cd_ticks`** 驱动，与模块 id 解耦）----------
    * ★ 用户确认口径：模块要生效必须**同时**满足
    *     ① 模块实例自身冷却已就绪（`cooldown_ticks`，与普通模块完全一致，走既有 `inst.cooldown`）；
@@ -688,6 +792,7 @@ export function createBattle(preset) {
   function removeSummoned(side, u) {
     for (const inst of u.modules) {
       if (inst.durationLeft > 0) endDuration(inst); // 移出场景：结束持续期（剩余/已推进一并归 0）
+      releaseCargoLoad(inst); // 移出场景 ⇒ 解除其在装货物的锁定（与其在各判死点的清理口径一致；幂等）
       dropSourceMods(inst);
       clearAllSourceMods(u, inst.id); // 移出场景 → 回退其施放方自身获得的修饰（系数加/乘 + 受伤减免）
       releaseCoeffRefs(inst); // 移出场景 → 撤销其施加在各被作用单位上的目标级修饰
@@ -1193,6 +1298,9 @@ export function createBattle(preset) {
     if (isUndeactivatable(inst)) return false;
     inst.enabled = false;
     if (inst._ramp) inst._ramp = { key: '', count: 0 }; // 停用 → 逐步伤害成长归零
+    // ★ 装载器被停用 ⇒ **立即解锁货物、装载进度归零**（下次从头开始；**已消耗能量不退**）：
+    //   与“阵亡解锁”共用同一函数（幂等、零数值变化），且与 `_ramp` 同属“停用即回退的模块私有状态”。
+    releaseCargoLoad(inst);
     dropSourceMods(inst); // 移除其施加在其它单位上的护盾上限影响
     // 时间系（时间系数）的撤销置于“施放方是否还在”判空**之前**：其作用集合挂在 `inst._timeRefs` 上、
     // 与被作用单位是否会随施放方一起离开无关，放前面可避免无主模块留下永不撤销的时间系数。
@@ -1422,6 +1530,149 @@ export function createBattle(preset) {
     return Math.max(0, oreCapacityOf(ship) - oreLoadOf(ship) - Math.max(0, claimed || 0));
   }
 
+  /* ---------- ★ 货物装载 · Pass1 口径（速度/时长/剩余容量/对象选择）----------
+   * 全部**只读**（读 tick 起始快照 + 单位内在装占用 + 本 tick 认领计数），**零数值变化**。 */
+
+  /** 按 id 取星区货物实体（内部用；装载对象恒取实体本身，不复制） */
+  function cargoById(id) {
+    return cargos.find((c) => c.id === id) || null;
+  }
+
+  /** ★ 装载**速度**（唯一口径）：`1 + 词条 cargo_load + (coeff(拥有者,'transport') − 1)`。
+   *  · 词条＝`effects.cargo_load`（装载速度加成；缺省 0 ⇒ 速度为运输系数本身）；
+   *  · 运输系数取**唯一读口径** `coeff(ship,'transport')`（与货舱容量缩放类别同一口径）；
+   *  · 防御：速度非正（数据异常/系数被压到 ≤0）时**按 1 处理**（避免除零/负需求）。 */
+  function cargoLoadSpeedOf(ship, inst) {
+    const bonus = ((inst && inst.cfg && inst.cfg.effects) || {}).cargo_load || 0;
+    const speed = 1 + bonus + (coeff(ship, 'transport') - 1);
+    return speed > 0 ? speed : 1;
+  }
+
+  /** ★ 装载**需求时长**（唯一口径）：`max(1, round(货物装载时间 ÷ 速度))`，**下限 1t**。
+   *  ★ **取整（Math.round）与下限（Math.max(1, …)）只在本函数发生一次**：唯一调用点＝
+   *    `maybeActivate` 的装载记账处（激活成功后才算），结果**随意图一起冻结**进
+   *    `__pending.cargoLoadOps.need` ⇒ 结算阶段**不再重算**、本 tick 内系数变化**不会**改动它
+   *    （与 `ore_gain` 的实采量“Pass1 用本 tick 快照算好再记账”**同一体例**：快照稳定、可复现）。 */
+  function cargoLoadNeedTicks(ship, inst, cargo) {
+    const ticks = Math.max(0, (cargo && cargo.loadTicks) || 0);
+    return Math.max(1, Math.round(ticks / cargoLoadSpeedOf(ship, inst)));
+  }
+
+  /** ★ 单位**剩余货物容量**（唯一口径：`cargoCapacityOf(ship)` − `cargoLoadOf(ship)` − 占用）。
+   *  `claimed`＝本 tick 该单位**已认领**的装载吨位（单位内运行计数，与 `ctx.oreClaimed` 同体例）；
+   *  另计入**在装占用**（`inst._load.cargo.tons`：已锁定但尚未入舱者**提前预留**吨位）——
+   *  二者互不重叠（在装＝往 tick 起算的既有状态，认领＝本 tick 新记的意图）⇒ 不会重复扣减。
+   *  与 `oreRoomOf` 同一体例：**只读、不写**（不破坏 Pass1 零数值变化）。 */
+  function cargoRoomOf(ship, claimed = 0) {
+    let used = cargoLoadOf(ship) + Math.max(0, claimed || 0);
+    for (const inst of ship.modules || []) {
+      const ld = inst._load;
+      if (ld && ld.cargo) used += Math.max(0, ld.cargo.tons || 0);
+    }
+    return Math.max(0, cargoCapacityOf(ship) - used);
+  }
+
+  /** ★ 装载对象选择（**唯一口径**）：返回本 tick 该模块**应装载的货物实体**（无可装者 ⇒ null）。
+   *  顺序＝**优先队列优先**（按 `cargoQueue` 顺序，**队首最先**）**> 默认队列**（未被选入队列者
+   *  按星区列表顺序）；逐件判定，**不可用即跳过并继续找下一件**：
+   *    (a) 已被锁定（`cargo._loadBy`：别的装载器正装着它）；
+   *    (b) **本 tick 已被认领**（`loadClaimedTick`：同一 tick 内每件货物**只被认领一次**）；
+   *    (c) 本舰**剩余货舱装不下**（`cargoRoomOf < 货物 tons`）。
+   *  **纯函数**（只读，不写任何状态）：`canImpact` 门控与 `resolveLoadClaims` 认领**调用同一函数**、
+   *  读同一份快照 ⇒ 两处结果必然一致（不会出现“门控通过但认领时选不到”）。
+   *  ⚠ 认领标记 `loadClaimedTick` 由 `resolveLoadClaims` 按**速度优先**逐条写入（每 tick 起始清空）；
+   *     `canImpact` 调用时该集合尚空 ⇒ 该判定只承担“有没有货可装”的预筛。 */
+  function pickLoadableCargo(ship, inst, ctx) {
+    const claimed = (ctx && ctx.cargoClaimed) || 0;
+    const room = cargoRoomOf(ship, claimed);
+    if (room <= 0) return null; // 剩余货舱为 0 → 任何货物都装不下（不激活）
+    const seen = new Set();
+    const ordered = [];
+    for (const id of cargoQueue) {
+      const c = cargoById(id);
+      if (c && !seen.has(c.id)) {
+        seen.add(c.id);
+        ordered.push(c); // ① 优先队列（队首最先）
+      }
+    }
+    for (const c of cargos) if (!seen.has(c.id)) ordered.push(c); // ② 其余按星区列表顺序
+    for (const c of ordered) {
+      if (c._loadBy) continue;                     // (a) 已被锁定
+      if (loadClaimedTick.has(c.id)) continue;     // (b) 本 tick 已被认领
+      if (Math.max(0, c.tons || 0) > room) continue; // (c) 本舰装不下 → 跳过并试下一件
+      return c;
+    }
+    return null;
+  }
+
+  /** ★ 装载器 **Stage A**：登记一条**认领申请**（Pass1 记账，**零数值变化**）。
+   *  · `speed` 在登记时按**唯一速度口径** `cargoLoadSpeedOf` 算好（裁决排序 + 需求时长**共用同一函数**）；
+   *  · `order` ＝**固定遍历序**（本数组下标；Pass1 按 allies → enemies、组内既定模块顺序单调递增）
+   *    ⇒ 速度并列时的**确定性**依据（稳定、可复现）。 */
+  function queueLoadClaim(ship, inst, ctx) {
+    loadClaims.push({
+      ship,
+      inst,
+      ctx, // 单位内运行语境（能量预算 ctx.avail 在裁决时按同一预算扣减 ⇒ 口径不变）
+      speed: cargoLoadSpeedOf(ship, inst), // ★ 唯一速度口径（不另算第二套）
+      order: loadClaims.length,
+    });
+  }
+
+  /** ★ **装载器认领裁决**（Pass1 末尾、Phase A 之前；**唯一裁决点**；仍属 Pass1 ⇒ 零数值变化）：
+   *  · **排序（全局跨阵营统一）**：所有申请**一起**按**装载速度从高到低**排序 —— 同一件货物对
+   *    **全体装载器只有一个赢家**，与阵营无关（速度就是唯一优先级；**不是**“先按阵营再按速度”分组）；
+   *  · **同速判定**：按**固定结算顺序**（`order`：allies → enemies、组内既定模块顺序）先到先得
+   *    ⇒ **确定、可复现**；这与本引擎其它“同 tick 争抢”的既有口径**完全同体例**
+   *    （`sectorClaimedTick` 星区冷却“固定顺序只接受第一个”、`ctx.oreClaimed` 采矿预算同源），
+   *    不另造第二套规则；
+   *  · **镜像对等**：速度不同 ⇒ 胜负**只由速度决定**（两侧互换后完全对称）；
+   *    速度相同 ⇒ 沿用既有争抢口径的固定顺序裁决（allies 侧优先）——这是**既有确定性约定的沿用**，
+   *    不是新增偏向规则（若要求同速也完全对称，须给同速再引入一个与阵营无关的键，当前引擎无此键）。
+   *  · **逐申请依次裁决**：获胜者调用**既有的唯一选择口径** `pickLoadableCargo` 取第一件可用货物
+   *    （`_loadBy` 锁定 / 本 tick 已认领 / 货舱装不下 ⇒ 跳过并试下一件），随后按**与其它模块激活尾部
+   *    一字不差**的口径记账：**耗能（只记账）→ 冷却（按 tick 起始时间系数）→ pending 装载意图
+   *    → 激活统计**；并累加**单位内认领吨位**（裁决局部计数，体例同 `ctx.oreClaimed`）。
+   *  · **能量不足 / 已阵亡 / 已停用 / 已在装 ⇒ 该申请整体作废**（不认领、不耗能、不进冷却、不计激活），
+   *    货物留给**后续申请者**（即速度次高者）⇒ “能量不足不激活”语义不变。 */
+  function resolveLoadClaims() {
+    if (!loadClaims.length) return;
+    const sorted = [...loadClaims].sort((a, b) => b.speed - a.speed || a.order - b.order);
+    const claimTons = new Map(); // 单位（对象引用）→ 本 tick 已认领吨位（裁决局部，不写进任何游戏状态）
+    for (const c of sorted) {
+      const ship = c.ship;
+      const inst = c.inst;
+      const ctx = c.ctx;
+      if (!ship || !inst || !ctx) continue;
+      if (!ship.alive || !inst.enabled) continue; // 本 tick 已阵亡 / 已停用 ⇒ 申请作废
+      if (inst._load) continue;                   // 已在装（防御：Pass1 门控已挡住）
+      const fx = inst.cfg.effects || {};
+      const cost = fx.energy_cost || 0;
+      if (ctx.avail < cost) continue;             // 能量不足 ⇒ 不激活、不耗能（货物留给后续申请者）
+      const claimed = claimTons.get(ship) || 0;
+      const cargo = pickLoadableCargo(ship, inst, { cargoClaimed: claimed });
+      if (!cargo) continue;                       // 无可用货物 ⇒ 不激活（不耗能、不进冷却）
+      loadClaimedTick.add(cargo.id);              // ★ 认领：本 tick 该件货物不再被别人认领
+      claimTons.set(ship, claimed + Math.max(0, cargo.tons || 0));
+      payEnergy(ctx, inst, cost);                 // 能量：Pass1 只记账（结算步骤 3 统一落地）
+      startCooldown(inst, tickTimeCoeff(ship));   // 冷却：按 tick 起始时间系数（与其它模块同口径）
+      if ((fx.hp_below_activate || 0) > 0) inst._firedOnce = true; // 低血门控标记：裁决获胜才算“真正激活”
+      const P = pendOf(ship);
+      if (P) {
+        P.cargoLoadOps.push({
+          inst,
+          ship,
+          cargo,
+          need: cargoLoadNeedTicks(ship, inst, cargo), // 需求时长（含取整与下限，唯一实现在该函数内）
+        });
+      }
+      // 激活统计（与 `maybeActivate` 尾部同一口径）：本 tick 真正激活一次
+      inst._pendingAct = { dmg: 0, shield: 0 };
+      inst.stats.activations += 1;
+      inst.stats.energySpent += cost;
+    }
+  }
+
   /* ---------- ★ 星区词条（直接改**星区矿物储量**的模块：创世纪 / 矿藏富集）---------- */
   /** 星区词条 → 归一化操作类型（**唯一登记表**，与既有 `COEFF_ADD`/`AMOUNT` 同一体例）：
    *  · `sector_ore_add` ＝ **绝对增量**（＋固定值）；
@@ -1472,8 +1723,10 @@ export function createBattle(preset) {
 
   /** 激活前可行性：时长型加盾模块（未在持续期即可激活）；纯增益须对某目标生效。
    *  `ship` ＝施放方自身（自身词条的判定对象），`targets` ＝本次解析出的目标（目标级词条的判定对象）。
-   *  `ctx`（可选）＝本 tick 的单位内运行语境：`oreClaimed`（采矿“本 tick 已认领量”，只进不减）
-   *  与 `oreAvail`（**本 tick 可动用的携带矿物预算**，矿物成本/矿物输送共用，只减不进）；其它词条不读。 */
+   *  `ctx`（可选）＝本 tick 的单位内运行语境：`oreClaimed`（采矿“本 tick 已认领量”，只进不减）、
+   *   `oreAvail`（**本 tick 可动用的携带矿物预算**，矿物成本/矿物输送共用，只减不进）；
+   *   `cargoClaimed`（装载：本单位本 tick 已认领吨位；由 `resolveLoadClaims` 的裁决局部计数传入，
+   *   裁决外恒为 0——`canImpact` 的装载预筛只判“有没有货可装”）；其它词条不读。 */
   function canImpact(ship, targets, fx, inst, ctx) {
     // ★ **星区侧冷却门控**（独立词条 `sector_cd_ticks`，或带星区效果词条 `sector_ore_add`/`sector_ore_mul`）：
     //   **混合冷却门控**的**唯一落点**（Pass1 唯一门控出口），**先于其它效果词条判定**——
@@ -1488,6 +1741,18 @@ export function createBattle(preset) {
     if (secW || secCd != null) {
       if (!sectorCdReady(inst.cfg.id)) return false;
       if (sectorClaimedTick.has(inst.cfg.id)) return false;
+    }
+    // ★ 自身词条·装载（`type` 标签 `cargo_loader`，如装载光束）：**装载器门控**（唯一出口）——
+    //   ① **每模块实例同一时刻至多 1 件在装**（`inst._load` 非空＝忙）→ 不激活、不耗能、不进冷却
+    //      （这正是“装载期间不再重复扣能量”的落点）；
+    //   ② 必须存在**可装货物**：未锁定 / 本 tick 未被认领 / 本舰剩余货舱装得下
+    //      ⇒ 无 → 不激活（此处只做“**有没有货可装**”的预筛，**不认领**：真正的裁决在
+    //      `resolveLoadClaims()`，按**装载速度从高到低**跨阵营统一排序 ⇒ 本预筛失败者必然也拿不到货）。
+    //   ⚠ 与采矿 `ore_gain` 同体例：**不进目标选择链**，但仍走本函数（唯一门控出口）；
+    //     能量门控在 Pass1 成本门控处 + 裁决处（同 `energy_cost` 既有口径），本处不重复。
+    if (isType(fx, 'cargo_loader')) {
+      if (inst && inst._load) return false;
+      return pickLoadableCargo(ship, inst, ctx) != null;
     }
     // ★ 自身词条·采矿（`ore_gain`，无 `_target` 后缀 ⇒ 作用于模块所属自身）：按施放方
     //   **剩余矿物容量**与**星区剩余储量**判定 —— 二者任一为 0 → 不可影响 → 本次不激活（不耗能、不进冷却）。
@@ -1624,8 +1889,17 @@ export function createBattle(preset) {
    *                   按 min(词条值, 自身剩余携带, 目标剩余容量) 截断） }。
    *                   ★ **一条记录＝一次「自身 −N / 目标 +N」**（同额、原子、成对）→ 只记在**施放方** pending 上，
    *                     目标侧不另记 ⇒ 不重复计数；Pass1 零数值变化。
+   *   cargoLoadOps:  本 tick 的**装载启动意图**（`type` 标签 `cargo_loader`，如装载光束；
+   *                   **结算步骤 5** 统一落地：锁定货物 + 进度推进 + 完成入舱）：
+   *                   每条 { inst（装载器模块实例）, ship（拥有者）, cargo（星区货物实体引用）,
+   *                          need（**需求时长 tick**，已在 Pass1 按 tick 起始快照算好并冻结：
+   *                                `max(1, round(货物装载时间 ÷ 速度))`） }。
+   *                   ★ 每条恒为“**一件货物**”（每模块实例同一时刻至多 1 件在装）；Pass1 零数值变化；
+   *                     采样顺序＝固定结算顺序（allies → enemies），与遍历位置无关、镜像对等。
    *   ★ 矿物链两处（`oreSpends`/`oreTransfers`）共用**单位内运行计数** `ctx.oreAvail`（tick 起始携带量 −
-   *     本 tick 已记账支出），故同单位多模块的总支出恒不超过 tick 起始携带量（防超发、可复现）。 */
+   *     本 tick 已记账支出），故同单位多模块的总支出恒不超过 tick 起始携带量（防超发、可复现）。
+   *   ★ 装载链另用**单位内认领吨位计数**（裁决局部 `claimTons`，体例同 `ctx.oreClaimed`）——
+   *     由 `resolveLoadClaims` 在**裁决过程中**维护：同单位多个装载器合计不得超过**剩余货舱**（防超装、可复现）。 */
   function freshPending() {
     return {
       dmg: [],
@@ -1647,6 +1921,7 @@ export function createBattle(preset) {
       sectorOps: [],
       oreSpends: [],
       oreTransfers: [],
+      cargoLoadOps: [],
     };
   }
   /** 惰性取某单位 pending（召唤新单位当 tick 被锁定命中时也能挂账） */
@@ -2228,7 +2503,8 @@ export function createBattle(preset) {
     //   · 落点＝**判死唯一出口**本函数：四个判死点（applyHpTo / applySelfDestruct / applyTempTick /
     //     applyHit）各自以 `X.alive` 门控后才置 `alive=false` 并调用本函数 ⇒ **每单位至多一次**；
     //   · 幂等性：返还后立即把 `hull.ore` 归 0 ⇒ 即便将来出现新的重复调用路径，携带量为 0、不再重复返还；
-    //   · **只返还矿物、不返还货物**（`hull.cargo` 与星区储量无关）；
+    //   · ⚠ **矿物与货物是两条独立返还链**：本段只处理**矿物 → 星区储量**（`hull.cargo` 与储量无关）；
+    //     已装载**货物**的返还在下方单独一段（回**星区货物列表**，见 `returnCargoToSector`）。
     //   · 守恒（**仅“采集 ↔ 返还”这一对**）：返还量 ≤ 该单位本场从本储量采集量之和 ⇒
     //     **返还自身不会让储量超过初始**，故此处**不设上限**（⚠ 星区词条可抬高储量、与此无关）。
     const oreCarried = oreLoadOf(ship);
@@ -2236,11 +2512,22 @@ export function createBattle(preset) {
       ship.hull.ore = 0;
       oreReserve += oreCarried;
     }
+    // ★ 货物返还（**本轮新增口径**，与矿物返还**同一出口、同一体例**）：
+    //   · **已装载货物全额返还星区**（同一 id、同一对象，按 `cargo-<序号>` 确定性插回星区列表）；
+    //   · **幂等**：返还后 `ship.cargos` 与 `hull.cargo` 立即清空 ⇒ 重复调用无副作用
+    //     （与矿物“返还后归 0”完全同一手法）；
+    //   · **只返还货物、不改数值**：护盾/血量/能量一律不碰（装载体系与战斗数值链无关）；
+    //   · 返还的货物保持 `loadTicks`（已装载过者恒为 20t ⇒ “一次装好”是**货物特性**，不随死亡还原）；
+    //   · **不自动重新入队**（优先队列是用户的选择）。
+    returnCargoToSector(ship);
+    // ★ 在装（**未完成**）货物的解锁：本舰阵亡 ⇒ 立即解锁 + 进度归零、**不完成装载**、能量不退。
+    //   与下方模块清理循环同批（同一 `ship.modules` 遍历），恒在结算步骤 5 之前 ⇒ 本 tick 也不会补完成。
     // ★ 死亡计数（唯一出口）：排除召唤/临时单位（判据与 soloConditionHolds 的"召唤物不计入"同一口径）。
     //   结算阶段累加、tick 收尾提交为 lastTickDeaths → 供**下一 tick** 的 Pass1 读取（"按上一 tick 死亡数"）。
     if (!ship.summonMod && !ship.isSummon) deathsThisTick += 1;
     for (const inst of ship.modules) {
       if (inst.durationLeft > 0) endDuration(inst); // 结束自身时长 buff（剩余/已推进一并归 0）
+      releaseCargoLoad(inst); // ★ 阵亡 ⇒ 解除其在装货物的锁定（进度归零、不完成装载、能量不退）
       dropSourceMods(inst); // 撤销其对其它目标护盾上限的影响（若无则无操作）
       clearAllSourceMods(ship, inst.id); // 撤销其自身获得的修饰（系数加/乘 + 受伤减免，阵亡即回退）
       releaseCoeffRefs(inst); // 撤销其施加在各被作用单位上的目标级修饰
@@ -2394,8 +2681,11 @@ export function createBattle(preset) {
     const sectorW = sectorWordOf(inst);
     const secCd = sectorCdTicksOf(inst);
     const declaresKinds = Array.isArray((inst.cfg.target || {}).kinds) && (inst.cfg.target || {}).kinds.length > 0;
+    //   ★ 装载器（`type` 标签 `cargo_loader`）与采矿/星区词条**同体例**：作用于“星区货物 → 本舰货舱”，
+    //     不是战斗单位 ⇒ **不进入目标选择链**，跳过“必须有目标”的前置判定（可行性仍在 `canImpact`）。
+    const cargoLoader = isType(fx, 'cargo_loader');
     const selfTargeted =
-      isSuicide || (fx.ore_gain || 0) > 0 || !!sectorW || (secCd != null && !declaresKinds);
+      isSuicide || (fx.ore_gain || 0) > 0 || cargoLoader || !!sectorW || (secCd != null && !declaresKinds);
     if (!selfTargeted && !targets.length) return; // 无足够目标：本次不激活
     if (!isSuicide && !canImpact(ship, targets, fx, inst, ctx)) return; // 无可生效目标/条件：不激活不耗能
 
@@ -2405,6 +2695,23 @@ export function createBattle(preset) {
     //   · 只写“结构引用”（单位 id 列表），不产生任何数值变化 → 符合 Pass1 零数值变化约定；
     //   · 持续期结束（`durationLeft` 归 0）锁定自动失效，无需额外撤销。
     if (isType(fx, 'lock_target_on_activate')) inst._lockIds = targets.map((t) => t.id);
+
+    // —— ★ 自身·**装载能力**（`type` 标签 `cargo_loader`，如装载光束）：**Stage A —— 只登记认领申请** ——
+    //   · **位置**：在**成本支付（`payEnergy`/`payOre`）与冷却之前**提前返回 —— 装载器**不在此处耗能**，
+    //     因为“本 tick 是否真的开始装载”要等**跨阵营速度裁决**（见 `resolveLoadClaims`）才确定；
+    //     若在此先扣能量，败者会白付能量、且赢家会重复扣一次。
+    //   · **为什么不在此处就地认领**：同一 tick 内多个装载器争抢货物时，**认领顺序＝装载速度从高到低**
+    //     （唯一口径 `cargoLoadSpeedOf`），而本函数按**固定单位顺序**被逐个调用 ⇒ 必须先把所有申请收齐，
+    //     再由 `resolveLoadClaims()` 在**同一 Pass1 内、Phase A 之前**统一裁决（见 `step()`）。
+    //   · 故此处**不耗能、不进冷却、不写 pending、不计激活数**：裁决获胜者才按既有口径记账
+    //     （能量/冷却/意图/激活统计），**败者直接不激活** —— 语义与“无可生效目标不激活”完全一致，
+    //     且 **Pass1 仍零数值变化**（只是记账）。
+    //   · 对象选择与需求时长都在裁决处算（唯一口径 `pickLoadableCargo` / `cargoLoadNeedTicks`），
+    //     读的仍是**本 tick 起始快照**（Pass1 内不产生任何可见数值变化）⇒ 快照稳定、可复现。
+    if (cargoLoader) {
+      queueLoadClaim(ship, inst, ctx);
+      return;
+    }
 
     // 自身能量消耗：只记账（结算步骤 3 统一落地），并在 Pass1 扣减单位内运行计数以做后续门控
     payEnergy(ctx, inst, cost);
@@ -3364,6 +3671,134 @@ export function createBattle(preset) {
     }
   }
 
+  /* ---------------- ★ 货物装载 · 结算（步骤 5）：唯一落地处 ---------------- */
+
+  /** 把货物**按 `cargo-<序号>` 顺序插回星区列表**（返还用：同一 `id`、同一对象、**位置确定**）。
+   *  · 幂等：已在列表中 ⇒ 直接返回（不重复插入）；
+   *  · 位置口径：按 id 尾号升序插入 ⇒ 星区列表**恒按序号有序**，与开战时的顺序一致
+   *    （用户口径：返还后仍留在星区列表、位置确定）。 */
+  function insertCargoIntoSector(cargo) {
+    if (!cargo) return;
+    if (cargos.includes(cargo)) return;
+    const seqOf = (id) => {
+      const m = /(\d+)\s*$/.exec(String(id || ''));
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    const seq = seqOf(cargo.id);
+    let at = cargos.length;
+    for (let i = 0; i < cargos.length; i += 1) {
+      if (seqOf(cargos[i].id) > seq) {
+        at = i;
+        break;
+      }
+    }
+    cargos.splice(at, 0, cargo);
+  }
+
+  /** 解除**一件**在装装载（幂等）：解锁货物 + 清模块的在装记录（**进度归零**）。
+   *  · 双向登记同源：`inst._load`（权威记录）与 `cargo._loadBy`（锁定索引）一并清空；
+   *  · **已消耗能量不退**（本函数不碰能量）；货物回到“未锁定、可被任意装载器再次选中”的状态。 */
+  function releaseCargoLoad(inst) {
+    if (!inst || !inst._load) return;
+    const cargo = inst._load.cargo;
+    if (cargo && cargo._loadBy && cargo._loadBy.inst === inst) cargo._loadBy = undefined;
+    inst._load = undefined;
+  }
+
+  /** 把**已完成装载**的货物搬进单位货舱（唯一写入者）：星区 → 单位。
+   *  · 货物**出星区列表**（同时出 `cargoQueue`：不在星区了自然不再排队）；
+   *  · 进 `ship.cargos` ＋ `hull.cargo += tons`（`cargoLoadOf` 的**唯一数值口径**，与实体清单同写同源）；
+   *  · **`loadTicks` 永久改写为 `CARGO_FAST_LOAD_TICKS`（20t）** —— 该件货物此后（含返还星区后）
+   *    再装只需 `round(20 ÷ 速度)` tick（用户确认口径：“一次装好”是**货物的特性**，不是本次装载的临时状态）；
+   *  · 解锁并清在装记录（`inst._load`/`cargo._loadBy` 归空；`hull.cargo` 与清单**同时**更新 ⇒ 不会漂移）。 */
+  function landCargoOn(ship, inst) {
+    const ld = inst && inst._load;
+    if (!ship || !ld || !ld.cargo) return;
+    const cargo = ld.cargo;
+    inst._load = undefined;
+    if (cargo._loadBy && cargo._loadBy.inst === inst) cargo._loadBy = undefined;
+    const qi = cargoQueue.indexOf(cargo.id);
+    if (qi >= 0) cargoQueue.splice(qi, 1); // 离开星区 ⇒ 同时离开优先队列
+    const ci = cargos.indexOf(cargo);
+    if (ci >= 0) cargos.splice(ci, 1);
+    cargo.loadTicks = CARGO_FAST_LOAD_TICKS; // ★ 永久“一次装好”（数据层常量，不硬编码）
+    ship.cargos.push(cargo);
+    ship.hull.cargo = Math.max(0, (ship.hull.cargo || 0) + Math.max(0, cargo.tons || 0));
+  }
+
+  /** 把单位的**已装载货物**返还星区（阵亡全额返还 / 详情页主动返还走同一函数）。
+   *  · `cargoId` 缺省 ⇒ 返还该单位**全部**（判死出口用）；给 id ⇒ 只返还那一件（UI 接口用）；
+   *  · 返回被返还的 id 数组（`[]` ＝ 无货可返）；
+   *  · **幂等**：返还后实体离开 `ship.cargos`、`hull.cargo` 同步扣减 ⇒ 重复调用无副作用；
+   *  · 货物**保持原 id、原字段**（`loadTicks` 已是 20t ⇒ 特性保留），按序号**确定性插回**星区列表；
+   *  · **不自动重新入队**（优先队列是用户的选择，不替用户决定）。 */
+  function returnCargoToSector(ship, cargoId = null) {
+    const out = [];
+    if (!ship || !Array.isArray(ship.cargos) || !ship.cargos.length) return out;
+    const list = cargoId == null ? [...ship.cargos] : ship.cargos.filter((c) => c.id === cargoId);
+    for (const cargo of list) {
+      const i = ship.cargos.indexOf(cargo);
+      if (i >= 0) ship.cargos.splice(i, 1);
+      ship.hull.cargo = Math.max(0, (ship.hull.cargo || 0) - Math.max(0, cargo.tons || 0));
+      cargo._loadBy = undefined; // 返还的货物恒解锁（可被任意装载器再次选中）
+      insertCargoIntoSector(cargo);
+      out.push(cargo.id);
+    }
+    return out;
+  }
+
+  /** ★ **结算步骤 5：货物装载统一落地**（位置＝Phase B2 之后、Phase C 之前；唯一落地处）。
+   *  为什么放在**全部判死之后**：判死散落在步骤 4c/4d/4e 与 Phase B/B2，只有在此读 `ship.alive`
+   *  才能得到**本 tick 的终态** ⇒ 「拥有者本 tick 死亡 ⇒ **解锁、进度归零、不完成装载**」是一条
+   *  **确定性规则**（与“谁先谁后死”无关、镜像对等、与遍历顺序无关）；能量已在步骤 3 扣除且**不退**。
+   *  三小步（顺序固定）：
+   *   ① **启动**：把 Pass1 的意图落地为锁定（双向登记）+ 需求时长（已冻结，不重算）；
+   *   ② **推进/解除**：每 tick +1（启动那一 tick 不推进 ⇒ 恰好耗时 `need` tick）；拥有者阵亡或
+   *      模块停用 ⇒ 立即解除（解锁 + 进度归零）；
+   *   ③ **完成**：`elapsed ≥ need` 且拥有者存活 且**货舱容得下** ⇒ 入舱；容不下（容量中途变小）⇒
+   *      **保持锁定与进度**（`elapsed` 钳在需求上）等待后续 tick —— 不静默丢弃已投入的装载时间。
+   *  落地范围：**只动星区货物/队列 + 单位货舱**（`ship.cargos`/`hull.cargo`）与**模块的结构标记**，
+   *  不改任何战斗数值（护盾/血量/能量/系数一律不碰）⇒ 与既有步骤无交叉、顺序无歧义。 */
+  function settleCargoLoads(ops, units) {
+    if (ops.length) {
+      for (const op of ops) {
+        const inst = op.inst;
+        const ship = op.ship;
+        const cargo = op.cargo;
+        if (!inst || !cargo) continue;
+        if (inst._load) continue;                 // 已在装（防御：Pass1 门控已挡住）
+        if (cargo._loadBy) continue;              // 已被别的装载器锁定（防御：认领集合已挡住）
+        if (!ship || !ship.alive) continue;       // 拥有者本 tick 已死 ⇒ 不启动（能量不退）
+        if (!inst.enabled) continue;              // 模块本 tick 已停用 ⇒ 不启动
+        inst._load = {
+          cargo,
+          elapsed: 0,                             // 已推进 tick 数（启动 tick 不推进，见下）
+          need: Math.max(1, op.need | 0),         // 需求时长（Pass1 已按快照冻结）
+          startedTick: runTicks,                  // 启动 tick 号（用于“启动那一 tick 不推进”）
+        };
+        cargo._loadBy = { ship, inst };           // 锁定（任何单位/模块不得再锁定它）
+      }
+    }
+    const all = units || [...allies, ...enemies];
+    for (const ship of all) {
+      for (const inst of ship.modules || []) {
+        const ld = inst._load;
+        if (!ld || !ld.cargo) continue;
+        // 拥有者阵亡 / 模块停用 ⇒ 立即解锁 + 进度归零（下次从头开始；能量不退）
+        if (!ship.alive || !inst.enabled) {
+          releaseCargoLoad(inst);
+          continue;
+        }
+        if (ld.startedTick === runTicks) continue; // ★ 启动那一 tick 不推进 ⇒ 装载恰好耗时 need tick
+        ld.elapsed = Math.min(ld.elapsed + 1, ld.need);
+        if (ld.elapsed < ld.need) continue;
+        // 完成前复核剩余容量（容量可能因模块启停而中途变小）：容不下 ⇒ 保持锁定与进度，下 tick 再判
+        if (cargoLoadOf(ship) + Math.max(0, ld.cargo.tons || 0) > cargoCapacityOf(ship)) continue;
+        landCargoOn(ship, inst);
+      }
+    }
+  }
+
   /** 每 tick 主入口：Pass 1 行动遍历（单遍单位 for）→ Pass 2 结算（单遍单位 for + 命中子步 + 收尾单遍）。 */
   function step() {
     if (phase !== 'running') return;
@@ -3374,6 +3809,10 @@ export function createBattle(preset) {
     // ★ 星区「本 tick 已被接受的模块」集合：每 tick 起始清空（Pass1 记账用，非数值状态）——
     //   同一 tick 多个单位携带同一星区模块时，按固定结算顺序（allies → enemies）**只接受第一个**。
     sectorClaimedTick.clear();
+    // ★ 星区「本 tick 已被装载器认领的货物」集合：每 tick 起始清空（同 `sectorClaimedTick` 体例）——
+    //   认领在 Pass1 末尾由 `resolveLoadClaims()` 按**装载速度从高到低**（同速按固定遍历序）裁决并写入。
+    loadClaimedTick.clear();
+    loadClaims.length = 0; // 本 tick 的装载认领申请（Stage A 登记 → 裁决后无用；每 tick 起始清空）
 
     // 固定行动快照（tick 起始存活全体）＋一次性建好本 tick 挂账。
     // ★ 必须在任何记账(Pass1 激活把伤害/回盾写进目标 __pending)之前为全体建好，
@@ -3390,6 +3829,12 @@ export function createBattle(preset) {
     // 对每个单位：闪标递减 + 清理自身死目标引用 + 能量回充 +
     // 模块结构推进(时长/冷却) + 模块激活记账 + 临时单位生命周期，一次完成。
     for (const ship of pass1Units) pass1Unit(ship);
+
+    // ★ **装载器认领裁决**（Pass1 阶段收尾，仍在 Phase A 之前）：把本 tick 收集到的装载认领申请
+    //   按**装载速度从高到低**（同速按固定遍历序）统一裁决 —— 同一件货物**只有一个赢家**（跨阵营全局排序），
+    //   赢家才按既有口径记账（耗能/冷却/装载意图/激活统计），败者不激活（不耗能、不进冷却）。
+    //   ★ 仍在 Pass1：只写记账与 pending 意图，**零数值变化**（所有数值仍在结算阶段落地）。
+    resolveLoadClaims();
 
     // ===== Pass 2 —— 结算 =====
     // Phase A（单遍单位 for 收集，作用于本 tick 全体[含 Pass1 新召/已死者]）：把各单位 __pending 上的
@@ -3413,6 +3858,7 @@ export function createBattle(preset) {
     const sectorOps = []; // 本 tick 的星区储量变更意图（按固定结算顺序收集 → 步骤 3c 先加后乘统一落地）
     const oreSpends = []; // 本 tick 的矿物成本消耗（`ore_cost`，带上所属单位引用 → 步骤 3d-1 统一扣除）
     const oreTransfers = []; // 本 tick 的矿物输送意图（`ore_target`，记录内已含 from/to → 步骤 3d-2 统一落地）
+    const cargoLoadOps = [];  // 本 tick 的装载启动意图（`cargo_loader`，记录内已含 inst/ship/cargo → 步骤 5 统一落地）
     for (const u of allNow) {
       const P = u.__pending;
       if (!P) continue; // 本 tick 未参与(无挂账)者跳过
@@ -3440,6 +3886,7 @@ export function createBattle(preset) {
         for (const s of P.oreSpends) oreSpends.push({ ship: u, inst: s.inst, amount: s.amount });
       }
       if (P.oreTransfers.length) oreTransfers.push(...P.oreTransfers); // 记录内已含 from/to；顺序＝固定结算顺序
+      if (P.cargoLoadOps.length) cargoLoadOps.push(...P.cargoLoadOps); // 装载意图（含 cargo 实体）；顺序＝固定结算顺序
     }
 
     // ── 结算步骤 1：计时推进（全单位模块时长/冷却递减、窗口累计）──
@@ -3616,6 +4063,16 @@ export function createBattle(preset) {
       if (land.killed) battleLog('battle.log.destroyed', { ship: uTok(r.attacker) }, ['ship']); // 反射返程致死：紧跟反射句
     }
 
+    // ── 结算步骤 5：**货物装载统一落地**（锁定 / 进度推进 / 完成入舱 / 死亡与停用的解锁）──
+    //   位置＝**Phase B2 之后、Phase C 之前**（本 tick 的伤害与**全部判死**都已结算完毕）：
+    //     · 完成判定读 `ship.alive` ⇒ 「拥有者本 tick 死亡 ⇒ 不完成装载」为**确定性规则**
+    //       （不依赖“谁先谁后死”，镜像对等、与遍历顺序无关）；
+    //     · 与步骤 3（能量）的关系：能量已在 3 扣除、本步骤**不触碰能量**（停用/阵亡**不退能量**）；
+    //     · 与步骤 4/Phase B/B2 的关系：本步骤**只动星区货物/队列 + 单位货舱 + 模块结构标记**，
+    //       不碰护盾/血量/系数 ⇒ 与其无交集、互不影响（顺序无歧义）；
+    //     · 落地后货物已完成搬移 ⇒ Phase C 的统计写回与战报收集看到的是最终状态。
+    settleCargoLoads(cargoLoadOps, allNow);
+
     // Phase C（单遍单位 for 收尾）：统计写回 + 清 __pending + 收集待移除临时死者。
     // 破盾已在 applyHit(伤害抽空)/applyShieldHeals(汲取抽空) 内就地触发，此处不再全量扫描。
     // finalize 在临时单位移出前执行，保证死去的召唤也能累计；清挂账防陈旧记账被下 tick 重复收集。
@@ -3686,14 +4143,85 @@ export function createBattle(preset) {
      *  · `cd` ＝**星区侧冷却**的唯一读口径（**凡带词条 `sector_cd_ticks` 的模块各占一键、各自独立**；
      *    0/缺省＝就绪）——与「模块自身冷却」（`inst.cooldown`，UI 从模块行读）是**两把独立冷却**，
      *    两者都就绪才生效；UI 冷却行**按同一识别口径**枚举模块（不硬编码 id）；
-     *  · 每次读取返回**新对象**（含新的 `cd` 快照）⇒ 外部改不到引擎内部状态；**UI 只读本口径、绝不自算**。 */
+     *  · `cargos` ＝星区**货物实体**列表（只读）：每项＝`{ id, templateId, nameKey, name, type, colorKey,
+     *    tons, loadTicks, level, bonus, queued, queueIndex, locked, lockedBy, loadProgressTicks, loadNeedTicks }`，
+     *    其中 `queued`/`queueIndex`/`locked`/`lockedBy`/`loadProgressTicks`/`loadNeedTicks` 都是**引擎派生**：
+     *    · `queued`/`queueIndex` ＝优先队列状态（`queueIndex` ＝ **1 起的队列序号**，未入队＝0）；
+     *    · `locked`/`lockedBy` ＝**装载锁定**（被某装载器锁定中；`lockedBy`＝装载单位 id，未锁＝null）；
+     *    · `loadProgressTicks`/`loadNeedTicks` ＝**在装进度 / 需求时长（tick）**（未在装＝0/0；
+     *      秒数换算由 UI 调 `core/tick.js formatTickSeconds`，**UI 不自算**）
+     *    ⇒ **UI 直接读、不自算**（UI 用 `queued` 表达**选中态**、用 `queueIndex` 填**名称前的序号列**、
+     *      用 `locked` 表达**装载中**（置灰 + 点击无效））；
+     *  · `cargoQueue` ＝优先队列的**id 有序副本**（队首＝最高优先级；也是装载对象的优先级顺序）；
+     *  · 每次读取返回**新对象**（含新的 `cd`/`cargos`/`cargoQueue` 快照）⇒ 外部改不到引擎内部状态；
+     *    **UI 只读本口径、绝不自算**。 */
     get sector() {
       const cd = {};
       for (const id of sectorCdUntil.keys()) {
         const rem = sectorCdRemain(id);
         if (rem > 0) cd[id] = rem; // 只暴露“冷却中”的模块（就绪＝不出现）
       }
-      return { name: sectorName, oreReserve, oreReserveInit, cd };
+      // ★ 货物：把队列状态**派生**进每项（UI 只读，不自己算序号）；同时给出队列的 id 有序副本
+      //   ★ 装载体系同样只读派生：`locked`/`lockedBy`（谁锁着它）＋ `loadProgressTicks`/`loadNeedTicks`
+      //     （在装进度与需求时长，供 UI 展示；UI **不自算**进度/时长）——内部标记 `_loadBy` 不外泄。
+      const cargosSnap = cargos.map((c) => {
+        const qi = cargoQueue.indexOf(c.id) + 1; // 0＝未入队；1 起＝队列序号
+        const by = c._loadBy || null;
+        const ld = by && by.inst ? by.inst._load : null;
+        const { _loadBy, ...rest } = c; // 内部锁定索引不进快照（外部改不到引擎内部状态）
+        return {
+          ...rest,
+          queued: qi > 0,
+          queueIndex: qi,
+          locked: !!by, // ★ 已装载器锁定（此间不可入队、不可被其它装载器选中）
+          lockedBy: by && by.ship ? by.ship.id : null, // 锁定者＝装载单位 id（未锁定＝null）
+          loadProgressTicks: ld ? ld.elapsed : 0,      // 已推进 tick（未在装＝0）
+          loadNeedTicks: ld ? ld.need : 0,             // 需求 tick（未在装＝0）
+        };
+      });
+      return { name: sectorName, oreReserve, oreReserveInit, cd, cargos: cargosSnap, cargoQueue: [...cargoQueue] };
+    },
+    /** ★ 星区货物**优先队列**的唯一切换接口（加入/取消）：
+     *  · 未入队 → **追加到队尾**（排在最后）；已入队 → **从队中移除**（其余项相对顺序不变）；
+     *  · **被装载器锁定的货物拒绝切换**（`cargo._loadBy` 非空 ⇒ `ok:false, reason:'locked'`，
+     *    队列状态**原样不变**）—— 引擎侧唯一判据，UI 只按返回值/只读口径呈现，不自算“能不能点”；
+     *  · 返回 `{ ok, queued, queueIndex, reason? }`：`ok:false` ＝ id 不存在（`reason:'missing'`）
+     *    或被锁定（`reason:'locked'`）；`queued` ＝ 切换后是否在队列中；`queueIndex` ＝ **1 起的队列序号**
+     *    （未入队＝0）⇒ UI 不自算；
+     *  · 只动**队列顺序**，不改动货物实体字段本身；不参与 tick 结算、不写 `__pending`（Pass1 零数值变化），
+     *    故**任意时刻**（暂停/运行/结束）都可切换；装载体系只**读**它决定装载对象优先级
+     *    （优先队列队首最先，见文件头「货物装载」），**不改写**队列。 */
+    toggleCargoQueue(id) {
+      const c = cargos.find((x) => x.id === id);
+      if (!c) return { ok: false, queued: false, queueIndex: 0, reason: 'missing' };
+      if (c._loadBy) {
+        // 装载中：队列状态不变（原样回读，便于 UI 直接采用）
+        const qi = cargoQueue.indexOf(id);
+        return { ok: false, queued: qi >= 0, queueIndex: qi >= 0 ? qi + 1 : 0, reason: 'locked' };
+      }
+      const idx = cargoQueue.indexOf(id);
+      if (idx >= 0) cargoQueue.splice(idx, 1);
+      else cargoQueue.push(id);
+      const i2 = cargoQueue.indexOf(id);
+      return { ok: true, queued: i2 >= 0, queueIndex: i2 >= 0 ? i2 + 1 : 0 };
+    },
+    /** ★ 单位**已装载货物 → 星区**的主动返还接口（唯一入口；详情页点芯片）：
+     *  · 参数：`shipId`＝载货单位 id，`cargoId`＝该单位货舱内某件货物 id（**必填**：只返还这一件）；
+     *  · 成功：货物按 `cargo-<序号>` **确定性插回星区列表**（**同一 id**、字段不变、`loadTicks` 保持，
+     *    即已装载过者恒为 20t），单位 `ship.cargos`/`hull.cargo` 同步扣减（**唯一写入者**口径不变）；
+     *  · 返回 `{ ok, shipId, cargoId }`；失败返回 `{ ok:false, reason }`：
+     *    `'ship'`（无此单位）、`'dead'`（该单位已阵亡 ⇒ 其货物已在 `onDeath` 全额返还）、
+     *    `'cargo'`（该单位货舱内无此货物）；
+     *  · 与“阵亡全额返还”共用同一实现（`returnCargoToSector`）⇒ **幂等**、口径唯一；
+     *  · 不改任何战斗数值（不碰护盾/血量/能量/系数），与 tick 结算无交互 ⇒ 任意时刻可调用。 */
+    unloadCargo(shipId, cargoId) {
+      const ship = [...allies, ...enemies].find((u) => u.id === shipId);
+      if (!ship) return { ok: false, reason: 'ship', shipId, cargoId };
+      if (!ship.alive) return { ok: false, reason: 'dead', shipId, cargoId };
+      const has = (ship.cargos || []).some((c) => c.id === cargoId);
+      if (!has) return { ok: false, reason: 'cargo', shipId, cargoId };
+      returnCargoToSector(ship, cargoId);
+      return { ok: true, shipId, cargoId };
     },
     get allyPolicy() { return policies.ally; },
     get enemyPolicy() { return policies.enemy; },
@@ -3721,8 +4249,7 @@ export function createBattle(preset) {
       return cargoTotalFor(side, 'cargo');
     },
     /** ★ 某阵营**矿物**容量合计 `{value,max,base,modules}`（唯一口径：逐单位走 ship.js `oreCapPartsOf`）。 */
-    orePool(side) {
-      return cargoTotalFor(side, 'ore');
+    orePool(side) {      return cargoTotalFor(side, 'ore');
     },
     moduleTargetList,
     moduleTargetLocked, // ★ “激活锁定中”的唯一判据（UI 用：显示 已锁定 / 下次生效）
@@ -3732,6 +4259,23 @@ export function createBattle(preset) {
     disableModule,
     moduleEffective, // 状态型模块“当前是否生效”的唯一判据（UI 用；非状态型返回 null）
     moduleGateMet, // ★ 触发门控（`hp_below_activate`）“当前是否满足”的唯一判据（UI 用；非门控型返回 null）
+    /** ★ **装载器模块「当前在装货物」的唯一只读判据**（UI 用：模块行显示「装载中 已推进/需求」）。
+     *  · 返回 `{ cargoId, tons, elapsed, need, shipId }`（`elapsed`/`need` 单位＝**tick**，
+     *    秒数换算由 UI 调 `core/tick.js formatTickSeconds`，**UI 不自算**进度/时长）；
+     *  · 非装载器 / 当前未在装 ⇒ **返回 null**（判据＝引擎内部权威记录 `inst._load`，只读快照，
+     *    不暴露任何内部对象引用 ⇒ 外部改不到引擎状态）。 */
+    cargoLoadingOf(inst) {
+      const ld = inst && inst._load;
+      if (!ld || !ld.cargo) return null;
+      const by = ld.cargo._loadBy;
+      return {
+        cargoId: ld.cargo.id,
+        tons: Math.max(0, ld.cargo.tons || 0),
+        elapsed: Math.max(0, ld.elapsed | 0),
+        need: Math.max(0, ld.need | 0),
+        shipId: by && by.ship ? by.ship.id : null,
+      };
+    },
     moduleUndeactivatable: isUndeactivatable, // ★「不可停用」标签的唯一判据（UI 用：开关灰显 + 悬停说明；引擎侧由 disableModule 拒绝）
     targetableBy: (ship, u, kind) => targetAllowed(ship, u, kind), // ★ 目标可选口径（唯一）：潜行 + role 分离（「可选战斗单位」＝存活且未被潜行屏蔽）
     //   （`kind` ＝ 候选来源选择器桶 'self'|'enemy'|'ally'|'any'；缺省/2 参调用按 'enemy' 对敌语义判定，
@@ -3758,14 +4302,31 @@ export function createBattle(preset) {
  *              模块等级钳制到 [1, moduleMaxLevel]；**超出该等级槽位数的部分截断**（槽位口径＝
  *              `resolveShipAtLevel(type, level).slots`，与建单位后的 `ship.slots` 完全一致）
  * 星区（战斗场景）数据（`SectorCfg`，与编队**同级**传入，随编队一起规范化）：
- *   { sector: { name:string（用户自定义名称·原样显示、不做 i18n）, oreReserve:number（矿物储量·非负整数） } }
- *   · 缺省（未传/字段缺失）→ `data/sector.js SECTOR_DEFAULTS`（缺省名称＝空串、缺省储量＝占位值）；
- *   · 钳制口径唯一＝`normalizeSector()`：名称去空白/截断、储量**非负整数**（负数→0、小数→向下取整、非数值→0）；
+ *   { sector: { name:string（用户自定义名称·原样显示、不做 i18n）, oreReserve:number（矿物储量·非负整数）,
+ *               cargos?: [CargoSpec]（星区**货物设定项**，本轮新增；缺省＝空数组） } }
+ *   · 缺省（未传/字段缺失）→ `data/sector.js SECTOR_DEFAULTS`（缺省名称＝空串、缺省储量＝占位值、
+ *     缺省货物＝空数组）；字段名/类型定义/钳制上限登记在 `data/cargo.js`（**一类货物一个文件**，
+ *     定义在 `data/cargos/*.js`、注册表与等级解析在 `data/cargos/index.js`），引擎不硬编码；
+ *   · 钳制口径唯一＝`normalizeSector()`：名称去空白/截断、储量**非负整数**（负数→0、小数→向下取整、非数值→0）、
+ *     货物逐项走 `normalizeSectorCargos()`；
  *   · 战斗实例上的**只读读取口径**＝`battle.sector`（`{name, oreReserve（剩余）, oreReserveInit（初始）,
- *     cd（星区侧模块冷却剩余：模块 id → ticks，只含冷却中者）}`）；**UI 只读、不自算**。
+ *     cd（星区侧模块冷却剩余：模块 id → ticks，只含冷却中者）,
+ *     cargos（货物实体：含派生字段 queued/queueIndex）, cargoQueue（队列 id 有序副本）}`）；
+ *     **UI 只读、不自算**；队列切换的**唯一接口**＝`battle.toggleCargoQueue(id)`。
+ * 货物设定项（`CargoSpec`，编队界面提交的**原始设定**；逐个字段可省，省则取该类型定义的值）：
+ *   { templateId?:string（货物类型 id＝`data/cargos/CARGOS` 的键；未知 → 丢弃并记 warning）,
+ *     count?:number（**数量**：该项展开成的**独立实例**个数，1..CARGO_LIMITS.maxCountPerEntry）,
+ *     name?:string（自定义名称·原样显示、不做 i18n；空串＝显示类型名）,
+ *     tons?:number（吨位·非负整数，默认 5t）, level?:number（等级·≥1 整数，钳到该类型 `maxLevel`） }
+ *   ★ **类型 id / 装载时间 / 加成系数不可由入参覆写**（一律随所选类型与等级解析而来）。
+ * 货物**实例**（规范化后的只读形态）：{ id（`cargo-<顺序号>`，确定性、可复现）, templateId, nameKey, name,
+ *   type（类型 id）, colorKey（类型色＝CSS 变量名）, tons, loadTicks, level, bonus }
+ *   ＋ 只读快照上派生的 { queued:boolean, queueIndex:number（1 起，未入队＝0） }。
  * 返回值（`normalizeFormation`）：{ allies:[ShipCfg], enemies:[ShipCfg], sector:SectorCfg, warnings:[Warning] }
- *   Warning = { side:'ally'|'enemy', index:number, code:string, ...细节 }
+ *   Warning = { side:'ally'|'enemy'|'sector', index:number, code:string, ...细节 }
  *   code ∈ unknownType | levelClamped | unknownModule | moduleLevelClamped | slotOverflow
+ *          | cargoInvalid | cargoUnknownTemplate | cargoCountClamped | cargoClamped | cargoOverflow
+ *          （后五者 `side` 恒为 `'sector'`、`index` ＝ 该设定项在 `sector.cargos` 中的下标）
  * 返回值（`startBattle`）：{ ok:boolean, error:null|'noUnits', battle:Battle|null,
  *                           formation:{allies,enemies,sector}, warnings:[Warning] }
  *   · `ok:false`（error='noUnits'：任一方为空）→ **不创建战斗**（避免“空编队瞬间结算”）
@@ -3777,21 +4338,122 @@ export function createBattle(preset) {
  *   if (r.ok) { r.battle.start(); renderStage(r.battle); } */
 
 /** ★ 星区（战斗场景）数据的**唯一规范化（钳制）口径**（纯函数，不改入参）：
- *  `{ name, oreReserve }` ——
+ *  `{ name, oreReserve, cargos }` ——
  *   · `name`      用户自定义名称：取字符串、**去首尾空白**、超长截断（40 字符）；缺省/`null` → `SECTOR_DEFAULTS.name`
  *                 （空串＝无名称 ⇒ 战斗屏/结算不显示名称前缀）。**不做 i18n**：显示时原样输出。
  *   · `oreReserve` 矿物储量：**非负整数**（负数 → 0；小数 → 向下取整；非数值 → 0）；
  *                 缺省/`null`/空串 → `SECTOR_DEFAULTS.oreReserve`（占位缺省值，登记在 `data/sector.js`）。
- *  数值一律来自 `data/sector.js`，引擎不硬编码。 */
-export function normalizeSector(raw) {
+ *   · `cargos`    星区**货物实体**：逐项走 `normalizeSectorCargos`（校验/覆写/钳制/顺序编号）；
+ *                 缺省 → `SECTOR_DEFAULTS.cargos`（空数组 ⇒ 星区货物栏整区块隐藏）。
+ *  `warnings` 可选：若传入数组，货物侧的非法/钳制项会**追加**进去（体例同 `normalizeFormation` 的 warnings，
+ *   条目的 `side` 一律 `'sector'`、`index` ＝ 该设定项在 `cargos` 数组中的下标）。
+ *  数值一律来自 `data/sector.js` / `data/cargo.js`，引擎不硬编码。 */
+export function normalizeSector(raw, warnings) {
   const s = raw && typeof raw === 'object' ? raw : {};
   const nameRaw = s.name == null ? SECTOR_DEFAULTS.name : String(s.name);
   const name = nameRaw.trim().slice(0, 40);
   const oreRaw = s.oreReserve;
-  if (oreRaw == null || oreRaw === '') return { name, oreReserve: SECTOR_DEFAULTS.oreReserve };
-  const n = Number(oreRaw);
-  const oreReserve = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
-  return { name, oreReserve };
+  let oreReserve;
+  if (oreRaw == null || oreRaw === '') {
+    oreReserve = SECTOR_DEFAULTS.oreReserve;
+  } else {
+    const n = Number(oreRaw);
+    oreReserve = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  }
+  const cargos = normalizeSectorCargos(s.cargos == null ? SECTOR_DEFAULTS.cargos : s.cargos, warnings);
+  return { name, oreReserve, cargos };
+}
+
+/** ★ 星区**货物列表**的唯一规范化（钳制）口径（纯函数，不改入参；非法项**丢弃**并记 warning）：
+ *  · 输入＝编队界面提交的**设定项**数组，每项可含
+ *    `{ templateId, count, name, tons, level }`（未给字段取**该类型定义**的对应值）；
+ *    ★ **类型 id / 装载时间 / 加成系数不可由入参覆写**：`type`、`loadTicks`、`bonus` 一律来自
+ *    货物定义（随等级解析），避免与「类型色由类型决定」的口径冲突；
+ *  · `templateId` 缺省/空串 → `CARGO_DEFAULTS.templateId`（＝`none`）；**非空但未登记 → 丢弃 +
+ *    `cargoUnknownTemplate`**（与编队未知船型 `unknownType` 同体例）；
+ *  · `count`（**数量**）＝该项**展开成的实例个数**（1..`CARGO_LIMITS.maxCountPerEntry`；越界钳制 + `cargoCountClamped`）
+ *    —— 每个实例**独立成体**（货物**不是数值累积**）；
+ *  · **实例 id ＝ `cargo-<顺序号>`**（顺序号＝**规范化后的位置**、从 1 起）⇒ **确定性、可复现**、
+ *    与列表顺序一一对应（UI 预检与引擎开战各自规范化同一份输入 ⇒ id 完全一致；**不使用随机数/时间戳**）；
+ *  · `level` 钳到 `[1, cargoMaxLevel(定义)]`（等级上限由**货物定义自身的 `maxLevel`** 决定，
+ *    与模块/船型同一等级模型），并调用**等级解析唯一口径** `data/cargos/index.js resolveCargoAtLevel`
+ *    **在实例创建时解析一次**（此后实例字段固定，不再随等级表变化）；
+ *  · 逐字段：`name` **去首尾空白并截断 40 字符**（空串 ⇒ 显示回退类型名的 i18n 词条 `nameKey`）；
+ *    `tons` **非负整数**（可覆写；非法/越界 → 回退该等级解析值 / 钳到边界，记 `cargoClamped`）；
+ *  · 实例总数上限 `CARGO_LIMITS.maxTotal`：超出部分**截断**并记 `cargoOverflow`。
+ *  ★ 货物是**星区侧状态**：本函数是纯数据规范化，与战斗数值链无关（**Pass1 零数值变化**）。 */
+export function normalizeSectorCargos(list, warnings) {
+  const out = [];
+  const warn = (w) => { if (Array.isArray(warnings)) warnings.push(w); };
+  if (!Array.isArray(list)) return out;
+  /** 单字段数值钳制：非法 → 回退定义值；越界 → 钳到边界；**发生任何变化都记 `cargoClamped`** */
+  const num = (index, key, want, min, max, def) => {
+    const n = Number(want);
+    let got;
+    if (!Number.isFinite(n)) got = def;
+    else got = Math.min(max, Math.max(min, Math.floor(n)));
+    if (got !== n) {
+      warn({ side: 'sector', index, code: 'cargoClamped', field: key, from: Number.isFinite(n) ? n : null, to: got });
+    }
+    return got;
+  };
+  list.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object') {
+      warn({ side: 'sector', index, code: 'cargoInvalid' });
+      return;
+    }
+    const tplId = raw.templateId == null || raw.templateId === '' ? CARGO_DEFAULTS.templateId : String(raw.templateId);
+    const def = getCargo(tplId);
+    if (!def) {
+      warn({ side: 'sector', index, code: 'cargoUnknownTemplate', templateId: tplId });
+      return;
+    }
+    // 等级：钳到 [1, 该定义的 maxLevel]（上限唯一来源＝定义自身；越界/非数值记 warning）
+    const level = num(
+      index,
+      'level',
+      raw.level == null || raw.level === '' ? CARGO_DEFAULTS.level : raw.level,
+      1,
+      cargoMaxLevel(def),
+      CARGO_DEFAULTS.level
+    );
+    // ★ 等级解析唯一口径：**实例创建时解析一次**（与模块/船型的 levels 深合并完全同构）
+    const cfg = resolveCargoAtLevel(def, level);
+    // 定义缺项时的兜底（数值统一占位：5t / 300t / 系数 1）
+    const baseTons = cfg.tons == null ? CARGO_DEFAULTS.tons : cfg.tons;
+    const baseLoadTicks = cfg.loadTicks == null ? CARGO_DEFAULTS.loadTicks : cfg.loadTicks;
+    const baseBonus = cfg.bonus == null ? CARGO_DEFAULTS.bonus : cfg.bonus;
+    // 数量：展开为 N 个**独立实例**（越界钳制并记 warning）
+    const wantCount = Number(raw.count == null || raw.count === '' ? 1 : raw.count);
+    let count = Number.isFinite(wantCount) ? Math.floor(wantCount) : 1;
+    if (count < 1) count = 1;
+    if (count > CARGO_LIMITS.maxCountPerEntry) count = CARGO_LIMITS.maxCountPerEntry;
+    if (count !== wantCount) {
+      warn({ side: 'sector', index, code: 'cargoCountClamped', from: Number.isFinite(wantCount) ? wantCount : null, to: count });
+    }
+    // 可覆写字段：名称（用户字符串）与吨位
+    const name = String(raw.name == null ? CARGO_DEFAULTS.name : raw.name).trim().slice(0, CARGO_LIMITS.nameLen);
+    const tons = num(index, 'tons', raw.tons == null || raw.tons === '' ? baseTons : raw.tons, 0, CARGO_LIMITS.maxTons, baseTons);
+    for (let k = 0; k < count; k++) {
+      if (out.length >= CARGO_LIMITS.maxTotal) {
+        warn({ side: 'sector', index, code: 'cargoOverflow', max: CARGO_LIMITS.maxTotal });
+        return; // 总数封顶：其余项（含本项剩余实例）一律截断
+      }
+      out.push({
+        id: cargoInstanceId(out.length + 1), // ★ 顺序号 = 规范化后的位置（1 起）⇒ 确定性、可复现
+        templateId: def.id,                  // 类型 id（＝定义 id）
+        nameKey: cfg.nameKey,                // 类型名的 i18n 键（`name` 为空串时 UI 回退用它）
+        name,
+        type: cfg.type,                      // ★ 类型 id（由所选类型决定，不可覆写）
+        colorKey: cfg.colorKey,              // ★ 类型色来源＝CSS 变量名（如 `--cat-attack`）
+        tons,
+        loadTicks: baseLoadTicks,            // 随等级解析（不可覆写；唯一换算见 `core/tick.js`）
+        level: cfg.level,                    // 生效等级（解析器已钳到 [1, maxLevel]）
+        bonus: baseBonus,                    // 随等级解析（不可覆写；本轮仅数据承载）
+      });
+    }
+  });
+  return out;
 }
 
 /** ★ 编队规范化（纯函数）：校验 + 等级钳制 + 模块合法性 + 槽位截断；UI 预检与引擎开战共用。 */
@@ -3843,8 +4505,9 @@ export function normalizeFormation(formation = {}) {
   return {
     allies: side(formation.allies ?? formation.ally, 'ally'),
     enemies: side(formation.enemies ?? formation.enemy, 'enemy'),
-    // ★ 星区（战斗场景）随编队一并规范化（缺省值 + 非负整数钳制，唯一口径 normalizeSector）
-    sector: normalizeSector(formation.sector),
+    // ★ 星区（战斗场景）随编队一并规范化（缺省值 + 非负整数钳制，唯一口径 normalizeSector；
+    //   货物侧非法/钳制项把 warning 一并追加进本函数的 warnings，`side` 恒为 'sector'）
+    sector: normalizeSector(formation.sector, warnings),
     warnings,
   };
 }

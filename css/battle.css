@@ -138,6 +138,42 @@
 .drill-sector-ore { flex: 0 1 110px; min-width: 80px; }
 /* 非法取值（非负整数之外的输入）：红框提示，且「开战」被禁用 */
 .drill-sector-ore.invalid { border-color: rgba(255, 93, 108, 0.75); }
+/* ---------- 星区设定·**货物设定**（编队界面；模板＝类型：None + 6 种零件） ----------
+ *  · 类型**由所选模板决定、不可编辑** ⇒ 以一个**类型芯片**（文字色/边框色＝类型色
+ *    `--chip-color`，由 UI 从货物 `colorKey` 变量名写入）呈现，与战斗屏货物芯片同一套配色；
+ *  · 名称/吨位/等级**可编辑**（等级受该类型 `maxLevel` 限制）；**装载时间不可编辑**（随等级解析），
+ *    以只读小字「装载 15s」呈现（秒换算走 `core/tick.js` 唯一口径）。 */
+.drill-cargo { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.drill-cargo-title { color: var(--cat-transport); }
+.drill-cargo-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.drill-cargo-tpl { flex: 0 1 150px; min-width: 110px; }
+.drill-cargo-count { flex: 0 1 76px; min-width: 58px; }
+.drill-cargo-list { display: flex; flex-direction: column; gap: 3px; }
+.drill-cargo-item { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.drill-cargo-name { flex: 1 1 130px; min-width: 0; }
+/* 类型芯片（只读；边框/文字色＝该类型代表色 --chip-color）
+ * ★ 字号/紧凑度与战斗屏货物芯片、目标选择器按钮**同一来源**（`var(--chip-font-size)`）。 */
+.drill-cargo-type {
+  flex: 0 1 auto;
+  font-size: var(--chip-font-size);
+  line-height: 1.5;
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--chip-color, var(--border));
+  background: var(--panel);
+  color: var(--chip-color, var(--text-dim));
+  white-space: nowrap;
+}
+.drill-cargo-tons { flex: 0 1 84px; min-width: 60px; }
+.drill-cargo-level { flex: 0 1 76px; min-width: 56px; }
+/* 装载时间：只读派生值（随等级解析；秒换算唯一口径 core/tick.js） */
+.drill-cargo-load { flex: 0 1 auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+/* 非法取值（吨位/等级/数量非整数）：红框提示，且「开战」被禁用（与星区储量同一处置） */
+.drill-cargo-item.tons-invalid .drill-cargo-tons,
+.drill-cargo-item.level-invalid .drill-cargo-level,
+.drill-cargo-count.invalid { border-color: rgba(255, 93, 108, 0.75); }
+.drill-cargo-empty { font-size: 11px; color: var(--text-dim); }
+.drill-cargo-empty.hidden { display: none; }
 .drill-actions { display: flex; gap: 10px; justify-content: center; margin-top: 4px; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
@@ -296,12 +332,12 @@
   font-weight: 600;
   line-height: 1;
 }
-.module-chip.attack { color: #ff9da6; border-color: rgba(255, 93, 108, 0.6); }
-.module-chip.shield { color: #9adcff; border-color: rgba(79, 195, 247, 0.6); }
-.module-chip.function { color: #7ee29a; border-color: rgba(126, 226, 154, 0.6); } /* 功能＝绿（与战报模块名绿同族） */
-.module-chip.transport { color: #ffe9a8; border-color: rgba(255, 224, 102, 0.55); }
-.module-chip.mining { color: var(--cat-mining); border-color: rgba(176, 107, 255, 0.55); } /* ★ 采矿＝紫（--cat-mining，与矿渣系图标同色） */
-.module-chip.drone { color: #ffd1a8; border-color: rgba(251, 146, 60, 0.55); }
+.module-chip.attack { color: var(--cat-attack); border-color: rgba(255, 93, 108, 0.6); }
+.module-chip.shield { color: var(--cat-shield); border-color: rgba(79, 195, 247, 0.6); }
+.module-chip.function { color: var(--cat-function); border-color: rgba(126, 226, 154, 0.6); } /* 功能＝绿（与战报模块名绿同族） */
+.module-chip.transport { color: var(--cat-transport); border-color: rgba(255, 210, 74, 0.55); } /* 运输＝亮黄（货物类＝运输类，「货运蓝图」共用） */
+.module-chip.mining { color: var(--cat-mining); border-color: rgba(176, 107, 255, 0.55); } /* 采矿＝紫（与矿渣系图标同色） */
+.module-chip.drone { color: var(--cat-drone); border-color: rgba(176, 122, 74, 0.6); } /* ★ 无人机＝棕（本轮由原 #ffd1a8 改为棕色，「机骸碎片」共用） */
 
 /* 冷却 / 就绪 / 生效态 */
 .module-chip.cooling { opacity: 0.72; }
@@ -448,6 +484,24 @@
   border-bottom: 1px solid var(--border);
 }
 .detail-coeffs.hidden { display: none; }
+/* ★ 「装载货物」栏（详情页 · **单位系数区块下方**）：**标题单独一行 + 货物芯片网格另起一行**
+   （与星区栏「标题一行、芯片一行」同一体例）
+   · 芯片含两类：**已入舱**（可点击 ⇒ 返还星区）与**在装/锁定中**（`.cargo-chip.locked`：置灰 + 虚线、
+     点击无效、悬停显示剩余时长）；
+   · **两类皆无 ⇒ 整栏隐藏**（唯一规则）；芯片行 `flex-wrap` ⇒ 窄栏内换行、不溢出；
+   · 外观体例对齐「单位系数」块（同字号小标题 + 底部细分割线）。 */
+.detail-cargos {
+  display: flex;
+  flex-direction: column; /* ★ 标题与芯片**各占一行** */
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-cargos.hidden { display: none; }
+.detail-cargos-label { font-size: 11px; color: var(--text-dim); letter-spacing: 1px; white-space: nowrap; }
+.detail-cargos-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .coeff-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0; }
 /* 「其它系数」单独一行：允许其数值文本在行内换行（预留项未来可能较长），仍不溢出面板 */
 .coeff-line-extra .coeff-item { white-space: normal; flex-wrap: wrap; }
@@ -509,7 +563,7 @@
   margin-top: 1px;
 }
 .target-chk {
-  font-size: 11px;
+  font-size: var(--chip-font-size); /* ★ 与星区栏货物芯片**同一字号来源**（`css/base.css :root`） */
   padding: 1px 7px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -616,15 +670,109 @@
 }
 .mod-status { margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
 
-/* ★ 星区资源栏（指挥栏**下方**独立一栏：星区名 + 矿物储量 剩余/初始）
+/* ★ 星区资源栏（指挥栏**下方**独立一栏）——最终 DOM 顺序：
+ *     〔栏目标题 `.zone-label`〕→〔横向行 `.sector-line`：**星区冷却组 ＋ 星区货物组 并排**〕
+ *     →〔矿物储量条 `command-alliance-row.is-ore`（整行，保持现状）〕
  *   行体例**完全复用**指挥栏共享条（`command-alliance-row/fill/num` + `is-ore` 配色），
  *   仅外框沿用矿物绿的浅色描边以区分于指挥栏（暖黄）。 */
 .battle-zone.sector { border-color: rgba(126, 226, 154, 0.28); }
-/* ★ 星区资源栏内「星区冷却」小节：位于**储量条上方**、与储量条**独立成组**
- *   —— 仅极小间距 + 组内标题（复用既有 `.zone-label` 小标体例，不自造重型样式）；
- *   行体例仍复用 `command-alliance-row`（无进度条，仅「模块名 + 剩余冷却」）。 */
-.sector-cd-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 3px; }
+/* ★ 星区资源栏内的**横向行**：冷却组与货物组**并排**（布局体例与详情页「目标选择器」一致：
+ *   容器 `inline-flex/flex + flex-wrap:wrap + gap`，组内为**紧凑小芯片**网格、可换行）。
+ *   · 宽度策略：**冷却组按内容占宽**（`flex:0 1 auto`），**货物组优先吃剩余宽度**
+ *     （`flex:1 1 60%` + `min-width:0`）⇒ 货物多时不会被冷却组挤掉、也不会溢出；
+ *   · 窄屏：`flex-wrap:wrap` 自动换行；`max-width:900px`（既有断点）下两组各占**一整行**（纵向堆叠）。 */
+.sector-line { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 10px; }
+/* 「星区冷却」组：小节标题 + 各模块一行（仅冷却中显示，全就绪 → 整组隐藏） */
+.sector-cd-group { display: flex; flex-direction: column; gap: 2px; flex: 0 1 auto; min-width: 0; }
 .sector-cd-group.hidden { display: none; }
+/* ★ 「星区货物」组：**小节标题单独一行 + 货物芯片单独一行**（组内**纵向两行**；芯片行内仍可换行）
+ *   —— 与「星区冷却」组**并排**（同一 `.sector-line` 内），无货物 → 整组隐藏。
+ *   行结构：`.sector-cargo-group`（纵向：标题 → 芯片行）＞ `.sector-cargo-chips`（横向网格、可换行）。 */
+.sector-cargo-group {
+  display: flex;
+  flex-direction: column; /* ★ 标题与芯片**各占一行** */
+  align-items: flex-start;
+  gap: 4px;
+  flex: 1 1 60%;
+  min-width: 0;
+}
+.sector-cargo-group.hidden { display: none; }
+/* 货物芯片行：芯片横向排列、可换行（体例同详情页「目标选择器」网格） */
+.sector-cargo-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+/* ★ 货物芯片：**边框色＝类型色**（`--chip-color`，由 UI 从货物 `colorKey` 变量名写入；
+ *   默认类型 None ⇒ 灰 `--cat-none`）。字号**与目标选择器芯片 `.target-chk` 同一来源**
+ *   （`var(--chip-font-size)`）、6px 圆角 / 1px 边框 / 面板底色 / 水平内距 7px 一致，
+ *   但**边框默认即有颜色**（不只在选中时才着色）。
+ *   ★ **芯片 DOM 顺序（六段独立元素）**：
+ *     `[.cargo-chip-seq 序号/占位] [.cargo-chip-name 名称] [.cargo-chip-bonus 加成%]
+ *      [.cargo-chip-lv 等级] [.cargo-chip-meta 吨位·装载秒] [.cargo-chip-pad 末尾填充]`
+ *     · 段间分隔符由 CSS `::before` 提供（语言无关标点）⇒ **某段隐藏时其分隔符自动消失**；
+ *     · `.cargo-chip-pad` 与 `.cargo-chip-seq` **共用同一宽度口径 `--cargo-seq-w`**（改宽只改一处），
+ *       一左一右等宽对称 ⇒ 「名称+内容」在芯片内视觉居中、左右留白对称。
+ *   · **芯片高度固定 32px**（`height` + `inline-flex` + `align-items:center`）⇒ 内容**垂直居中且不裁切**；
+ *     **文字大小不变**（仍读 `--chip-font-size`，**不随高度调整**；本轮该变量 11px → **13px**，
+ *     三处同源芯片一并变，高度口径不变）。
+ *   · 点击＝加入优先队列、再次点击＝移出（引擎唯一切换接口 `battle.toggleCargoQueue`）；
+ *   · **选中态 `.queued`＝边缘发光 + 内部填充**（都由类型色派生：`color-mix` 取半透明；
+ *     不支持 `color-mix` 的旧浏览器自动退化为“仅有类型色边框/文字”，不报错、不破版）。
+ *   · **序号读引擎派生的 `queueIndex`**（UI 只读、不自算；序号列**定宽** ⇒ 入队/取消**不跳动**）。 */
+.cargo-chip {
+  --cargo-seq-w: 2.2ch; /* ★ 序号列与末尾填充**共用的宽度口径**（2 位数字宽；改宽只改这一处） */
+  font: inherit; /* 芯片是 <button>：显式继承应用字体（与 div 芯片体例一致） */
+  font-size: var(--chip-font-size); /* ★ 与 `.target-chk`/`.drill-cargo-type` **同一字号来源**（本轮 13px） */
+  font-variant-numeric: tabular-nums; /* 数字等宽（序号/吨位/秒数对齐，沿用本项目既有体例） */
+  display: inline-flex;   /* 分段横向排列 + 垂直居中 */
+  align-items: center;    /* 内容垂直居中（固定高度下不裁切） */
+  height: 32px;           /* ★ 芯片高度固定 32px（全局 `box-sizing:border-box` ⇒ 含 1px 边框） */
+  padding: 0 7px;         /* 垂直留白由固定高度决定；水平内距与 `.target-chk` 同为 7px */
+  border-radius: 6px;
+  border: 1px solid var(--chip-color, var(--border));
+  background: var(--panel);
+  color: var(--chip-color, var(--text-dim));
+  cursor: pointer;
+  white-space: nowrap;    /* 芯片内不换行（过长走省略号，见下） */
+  max-width: 100%;
+}
+.cargo-chip:hover { border-color: var(--accent); }
+/* ★ **隐藏态**（`.hidden`）：**必须显式声明** —— 本项目**没有**全局 `.hidden{display:none}` 通用规则，
+ *   每个可隐藏元素都在本文件各自写一条（如 `.battle-zone.hidden` / `.detail-cargos.hidden` / `.bar.hidden`）；
+ *   而 `.cargo-chip` 自身带 `display:inline-flex` ⇒ 缺了这条，`classList.add('hidden')` **完全不生效**
+ *   （芯片不会消失）。**星区栏「货物被装载走 ⇒ 芯片消失」与详情栏「不在本清单 ⇒ 芯片隐藏」都依赖它。** */
+.cargo-chip.hidden { display: none; }
+/* 序号列 & 末尾填充：**同宽**（同一变量来源）、**不参与收缩** ⇒ 定宽留白无论入队与否都恒定
+ * （序号列右对齐：1 位/2 位序号同宽，入队/取消时芯片宽度与文字位置**不跳动**）。 */
+.cargo-chip-seq,
+.cargo-chip-pad { display: inline-block; flex: 0 0 auto; width: var(--cargo-seq-w); }
+.cargo-chip-seq { text-align: right; margin-right: 4px; opacity: 0.85; }
+.cargo-chip-pad { margin-left: 4px; } /* 与序号列的 4px 间距**对称** */
+/* 名称 / 吨位·装载秒数：**可收缩 + 省略号**（文字过长时在段内收尾，不撑破芯片、不溢出） */
+.cargo-chip-name,
+.cargo-chip-meta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 加成 / 等级：内容很短，**不收缩**（数字/百分号保持完整）；颜色沿用芯片正文，不额外强调 */
+.cargo-chip-bonus,
+.cargo-chip-lv { display: inline-block; flex: 0 0 auto; color: inherit; }
+/* 段间分隔（最短标点，语言无关）：**只在对应段显示时出现**
+ * ⇒ 加成隐藏（bonus=1）/ 等级隐藏（Lv1）时，其分隔符一并消失，不会留下孤立的 `·`。 */
+.cargo-chip-bonus::before,
+.cargo-chip-lv::before,
+.cargo-chip-meta::before { content: '·'; margin-right: 3px; opacity: 0.7; }
+.cargo-chip-bonus.hidden,
+.cargo-chip-lv.hidden { display: none; }
+/* ★ **装载中**（.locked，引擎派生 `locked`）：置灰 + **虚线边框**（语言无关的“锁定”标记）+
+ *   `not-allowed` 光标 ⇒ 一眼看出“这件正被装载器装走”；此时**点击入队无效**（引擎 `toggleCargoQueue`
+ *   直接拒绝，UI 不做任何自算）——样式只表达状态，判据一律来自引擎只读口径。 */
+.cargo-chip.locked {
+  opacity: 0.5;
+  border-style: dashed;
+  cursor: not-allowed;
+}
+.cargo-chip.locked:hover { border-color: var(--chip-color, var(--border)); } /* 锁定中不响应悬停高亮 */
+.cargo-chip.queued {
+  border-color: var(--chip-color, var(--accent));
+  color: #ffffff;
+  background: color-mix(in srgb, var(--chip-color, var(--accent)) 26%, transparent); /* 内部填充 */
+  box-shadow: 0 0 6px color-mix(in srgb, var(--chip-color, var(--accent)) 55%, transparent); /* 边缘发光 */
+}
 /* 「不可停用」标签（`undeactivatable`）：启停开关灰显（引擎侧同样拒绝停用请求） */
 .btn.tiny.locked,
 .btn.tiny:disabled.locked { opacity: 0.4; cursor: not-allowed; }
@@ -786,6 +934,10 @@
   .zone-units { gap: 6px; }
   .drill-grid { grid-template-columns: 1fr; } /* 编队两列在窄屏改为上下堆叠 */
   .bar { grid-template-columns: 28px 1fr 40px; }
+  /* ★ 星区栏的横向行在窄屏改为**纵向堆叠**：冷却组 / 货物组 各占一整行（芯片仍在组内自动换行，
+     不裁切、不溢出）；储量条本就整行，位置不变。 */
+  .sector-cd-group,
+  .sector-cargo-group { flex: 1 1 100%; }
 }
 @media (max-width: 640px) {
   .unit-card { width: 132px; }

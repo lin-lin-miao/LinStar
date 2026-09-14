@@ -18,18 +18,28 @@
  *     一旦在界面里选择即写入本字段（覆盖船型默认）。战斗界面据此决定显示在【战斗单位栏】或【后勤单位栏】。
  *   · `modules` 模块数组（超槽位由引擎规范化时截断，并在预检中先行提示）。
  *
- * ★ 星区（战斗场景）设定：`{ sector: { name, oreReserve } }` **与双方编队同级**随开战入口一起提交
+ * ★ 星区（战斗场景）设定：`{ sector: { name, oreReserve, cargos } }` **与双方编队同级**随开战入口一起提交
  *   （`getFormation()` / `onStart(formation)` / `normalizeFormation()` 同一条链）。
  *   · `name`      用户自定义名称：**原样提交、UI 不做 i18n**（战斗屏按引擎 `battle.sector` 原样显示）；
  *   · `oreReserve` 矿物储量：**输入格式校验＝非负整数**（本文件唯一自校验项；非法 → 提示 + 禁用「开战」），
  *     真实缺省/钳制仍由引擎唯一口径 `normalizeSector()` 负责（缺省值登记在 `data/sector.js`）。
+ *   · `cargos`    星区**货物设定项**数组：每项＝`{ templateId, name, tons, level }`
+ *     （**类型 id / 装载时间 / 加成系数不可提交**——一律随所选类型与等级解析而来，缺省/非法字段由引擎取定义值或钳制）；
+ *     · 交互＝**类型（None + 6 种零件）+ 数量批量添加**（数量展开为**独立实例**，与引擎口径一致：一个货物＝一个实体），
+ *       逐条可改**名称/吨位/等级**；**类型由所选类型决定、不可编辑**（与“边框色＝类型色”口径一致）；
+ *       **装载时间不可编辑**（随等级解析，界面以只读小字「装载 15s」呈现，秒换算走唯一口径 `core/tick.js`）；
+ *     · 校验：**吨位＝非负整数、等级＝1..该类型 `maxLevel` 的整数**（非法 → 红框提示 + 禁用「开战」）；
+ *       **数量＝≥1 整数**（非法只禁用「添加货物」按钮 —— 它不是提交数据，不该拦开战）；
+ *     · 上限一律读 `data/cargo.js CARGO_LIMITS` / `data/cargos/index.js cargoMaxLevel`（**与引擎同一来源**，不硬编码数值）。
  */
 import { el } from '../core/utils.js';
 import { i18n } from '../i18n/index.js';
 import { SHIPS, SHIP_IDS, shipLevels, resolveShipAtLevel } from '../data/ships.js';
 import { MODULES } from '../data/modules.js';
 import { SECTOR_DEFAULTS } from '../data/sector.js';
+import { CARGO_LIMITS, CARGO_IDS, getCargo, cargoMaxLevel, resolveCargoAtLevel } from '../data/cargo.js';
 import { moduleMaxLevel } from '../entities/module.js';
+import { formatTickSeconds } from '../core/tick.js';
 import { normalizeFormation } from '../systems/battle.js';
 
 /** 可被玩家选装的模块清单（排除内部模块如 rocketWarhead，其仅随召唤携带；与 modules.js 的 picker 约定一致） */
@@ -46,6 +56,12 @@ let enemyShips = DEFAULT_SHIPS(); // 敌方编队（编辑态）
  * 缺省值取自 `data/sector.js SECTOR_DEFAULTS`（数值不在本文件硬编码）。 */
 let sectorName = SECTOR_DEFAULTS.name;
 let sectorOreText = String(SECTOR_DEFAULTS.oreReserve);
+/* 星区货物编辑态：每项＝**一个货物实例**（与引擎口径一致：货物**不是数值累积**）。
+ * · `count` 只在「添加」时使用（批量展开为多条），**不进入编辑态/提交结构**；
+ * · `tonsText`/`levelText` 存**输入框原文**（便于做整数校验；提交时转 Number，交给引擎钳制）；
+ * · **类型**（`templateId`）由所选类型决定、不可编辑；**装载时间/加成系数**不可编辑，
+ *   随等级解析（装载时间的秒数取自 `core/tick.js formatTickSeconds`，UI 不自算 tick→秒 公式）。 */
+let cargos = [];
 let host = null;                  // 挂载点（战斗屏的 stageArea）
 let hooks = { onStart: null, onExit: null };
 
@@ -78,15 +94,55 @@ function cloneShips(list) {
 }
 /** 星区数据 → 快照（随编队一并交给开战入口；钳制/缺省由引擎 `normalizeFormation` 统一处理） */
 function cloneSector() {
-  return { name: sectorName, oreReserve: oreReserveValid(sectorOreText) ? Number(sectorOreText.trim()) : null };
+  return {
+    name: sectorName,
+    oreReserve: oreReserveValid(sectorOreText) ? Number(sectorOreText.trim()) : null,
+    cargos: cloneCargos(),
+  };
 }
-/** ★ 矿物储量输入校验（唯一口径）：**非负整数**（纯数字；空串/小数/负号/其它字符 → 非法）。 */
+/** 星区货物编辑态 → 提交用的**设定项**数组（`sector.cargos` 的形状；缺省/非法字段交引擎兜底）。
+ *  · 只提交 `{ templateId, name, tons, level }` —— **类型 id / 装载时间 / 加成系数不可覆写**
+ *    （它们随所选类型与等级解析而来，引擎侧同样拒绝覆写）；
+ *  · `tons`/`level` 非法时提交 `null` ⇒ 引擎回退**该类型定义的对应值**（与星区储量的“非法即禁用开战”同一处置）；
+ *  · `count` **不提交**（添加时已展开为独立条目）。 */
+function cloneCargos() {
+  return cargos.map((c) => ({
+    templateId: c.templateId,
+    name: c.name,
+    tons: tonsValid(c.tonsText) ? Number(c.tonsText.trim()) : null,
+    level: levelValid(c) ? Number(c.levelText.trim()) : null,
+  }));
+}
+/** ★ 星区矿物储量输入校验（唯一口径）：**非负整数**（纯数字；空串/小数/负号/其它字符 → 非法）。 */
 function oreReserveValid(text) {
   return /^\d+$/.test(String(text == null ? '' : text).trim());
 }
+/** ★ 货物**吨位**输入校验：非负整数（与矿物储量同一体例） */
+function tonsValid(text) {
+  return /^\d+$/.test(String(text == null ? '' : text).trim());
+}
+/** 该货物编辑条目所选类型的最大等级（唯一口径＝`data/cargos/index.js cargoMaxLevel`） */
+function cargoMaxLevelOf(c) {
+  return cargoMaxLevel(c.templateId) || 1;
+}
+/** ★ 货物**等级**输入校验：1..该类型 `maxLevel` 的整数（上限随所选类型而变，故传整条编辑条目） */
+function levelValid(c) {
+  const t = String((c && c.levelText) == null ? '' : c.levelText).trim();
+  if (!/^[1-9]\d*$/.test(t)) return false;
+  return Number(t) <= cargoMaxLevelOf(c);
+}
+/** ★ 货物**数量**（批量添加用）输入校验：≥1 的正整数 */
+function cargoCountValid(text) {
+  return /^[1-9]\d*$/.test(String(text == null ? '' : text).trim());
+}
+/** 当前货物编辑态是否**全部合法**（吨位/等级）；非法 → 调用方禁用「开战」（与星区储量同一处置） */
+function cargosAllValid() {
+  return cargos.every((c) => tonsValid(c.tonsText) && levelValid(c));
+}
 /** 星区设定编辑行（名称输入框 + 矿物储量输入框 + 非法提示）：
  *  · 输入即写回编辑态；储量非法 → 就地提示「须为非负整数」并由调用方**禁用「开战」**（与预检告警同一处置）；
- *  · 不在输入时整屏重绘（避免丢焦点）：就地更新提示，并通过 `onValidityChange(ok)` 通知调用方刷新开战按钮。 */
+ *  · 不在输入时整屏重绘（避免丢焦点）：就地更新提示，并通过 `onValidityChange()` 通知调用方刷新开战按钮
+ *    （**无参回调**：调用方自行综合“星区储量 + 星区货物”的全部合法性后决定按钮状态）。 */
 function sectorBlock(onValidityChange) {
   const nameInput = el('input', {
     class: 'drill-sector-name',
@@ -109,7 +165,7 @@ function sectorBlock(onValidityChange) {
     oreErr.textContent = ok ? '' : i18n.t('battle.drill.sectorOreInvalid');
     oreErr.classList.toggle('hidden', ok);
     oreInput.classList.toggle('invalid', !ok);
-    if (typeof onValidityChange === 'function') onValidityChange(ok);
+    if (typeof onValidityChange === 'function') onValidityChange();
   };
   nameInput.addEventListener('input', () => { sectorName = nameInput.value; });
   oreInput.addEventListener('input', () => { sectorOreText = oreInput.value; syncOre(); });
@@ -124,6 +180,162 @@ function sectorBlock(onValidityChange) {
     ]),
     oreErr,
   ]);
+}
+
+/** ★ 星区设定·**货物设定**（类型＝None + 6 种零件；一货一文件，注册表 `data/cargos/index.js`）：
+ *  · **添加**：**类型**下拉（由注册表 `CARGO_IDS` / `getCargo().nameKey` **动态生成**，不硬编码任何货物）
+ *    + 数量输入 + 「添加货物」；数量＝**展开为 N 个独立条目**（一个货物＝一个实体，与引擎口径一致），
+ *    数量非法 → 红框 + 禁用「添加」；
+ *  · **逐条编辑**：名称（**默认取类型名**：留空即回退类型名，见下方 placeholder）/ 吨位 / 等级；
+ *    · **类型由所选类型决定、不可编辑** —— 以一个**类型芯片**呈现（文字色/边框色＝该类型代表色
+ *      `colorKey` 指向的 CSS 变量，UI 不硬编码色值），与战斗屏货物芯片同一套配色；
+ *    · **装载时间不可编辑**（随等级解析）：以只读小字「装载 15s」呈现，秒换算走**唯一口径**
+ *      `core/tick.js formatTickSeconds`（UI 不自算 tick→秒 公式）；等级变化即就地重算显示；
+ *  · **校验**：吨位＝非负整数、**等级＝1..该类型 `maxLevel` 的整数** —— 非法 → 该输入框红框 + 就地提示
+ *    + **禁用「开战」**（与星区储量同一处置体例）；数量非法只拦「添加」按钮（它不是提交数据）；
+ *  · **上限**：一次添加 ≤ `CARGO_LIMITS.maxCountPerEntry`、总数 ≤ `CARGO_LIMITS.maxTotal`
+ *    （**与引擎同一来源**；超出则不再添加，引擎侧另有等价的上限与截断告警）；
+ *  · 输入过程中**不整屏重绘**（避免丢焦点）：就地刷新提示与合法性，经 `onValidityChange()` 通知调用方。 */
+function cargoBlock(onValidityChange) {
+  // ★ 类型下拉：**动态取自货物注册表**（顺序＝`CARGO_IDS`，None 在前）
+  const tplSel = el(
+    'select',
+    { class: 'drill-cargo-tpl', 'aria-label': i18n.t('battle.drill.cargoTplLabel') },
+    CARGO_IDS.map((id) => el('option', { value: id, text: i18n.t(getCargo(id).nameKey) }))
+  );
+  let countText = '1';
+  const countInput = el('input', {
+    class: 'drill-cargo-count',
+    type: 'text',
+    inputmode: 'numeric',
+    'aria-label': i18n.t('battle.drill.cargoCountLabel'),
+  });
+  countInput.value = countText;
+  const addBtn = el('button', { class: 'btn small', text: i18n.t('battle.drill.cargoAdd') });
+  const errEl = el('div', { class: 'drill-warn-text hidden' });
+  const emptyEl = el('div', { class: 'drill-cargo-empty', text: i18n.t('battle.drill.cargoEmpty') });
+  const listEl = el('div', { class: 'drill-cargo-list' });
+
+  /** 汇总提示（数量/吨位/等级非法项）+ 通知调用方刷新「开战」可用性 */
+  const syncHint = () => {
+    const msgs = [];
+    if (!cargoCountValid(countText)) msgs.push(i18n.t('battle.drill.cargoCountInvalid'));
+    if (cargos.some((c) => !tonsValid(c.tonsText))) msgs.push(i18n.t('battle.drill.cargoTonsInvalid'));
+    if (cargos.some((c) => !levelValid(c))) {
+      // 等级上限随所选类型而变 ⇒ 文案带上当前上限（最严的一条：取最小上限，避免误导）
+      const maxes = cargos.filter((c) => !levelValid(c)).map((c) => cargoMaxLevelOf(c));
+      msgs.push(i18n.t('battle.drill.cargoLevelInvalid', { max: Math.min(...maxes) }));
+    }
+    errEl.textContent = msgs.join(' / ');
+    errEl.classList.toggle('hidden', !msgs.length);
+    if (typeof onValidityChange === 'function') onValidityChange();
+  };
+  const syncCount = () => {
+    const ok = cargoCountValid(countText);
+    countInput.classList.toggle('invalid', !ok);
+    addBtn.disabled = !ok || cargos.length >= CARGO_LIMITS.maxTotal;
+    syncHint();
+  };
+
+  /** 单个货物条目（**类型芯片** / 名称 / 吨位 / 等级 / 装载时间 / 移除）—— 逐条独立成体 */
+  const cargoItem = (c) => {
+    const tpl = getCargo(c.templateId) || getCargo(CARGO_IDS[0]);
+    // ★ 类型芯片：只读；**类型色**取自定义的 `colorKey`（CSS 变量名）⇒ UI 不硬编码色值
+    const typeEl = el('span', {
+      class: 'drill-cargo-type',
+      text: i18n.t(tpl.nameKey),
+      title: i18n.t('battle.drill.cargoType'),
+    });
+    typeEl.style.setProperty('--chip-color', `var(${tpl.colorKey || '--cat-none'})`);
+    const nameInput = el('input', {
+      class: 'drill-cargo-name',
+      type: 'text',
+      maxlength: String(CARGO_LIMITS.nameLen),
+      placeholder: i18n.t(tpl.nameKey), // 默认取类型名：名称留空即回退类型名（引擎侧同样以 nameKey 兜底）
+      'aria-label': i18n.t('battle.drill.cargoName'),
+    });
+    nameInput.value = c.name;
+    const tonsInput = el('input', {
+      class: 'drill-cargo-tons',
+      type: 'text',
+      inputmode: 'numeric',
+      'aria-label': i18n.t('battle.drill.cargoTons'),
+    });
+    tonsInput.value = c.tonsText;
+    const levelInput = el('input', {
+      class: 'drill-cargo-level',
+      type: 'text',
+      inputmode: 'numeric',
+      'aria-label': i18n.t('battle.drill.cargoLevel'),
+    });
+    levelInput.value = c.levelText;
+    // 装载时间＝**只读派生值**（随等级解析；秒换算唯一口径 core/tick.js）
+    const loadEl = el('span', { class: 'drill-cargo-load', text: '' });
+    const item = el('div', { class: 'drill-cargo-item' }, [
+      typeEl,
+      nameInput,
+      tonsInput,
+      levelInput,
+      loadEl,
+      el('button', {
+        class: 'btn small',
+        text: i18n.t('battle.drill.cargoRemoveBtn'),
+        title: i18n.t('battle.drill.cargoRemove'),
+        'aria-label': i18n.t('battle.drill.cargoRemove'),
+        onclick: () => {
+          const i = cargos.indexOf(c);
+          if (i >= 0) cargos.splice(i, 1);
+          renderList();
+        },
+      }),
+    ]);
+    const syncItem = () => {
+      item.classList.toggle('tons-invalid', !tonsValid(c.tonsText));
+      item.classList.toggle('level-invalid', !levelValid(c));
+      // 装载时间：等级合法 → 按**等级解析**取该级 loadTicks（唯一解析口径），否则显示定义基准值
+      const lv = levelValid(c) ? Number(String(c.levelText).trim()) : 1;
+      const cfg = resolveCargoAtLevel(c.templateId, lv) || tpl;
+      loadEl.textContent = i18n.t('battle.drill.cargoLoad', { s: formatTickSeconds(cfg.loadTicks) });
+    };
+    nameInput.addEventListener('input', () => { c.name = nameInput.value; });
+    tonsInput.addEventListener('input', () => { c.tonsText = tonsInput.value; syncItem(); syncHint(); });
+    levelInput.addEventListener('input', () => { c.levelText = levelInput.value; syncItem(); syncHint(); });
+    syncItem();
+    return item;
+  };
+
+  const renderList = () => {
+    listEl.replaceChildren(...cargos.map((c) => cargoItem(c)));
+    emptyEl.classList.toggle('hidden', cargos.length > 0);
+    syncCount(); // 内含 syncHint（＋通知调用方刷新「开战」可用性）
+  };
+
+  addBtn.addEventListener('click', () => {
+    if (!cargoCountValid(countText)) return;
+    const tpl = getCargo(tplSel.value) || getCargo(CARGO_IDS[0]);
+    const want = Math.min(CARGO_LIMITS.maxCountPerEntry, Number(countText));
+    for (let i = 0; i < want; i++) {
+      if (cargos.length >= CARGO_LIMITS.maxTotal) break; // 总数封顶（与引擎 CARGO_LIMITS.maxTotal 同一来源）
+      cargos.push({
+        templateId: tpl.id,
+        name: '',                    // 空名称 ⇒ 战斗屏显示**类型名**（i18n 词条 nameKey）
+        tonsText: String(tpl.tons),  // 吨位：统一占位 5t（该类型的 Lv1 定义值）
+        levelText: '1',              // 等级：从 Lv1 起步（装载时间随等级解析）
+      });
+    }
+    renderList();
+  });
+  countInput.addEventListener('input', () => { countText = countInput.value; syncCount(); });
+
+  const block = el('div', { class: 'drill-cargo' }, [
+    el('div', { class: 'zone-label drill-cargo-title', text: i18n.t('battle.drill.cargoTitle') }),
+    el('div', { class: 'drill-cargo-add' }, [tplSel, countInput, addBtn]),
+    errEl,
+    emptyEl,
+    listEl,
+  ]);
+  renderList();
+  return block;
 }
 
 /* ---------- 渲染 ---------- */
@@ -287,9 +499,31 @@ function warnText(w) {
       return i18n.t('battle.drill.warn.levelClamped', { n: w.to });
     case 'moduleLevelClamped':
       return i18n.t('battle.drill.warn.moduleLevelClamped', { n: w.to });
+    // ★ 星区货物侧告警（引擎 `normalizeSectorCargos` 产出，`side` 恒为 'sector'）
+    case 'cargoInvalid':
+      return i18n.t('battle.drill.warn.cargoInvalid');
+    case 'cargoUnknownTemplate':
+      return i18n.t('battle.drill.warn.cargoUnknownTemplate', { id: w.templateId == null ? '' : w.templateId });
+    case 'cargoCountClamped':
+      return i18n.t('battle.drill.warn.cargoCountClamped', { n: w.to });
+    case 'cargoClamped':
+      // `field` 是引擎给的**字段标识**（`tons` / `level`）⇒ UI 负责翻成中文措辞（UI 只做措辞、不自算规则）
+      return i18n.t('battle.drill.warn.cargoClamped', {
+        field: i18n.t(w.field === 'level' ? 'battle.drill.cargoLevel' : 'battle.drill.cargoTons'),
+        to: w.to,
+      });
+    case 'cargoOverflow':
+      return i18n.t('battle.drill.warn.cargoOverflow', { n: w.max });
     default:
       return i18n.t('battle.drill.warn.invalid');
   }
+}
+
+/** 告警所属区块名（编队侧＝我方/敌方编队；**星区侧＝星区设定**，`side:'sector'`） */
+function warnSideName(side) {
+  if (side === 'ally') return i18n.t('battle.fleet.ally');
+  if (side === 'enemy') return i18n.t('battle.fleet.enemy');
+  return i18n.t('battle.drill.sector');
 }
 
 /** 预检：**调用引擎同一函数** `normalizeFormation` 得告警（UI 不自算规则）。
@@ -311,7 +545,8 @@ function renderLaunch() {
   if (!host) return;
   const { current, norm, warnByShip } = preflight();
   const fleetBlocked = norm.warnings.length > 0 || !current.allies.length || !current.enemies.length;
-  const oreOk = oreReserveValid(sectorOreText);
+  // ★ 「开战」可用性＝**编队预检 + 星区储量格式 + 星区货物条目格式**（三者同一处置：任一不合法即禁用）
+  const startBlocked = () => fleetBlocked || !oreReserveValid(sectorOreText) || !cargosAllValid();
 
   const warnList = el('div', { class: 'drill-warn-list' });
   if (norm.warnings.length) {
@@ -322,7 +557,7 @@ function renderLaunch() {
       })
     );
     for (const w of norm.warnings.slice(0, 6)) {
-      const sideName = i18n.t(w.side === 'ally' ? 'battle.fleet.ally' : 'battle.fleet.enemy');
+      const sideName = warnSideName(w.side); // 星区侧（side:'sector'）显示「星区设定」+ 该项下标
       warnList.append(
         el('div', { class: 'drill-warn-text', text: `${sideName} #${(w.index | 0) + 1}：${warnText(w)}` })
       );
@@ -332,27 +567,31 @@ function renderLaunch() {
   const startBtn = el('button', {
     class: 'btn primary',
     text: i18n.t('battle.drill.start'),
-    title: fleetBlocked || !oreOk ? i18n.t('battle.drill.blocked') : '',
+    title: startBlocked() ? i18n.t('battle.drill.blocked') : '',
     onclick: () => {
       const pf = preflight();
-      // 不允许确认：编队预检有告警 / 双方任一为空 / 星区储量非法（三者同一处置）
+      // 不允许确认：编队预检有告警 / 双方任一为空 / 星区储量或货物条目格式非法（同一处置）
       if (pf.norm.warnings.length || !pf.current.allies.length || !pf.current.enemies.length) return;
-      if (!oreReserveValid(sectorOreText)) return;
+      if (!oreReserveValid(sectorOreText) || !cargosAllValid()) return;
       if (typeof hooks.onStart === 'function') hooks.onStart(pf.current);
     },
   });
-  startBtn.disabled = fleetBlocked || !oreOk; // property 赋 disabled，避免被当作字符串属性写入
-  /** 储量输入变化时就地刷新「开战」可用性（不整屏重绘，避免丢焦点） */
-  const syncStartBtn = (ok) => {
-    startBtn.disabled = fleetBlocked || !ok;
-    startBtn.title = fleetBlocked || !ok ? i18n.t('battle.drill.blocked') : '';
+  startBtn.disabled = startBlocked(); // property 赋 disabled，避免被当作字符串属性写入
+  /** 星区侧输入（储量/货物）变化时就地刷新「开战」可用性（不整屏重绘，避免丢焦点） */
+  const syncStartBtn = () => {
+    const blocked = startBlocked();
+    startBtn.disabled = blocked;
+    startBtn.title = blocked ? i18n.t('battle.drill.blocked') : '';
   };
+
+  const sectorPanel = sectorBlock(syncStartBtn);
+  sectorPanel.append(cargoBlock(syncStartBtn)); // ★ 货物设定**归属星区设定区**（同一面板内、独立小节）
 
   host.replaceChildren(
     el('div', { class: 'drill-builder' }, [
       el('h3', { text: i18n.t('battle.drill.title') }),
       el('p', { class: 'drill-hint', text: i18n.t('battle.drill.hint') }),
-      sectorBlock(syncStartBtn),
+      sectorPanel,
       el('div', { class: 'drill-grid' }, [renderFleetColumn('ally', warnByShip), renderFleetColumn('enemy', warnByShip)]),
       warnList,
       el('div', { class: 'drill-actions' }, [
@@ -386,16 +625,25 @@ export const setupView = {
     if (a) allyShips = cloneShips(a);
     if (e) enemyShips = cloneShips(e);
     if (formation.sector && typeof formation.sector === 'object') {
-      // 星区：名称原样、储量按引擎规范化后的数值回填输入框（非法/缺省 → 缺省占位值）
+      // 星区：名称原样、储量按引擎规范化后的数值回填输入框（非法/缺省 → 缺省占位值）；
+      // ★ 货物同样按**引擎规范化后**的实例回填编辑态（类型 + 名称 + 吨位 + 等级；
+      //   类型/装载时间/系数由类型与等级解析而来，不回填进编辑态）
       const sec = normalizeFormation({ sector: formation.sector }).sector;
       sectorName = sec.name;
       sectorOreText = String(sec.oreReserve);
+      cargos = (sec.cargos || []).map((c) => ({
+        templateId: c.templateId,
+        name: c.name,
+        tonsText: String(c.tons),
+        levelText: String(c.level),
+      }));
     }
     if (!a && !e) {
       allyShips = DEFAULT_SHIPS();
       enemyShips = DEFAULT_SHIPS();
       sectorName = SECTOR_DEFAULTS.name;
       sectorOreText = String(SECTOR_DEFAULTS.oreReserve);
+      cargos = [];
     }
     if (host) renderLaunch();
   },
@@ -405,6 +653,7 @@ export const setupView = {
     enemyShips = DEFAULT_SHIPS();
     sectorName = SECTOR_DEFAULTS.name;
     sectorOreText = String(SECTOR_DEFAULTS.oreReserve);
+    cargos = []; // 缺省货物＝无（`SECTOR_DEFAULTS.cargos`）
     if (host) renderLaunch();
   },
   /** 卸载宿主（避免离屏后仍被重绘） */

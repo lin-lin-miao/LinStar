@@ -65,6 +65,7 @@ export default {
   'module.energyTransfer': 'Energy Transfer',
   'module.oreTransfer': 'Ore Transfer', // Mining · single ally target (moves own ore 1:1, no coefficient)
   'module.cargoHold': 'Cargo Hold',
+  'module.loadingBeam': 'Loading Beam', // Transport · active, targetless (tag cargo_loader + word cargo_load: loads sector cargo into the hold)
   'module.oreHold': 'Ore Hold',
   'module.miningLaser': 'Mining Laser',
   'module.oreCompressor': 'Ore Compressor', // Mining · passive booster (own mining coefficient)
@@ -86,6 +87,15 @@ export default {
   'module.slowTime': 'Slow Time',
   'module.overload': 'Overload',
   'module.stealth': 'Stealth',
+
+  /* Cargo type names (`data/cargos/*.js` nameKey; the type name is also the default cargo name) */
+  'cargo.none': 'None',
+  'cargo.weaponPart': 'Weapon Part',
+  'cargo.fieldComponent': 'Field Component',
+  'cargo.functionDevice': 'Function Device',
+  'cargo.droneDebris': 'Drone Debris',
+  'cargo.miningRig': 'Mining Rig',
+  'cargo.freightBlueprint': 'Freight Blueprint',
 
   /* Unit coefficients (detail page · before Modules) */
   'battle.detail.coeffs': 'Unit Coefficients',
@@ -128,12 +138,36 @@ export default {
   'battle.drill.sectorNamePh': '(empty = no name shown)',
   'battle.drill.sectorOreLabel': 'Ore reserve',
   'battle.drill.sectorOreInvalid': 'Ore reserve must be 0 or a positive whole number',
+  // Sector cargo setup (type = None + 6 part kinds): add in bulk by type + count, then edit
+  // name / tons / level per entry (the type comes from the picked type and is NOT editable;
+  // load time follows the level and is NOT editable).
+  'battle.drill.cargoTitle': 'Sector Cargo',
+  'battle.drill.cargoTplLabel': 'Type',
+  'battle.drill.cargoCountLabel': 'Count',
+  'battle.drill.cargoAdd': 'Add cargo',
+  'battle.drill.cargoEmpty': '(no cargo)',
+  'battle.drill.cargoName': 'Cargo name',
+  'battle.drill.cargoType': 'Type',
+  'battle.drill.cargoTons': 'Tons',
+  'battle.drill.cargoLevel': 'Level',
+  'battle.drill.cargoLoad': 'Load {s}s',
+  'battle.drill.cargoRemove': 'Remove this cargo',
+  'battle.drill.cargoRemoveBtn': 'Remove',
+  'battle.drill.cargoTonsInvalid': 'Tons must be 0 or a positive whole number',
+  'battle.drill.cargoLevelInvalid': 'Level must be a whole number from 1 to {max}',
+  'battle.drill.cargoCountInvalid': 'Count must be 1 or a positive whole number',
   'battle.drill.blocked': 'Invalid setup — cannot start',
   'battle.drill.warn.title': 'Setup issues ({n}) — fix them to start:',
   'battle.drill.warn.slotOverflow': 'More modules than slots at this level (max {n}) — remove modules or raise the unit level',
   'battle.drill.warn.levelClamped': 'Unit level above the cap — counted as Lv{n}',
   'battle.drill.warn.moduleLevelClamped': 'Module level above the cap — counted as Lv{n}',
   'battle.drill.warn.invalid': 'Invalid entry (unknown ship type / module) — it will be ignored',
+  // Sector-cargo warnings (produced by the single engine rule `normalizeSectorCargos`, side is always 'sector')
+  'battle.drill.warn.cargoInvalid': 'Invalid sector cargo entry — it will be ignored',
+  'battle.drill.warn.cargoUnknownTemplate': 'Unknown cargo type ({id}) — it will be ignored',
+  'battle.drill.warn.cargoCountClamped': 'Cargo count out of range — counted as {n}',
+  'battle.drill.warn.cargoClamped': 'Cargo {field} out of range — clamped to {to}',
+  'battle.drill.warn.cargoOverflow': 'Too much sector cargo (max {n}) — the excess was dropped',
   'battle.zone.enemy': 'Enemy Combat Units',
   'battle.zone.enemyLogistics': 'Enemy Logistics Units',
   'battle.zone.combat': 'Our Combat Units',
@@ -147,6 +181,26 @@ export default {
   'battle.sector.cdTitle': 'Sector cooldown',
   // Sector bar · sector-cooldown rows (one per sector-cooldown module, shown only while cooling)
   'battle.sector.cd': 'Cooldown {n}t',
+  // ★ Sector bar · SECTOR CARGO sub-section (sits SIDE BY SIDE with the sector-cooldown group): one small
+  //   chip per cargo (FIXED HEIGHT 32px), border colour = TYPE colour; clicking toggles its place in the
+  //   PRIORITY QUEUE (queued = edge glow + inner fill). A chip is SIX INDEPENDENT segments (each its own
+  //   element with its own short template — never glued into one long string), visual order:
+  //     `[cargoSeq] name [· cargoBonus %] [· cargoLv level] [· cargoMeta tons·load] [trailing pad]`
+  //     · cargoSeq   queue number (1-based; EMPTY PLACEHOLDER while not queued, fixed width ⇒ no jump);
+  //     · name       user name or the type-name entry `nameKey` (no template — the name is data);
+  //     · cargoBonus incremental bonus percent (`bonus` is a multiplier: 1 → hidden, 1.1 → `10%`);
+  //     · cargoLv    level (segment shown ONLY when the level is not 1);
+  //     · cargoMeta  tons · load seconds (last text segment);
+  //     · trailing pad  empty spacer of the SAME WIDTH as the queue-number column (CSS only).
+  'battle.sector.cargoTitle': 'Sector Cargo',
+  'battle.sector.cargoSeq': '{n}',
+  'battle.sector.cargoBonus': '{v}%',
+  'battle.sector.cargoLv': 'Lv{level}',
+  'battle.sector.cargoMeta': '{tons}t · {load}s',
+  'battle.sector.cargoHover': '{type}: {hint}',
+  'battle.sector.cargoAddHint': 'Click to add to the priority queue',
+  'battle.sector.cargoRemoveHint': 'Click to remove from the queue',
+  'battle.sector.cargoLockedHint': 'Loading — about {s}s left', // Hover hint while locked by a loader; seconds = formatTickSeconds(need − elapsed); clicking does nothing
   'battle.command.fleet': 'Fleet Primary Target',
   'battle.command.preview': 'Current: {name}',
   'battle.command.noTarget': '(No living targets)',
@@ -231,8 +285,10 @@ export default {
   'battle.detail.costOre': 'Ore {n}',
   'battle.detail.costEnergy': 'Energy {n}',
   'battle.detail.perCycle': 'every {cd}t',
+  'battle.detail.perCargo': 'per cargo', // Loader (`cargo_loader`): no own cooldown; its cycle is one full load
   'battle.detail.perCycleDur': '{d}t duration + {cd}t cooldown',
   'battle.detail.cooling': 'Cooldown {n}t',
+  'battle.detail.loading': 'Loading {done}/{need}t', // Loader busy (progress/need ticks come from the engine read-only `cargoLoadingOf`)
   'battle.detail.ready': 'Ready',
   'battle.detail.stateActive': 'Active',
   'battle.detail.stateInactive': 'Condition unmet',
@@ -280,6 +336,9 @@ export default {
   'battle.detail.statInvincible': 'Invincible {n}t',
   'battle.detail.statRegen': 'Shield +{n}/shot',
   'battle.detail.statOreGain': 'Mining {n}/shot', // Mining Laser: ore gained per activation (× mining coeff.)
+  'battle.detail.statCargoLoad': 'Loading speed {v}', // Loading Beam: loading-speed bonus (speed = 1 + value + (transport coeff − 1))
+  'battle.detail.cargos': 'Loaded Cargo', // Detail panel "Loaded Cargo" row (below the coefficient block): chips of cargo in the hold
+  'battle.detail.cargoUnloadHint': 'Click to return to the sector', // Hover hint of those chips (click = the engine's only return entry point)
   'battle.detail.statMiningCoeff': 'Mining coeff {v}', // Ore Compressor: own mining coefficient, additive
   'battle.detail.statSectorOreAdd': 'Sector ore {v}/shot', // Genesis: sector reserve, additive (uncapped)
   'battle.detail.statSectorOreMul': 'Sector ore ×{v}/shot', // Ore Enrichment: sector reserve, multiplicative

@@ -65,6 +65,7 @@ export default {
   'module.energyTransfer': '能量输送',
   'module.oreTransfer': '矿物输送', // 采矿 · 主动单体友方（把自身携带矿物 **1:1** 输送给目标 ore_target）
   'module.cargoHold': '货舱',
+  'module.loadingBeam': '装载光束', // 运输 · 主动无目标（标签 cargo_loader + 词条 cargo_load：把星区货物装进本舰货舱）
   'module.oreHold': '矿舱',
   'module.miningLaser': '采矿激光',
   'module.oreCompressor': '矿物压缩', // 采矿 · 常驻增幅器（自身采矿系数 mining_coeff_add）
@@ -86,6 +87,15 @@ export default {
   'module.slowTime': '放缓时间',
   'module.overload': '辐能过载',
   'module.stealth': '潜行',
+
+  /* 货物类型名（`data/cargos/*.js` 的 `nameKey`；类型名即默认货物名，实例自定义 `name` 时不再使用） */
+  'cargo.none': '无',
+  'cargo.weaponPart': '武器零件',
+  'cargo.fieldComponent': '力场组件',
+  'cargo.functionDevice': '功能设备',
+  'cargo.droneDebris': '机骸碎片',
+  'cargo.miningRig': '采矿器械',
+  'cargo.freightBlueprint': '货运蓝图',
 
   /* 单位系数栏（详情页 · 模块字段之前） */
   'battle.detail.coeffs': '单位系数',
@@ -128,12 +138,35 @@ export default {
   'battle.drill.sectorNamePh': '（留空则不显示名称）',
   'battle.drill.sectorOreLabel': '矿物储量',
   'battle.drill.sectorOreInvalid': '矿物储量须为 0 或正整数',
+  // 星区设定·**货物设定**：类型（None + 6 种零件）+ 数量批量添加；逐条可改名称/吨位/等级
+  // （类型由所选类型决定、**不可编辑**；**装载时间随等级解析、不可编辑**）
+  'battle.drill.cargoTitle': '星区货物',
+  'battle.drill.cargoTplLabel': '类型',
+  'battle.drill.cargoCountLabel': '数量',
+  'battle.drill.cargoAdd': '添加货物',
+  'battle.drill.cargoEmpty': '（暂无货物）',
+  'battle.drill.cargoName': '货物名称',
+  'battle.drill.cargoType': '类型',
+  'battle.drill.cargoTons': '吨位',
+  'battle.drill.cargoLevel': '等级',
+  'battle.drill.cargoLoad': '装载 {s}s',
+  'battle.drill.cargoRemove': '移除该货物',
+  'battle.drill.cargoRemoveBtn': '移除',
+  'battle.drill.cargoTonsInvalid': '吨位须为 0 或正整数',
+  'battle.drill.cargoLevelInvalid': '等级须为 1 至 {max} 的整数',
+  'battle.drill.cargoCountInvalid': '数量须为 1 或正整数',
   'battle.drill.blocked': '存在无效配置，无法开战',
   'battle.drill.warn.title': '配置存在问题（{n} 项），修正后方可开战：',
   'battle.drill.warn.slotOverflow': '模块数超出该等级槽位（上限 {n}），请卸除多余模块或提高单位等级',
   'battle.drill.warn.levelClamped': '单位等级超出上限，已按 Lv{n} 计',
   'battle.drill.warn.moduleLevelClamped': '模块等级超出上限，已按 Lv{n} 计',
   'battle.drill.warn.invalid': '存在无效条目（未知船型/模块），将被忽略',
+  // 星区货物侧告警（引擎唯一口径 `normalizeSectorCargos` 产出，`side` 恒为 'sector'）
+  'battle.drill.warn.cargoInvalid': '星区货物存在无效条目，将被忽略',
+  'battle.drill.warn.cargoUnknownTemplate': '未知货物类型（{id}），将被忽略',
+  'battle.drill.warn.cargoCountClamped': '货物数量超出允许范围，已按 {n} 计',
+  'battle.drill.warn.cargoClamped': '货物{field}超出允许范围，已钳制为 {to}',
+  'battle.drill.warn.cargoOverflow': '星区货物超出上限（{n} 项），超出部分已截断',
   'battle.zone.enemy': '敌方战斗单位',
   'battle.zone.enemyLogistics': '敌方后勤单位',
   'battle.zone.combat': '我方战斗单位',
@@ -147,6 +180,25 @@ export default {
   'battle.sector.cdTitle': '星区冷却',
   // 星区资源栏·星区冷却行（每个星区冷却模块各一行，**仅在冷却中显示**）：剩余冷却 tick 数
   'battle.sector.cd': '冷却 {n}t',
+  // ★ 星区资源栏·**星区货物**小节（与星区冷却组**并排**的独立区块）：每件货物一个小芯片
+  //   （**高度固定 32px**），边框色＝**类型色**；点击＝加入/移出**优先队列**（选中态＝边缘发光+内部填充）。
+  //   芯片＝**六段独立元素**（各段各自成元素、各用一条短模板，**不拼成长串**），视觉顺序：
+  //     `[cargoSeq 序号列] 名称 [· cargoBonus 加成%] [· cargoLv 等级] [· cargoMeta 吨位·装载秒] [末尾填充]`
+  //     · cargoSeq   优先队列序号（1 起；**未入队留空占位**、定宽 ⇒ 入队/取消不跳动）；
+  //     · 名称段     用户名称或类型名词条 `nameKey`（无模板，名称即数据）；
+  //     · cargoBonus **加成增量百分比**（`bonus` 是倍率：1 → 整段不显示、1.1 → `10%`）；
+  //     · cargoLv    等级（**仅等级 ≠ 1 时显示**该段）；
+  //     · cargoMeta  吨位 · 装载秒数（末段文字）；
+  //     · 末尾填充   与序号列**同宽的空占位**（无文案，纯 CSS 定宽，左右留白对称）。
+  'battle.sector.cargoTitle': '星区货物',
+  'battle.sector.cargoSeq': '{n}',
+  'battle.sector.cargoBonus': '{v}%',
+  'battle.sector.cargoLv': 'Lv{level}',
+  'battle.sector.cargoMeta': '{tons}t · {load}s',
+  'battle.sector.cargoHover': '{type}：{hint}',
+  'battle.sector.cargoAddHint': '点击加入优先队列',
+  'battle.sector.cargoRemoveHint': '点击移出队列',
+  'battle.sector.cargoLockedHint': '装载中：剩余约 {s}s', // 被装载器锁定（引擎派生 locked）时的悬停提示；剩余秒数＝formatTickSeconds(需求−已推进)；此时点击无效
   'battle.command.fleet': '全队主要目标',
   'battle.command.preview': '当前命中：{name}',
   'battle.command.noTarget': '（无存活目标）',
@@ -231,8 +283,10 @@ export default {
   'battle.detail.costOre': '耗矿 {n}',
   'battle.detail.costEnergy': '耗能 {n}',
   'battle.detail.perCycle': '每 {cd}t',
+  'battle.detail.perCargo': '每件货物', // 装载器（`cargo_loader`）：无自身冷却，周期＝一次完整装载
   'battle.detail.perCycleDur': '持续 {d}t + 冷却 {cd}t',
   'battle.detail.cooling': '冷却 {n}t',
+  'battle.detail.loading': '装载中 {done}/{need}t', // 装载器在装（进度/需求 tick 均来自引擎只读判据 cargoLoadingOf）
   'battle.detail.ready': '就绪',
   'battle.detail.stateActive': '生效中',
   'battle.detail.stateInactive': '条件未满足',
@@ -280,6 +334,9 @@ export default {
   'battle.detail.statInvincible': '无敌 {n}t',
   'battle.detail.statRegen': '回盾 {n}/次',
   'battle.detail.statOreGain': '采矿量 {n}/次', // 采矿激光：每次激活的采矿量（× 采矿系数后取整）
+  'battle.detail.statCargoLoad': '装载速度 {v}', // 装载光束：装载速度加成原值（速度 = 1 + 本值 + (运输系数 − 1)）
+  'battle.detail.cargos': '装载货物', // 详情页「装载货物」栏（单位系数区块下方：已入舱货物芯片）
+  'battle.detail.cargoUnloadHint': '点击返还星区', // 该栏货物芯片的悬停提示（点击＝引擎唯一返还接口）
   'battle.detail.statMiningCoeff': '采矿系数 {v}', // 矿物压缩：自身采矿系数加性（不加取整、不乘船级系数）
   'battle.detail.statSectorOreAdd': '星区矿物 {v}/次', // 创世纪：星区剩余储量加法（绝对增量、无上限）
   'battle.detail.statSectorOreMul': '星区矿物 ×{v}/次', // 矿藏富集：星区剩余储量乘法（展示实际乘数 1+比例）

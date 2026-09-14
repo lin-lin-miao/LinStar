@@ -6,10 +6,23 @@
  */
 import { bus } from './eventBus.js';
 
-const TICK_MS = 50;             // 每 tick 的毫秒数（20 tps）
+export const TICK_MS = 50;      // 每 tick 的毫秒数（20 tps）
+export const TICK_SECONDS = TICK_MS / 1000; // 1 tick 的秒数（＝0.05s）
 const SPEED_MIN = 0.25;         // 0.25x 慢速档下限（倍速可为分数）
 const SPEED_MAX = 8;
 const TPS_WINDOW_MS = 1000;     // TPS 统计窗口
+
+/** ★ **tick → 秒**的唯一换算口径（0.05 这个系数只在本文件出现一次）：
+ *  UI 展示「装载需要时间」等一律调用本函数，**禁止各自手写私有公式**。 */
+export function ticksToSeconds(ticks) {
+  return (Number(ticks) || 0) * TICK_SECONDS;
+}
+
+/** ★ tick → **最短可读秒数**字符串（≤1 位小数、去掉无意义的 `.0`）：
+ *  300t → `'15'`、30t → `'1.5'`、1t → `'0.1'`（按 1 位小数四舍五入后去尾）。 */
+export function formatTickSeconds(ticks) {
+  return String(Number(ticksToSeconds(ticks).toFixed(1)));
+}
 
 let acc = 0;                    // 累加器（毫秒）
 let count = 0;                  // 已走过的 tick 总数

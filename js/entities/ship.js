@@ -475,14 +475,27 @@ export function cargoCapPartsOf(ship) {
 export function oreCapPartsOf(ship) {
   return capPartsOf(ship, ORE_KEY, 'mining', 'baseOreCap');
 }
-/** 当前**已装载货物量**的唯一读口径（M4 资源系统前恒为 0；UI 显示「已用 / 上限」用）。
- *  `hull.cargo` 由后续资源系统写入，本函数只读、不写。 */
+/** 当前**已装载货物量**的唯一读口径（＝`hull.cargo`，单位：吨；UI 显示「已用 / 上限」用）。
+ *  ★ **唯一写入者**＝战斗层「货物装载」结算（`battle.js` 结算步骤 5 `settleCargoLoads`）：
+ *     装载完成时 `+= 货物.tons`；**返还**（单位阵亡 / 详情页点击返还）时 `−= 货物.tons` 并归零兜底。
+ *  ★ 与**实体清单** `cargoListOf(ship)` **同源同写**：两者恒在同一处（上列两个函数）一起更新，
+ *     `hull.cargo` 是该清单吨位的**唯一数值口径**（UI 不得自行按清单求和、引擎也不重算）。 */
 export function cargoLoadOf(ship) {
   return Math.max(0, (ship && ship.hull && ship.hull.cargo) || 0);
 }
+/** ★ 已装载**货物实体**清单的唯一读口径（只读；引擎写入者为 `battle.js` 装载结算步骤 5）。
+ *  · 每项＝**星区货物实例本身**（同一 `id`/同一对象：从星区列表移出、原样进入本清单 ⇒
+ *    “同一件货物”的身份不变，`loadTicks`/`level`/`bonus` 等字段随之保持）；
+ *  · 数值口径仍以 `cargoLoadOf(ship)` 为准（本函数只给实体清单，供 UI 渲染/操作）；
+ *  · 只读：调用方**不得**增删该数组（增删由装载结算与返还接口统一落地）。 */
+export function cargoListOf(ship) {
+  return (ship && ship.cargos) || [];
+}
 /** 当前**已装载矿物量**的唯一读口径（同 `cargoLoadOf`）：
  *  ★ **唯一写入方**＝战斗层「采矿」结算（`battle.js` 结算步骤 3b `settleOreGains`：按比例分配后入 `hull.ore`）；
- *    单位阵亡时由判死唯一出口 `onDeath` 把携带矿物**全额返还星区储量**并归 0（只返还矿物、不返还货物）。 */
+ *    单位阵亡时由判死唯一出口 `onDeath` 把携带矿物**全额返还星区储量**并归 0。
+ *  ⚠ **矿物与货物是两条独立链**：阵亡返还时**矿物回星区储量**（本函数口径），**货物回星区货物列表**
+ *    （`cargoListOf`/`hull.cargo` 归零，见 `battle.js` `returnCargoToSector`）——互不影响、各自幂等。 */
 export function oreLoadOf(ship) {
   return Math.max(0, (ship && ship.hull && ship.hull.ore) || 0);
 }
@@ -667,6 +680,10 @@ export function createShip(typeId, side = 'ally', overrides = null, level = 1) {
     stealthMods: new Set(),       // **潜行**标记来源表（来源 key → 潜行；isStealth = 来源非空）
     isStealth: false,             // 是否潜行（缺省 false）：潜行单位**不能成为主要攻击目标**（仍受溅射 / 仍受锁定影响）
     modules: [],
+    // ★ 已装载**货物实体**清单（星区货物实例对象的引用；数值口径＝`hull.cargo`）：
+    //   唯一写入者＝`battle.js` 装载结算步骤 5（装载完成入舱 / 阵亡与主动返还出舱），
+    //   只读口径＝`cargoListOf(ship)`（UI 用它渲染详情页「装载货物」栏）。
+    cargos: [],
     hull: {
       hp: type.base.hp,
       hpMax: type.base.hp,

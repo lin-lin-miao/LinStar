@@ -56,6 +56,19 @@ export function clockTime(ts = Date.now()) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
+/** ★ **倍率 → 增量百分比**的唯一换算口径（`bonus` 是**倍率**、中性值 1 ⇒ 展示的是**增量**）：
+ *  `增量% = (bonus − 1) × 100`，例如 1 → `'0'`、1.1 → `'10'`、1.15 → `'15'`、1.125 → `'12.5'`、0.9 → `'-10'`。
+ *  · 返回值是**纯数字字符串**（**不含 `%`**）—— 百分号属展示措辞，由调用方走 i18n 模板拼（体例同
+ *    `core/tick.js formatTickSeconds` 只返回数字、秒的 `s` 由 i18n 提供）；
+ *  · **四舍五入到 1 位小数并去掉无意义 `.0`**（`toFixed(1)` 后转 Number 再转字符串，顺带消掉浮点尾巴）；
+ *  · **负加成用同一公式**（如 0.9 → `'-10'`），不做特判；`bonus` 非数值按中性值 1 处理（→ `'0'`）。
+ *  ★ 展示层唯一来源：任何界面需要显示“加成 x%”都调用本函数，**禁止各自手写 `(b-1)*100` 私有公式**。 */
+export function formatBonusPercent(bonus) {
+  const b = Number(bonus);
+  const inc = (Number.isFinite(b) ? b - 1 : 0) * 100;
+  return String(Number(inc.toFixed(1)));
+}
+
 /** 深拷贝（JSON 兼容对象） */
 export function deepClone(obj) {
   return obj === undefined ? undefined : JSON.parse(JSON.stringify(obj));

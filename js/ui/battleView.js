@@ -12,7 +12,7 @@
  *   演练界面「开战」、结算「再战」、将来的关卡/剧情入口**都必须走它**，不留第二条开战路径。
  * 调试：window.__battle 暴露当前战斗对象
  */
-import { el } from '../core/utils.js';
+import { el, formatBonusPercent } from '../core/utils.js';
 import { bus } from '../core/eventBus.js';
 import { i18n } from '../i18n/index.js';
 import { SHIPS } from '../data/ships.js';
@@ -30,6 +30,8 @@ import {
   oreCapPartsOf,
   cargoLoadOf,
   oreLoadOf,
+  // ★ 已装载**货物实体**清单的只读口径（详情页「装载货物」栏用；数值口径仍是 `cargoLoadOf`）
+  cargoListOf,
 } from '../entities/ship.js';
 import { bar } from './widgets.js';
 import { router } from './router.js';
@@ -37,7 +39,7 @@ import { setupView } from './setupView.js'; // ★ 演练编队配置屏（单�
 // ★ 星区侧冷却词条的**唯一识别口径**（与引擎同源）：UI 枚举「星区冷却」行时不自行判词条
 import { hasSectorCdFx } from '../data/sector.js';
 import { log, formatRich } from '../core/log.js';
-import { ticker } from '../core/tick.js';
+import { ticker, formatTickSeconds } from '../core/tick.js';
 
 const SEC_TICKS = 20; // 1 秒 = 20 tick（与战斗核心一致，用于按 tick 折算每秒消耗）
 
@@ -128,8 +130,9 @@ let cmdCargoNum = null;
 let cmdOre = null;
 let cmdOreFill = null;
 let cmdOreNum = null;
-// ★ 星区资源栏（指挥栏**下方**独立一栏：星区名 + 矿物储量 剩余/初始）——数据唯一来源＝引擎 `battle.sector`
-let sectorZ = null; // { zone, label, cdGroup, cdRows, row, fill, num }
+// ★ 星区资源栏（指挥栏**下方**独立一栏：星区名 + 星区冷却组 + 矿物储量 + **星区货物**组）
+//   数据唯一来源＝引擎 `battle.sector`
+let sectorZ = null; // { zone, label, cdGroup, cdRows, row, fill, num, cargoGroup, cargoChips }
 
 /* 迷你护盾池条（详情/长期池用）：无标签小横条 + 数值 */
 function makeMiniPool() {
@@ -261,6 +264,14 @@ const STATE_TAGS = ['solo', 'passive'];
 function isStateModuleFx(fx) {
   const t = Array.isArray(fx && fx.type) ? fx.type : fx && fx.type ? [fx.type] : [];
   return STATE_TAGS.some((k) => t.includes(k));
+}
+/** ★ **装载器模块**（`type` 标签 `cargo_loader`，如装载光束）的静态识别 —— 与引擎
+ *  `battle.js canImpact`/`maybeActivate` **同一识别口径**（**按标签识别、不硬编码模块 id**）。
+ *  用途：成本段的周期措辞改为「每件货物」（该模块**无自身冷却**，其“忙/闲”由**装载过程**决定，
+ *  显示「每 1t」会误导；仅**展示层**措辞，不含任何数值/门控口径）。 */
+function isCargoLoaderFx(fx) {
+  const t = Array.isArray(fx && fx.type) ? fx.type : fx && fx.type ? [fx.type] : [];
+  return t.includes('cargo_loader');
 }
 /** ★ **星区冷却模块**（带**星区侧冷却词条** `sector_cd_ticks` 的模块）的**静态识别**：
  *  与引擎 `battle.js hasSectorCd` **同一口径、同一函数**（`data/sector.js hasSectorCdFx`）
@@ -642,22 +653,51 @@ function renderSharedRow(row, fill, num, pool) {
   }
 }
 
-/** ★ 星区资源栏（指挥栏**下方**独立一栏）：显示星区**矿物储量（剩余 / 初始）**——最短体例。
+/** ★ 星区资源栏（指挥栏**下方**独立一栏）。**最终 DOM 顺序**：
+ *    〔栏目标题 `.zone-label`〕→〔横向行 `.sector-line`：**星区冷却组 ＋ 星区货物组 并排**〕
+ *    →〔矿物储量条 `command-alliance-row.is-ore`（整行，保持现状）〕。
  *  · 数据唯一来源＝引擎只读口径 `battle.sector`（`{name, oreReserve（剩余）, oreReserveInit（初始）,
- *    cd（星区侧模块冷却剩余：模块 id → ticks，只含冷却中者）}`）
- *    —— UI **只读、绝不自算储量/冷却**（百分比只是条形呈现的换算，与其它条同一体例）。
+ *    cd（星区侧模块冷却剩余：模块 id → ticks，只含冷却中者）, cargos（货物实体＋派生 queued/queueIndex）,
+ *    cargoQueue（队列 id 有序副本）}`）—— UI **只读、绝不自算**。
  *  · 「有星区数据」＝储量 > 0 或名称非空；否则整栏隐藏（沿用既有“为空则隐藏”的唯一规则）。
- *  · 行体例复用指挥栏共享条（`command-alliance-row` + `is-ore` 配色），不新造视觉语言；
- *    栏目标题＝**星区名称原样显示**（用户自定义字符串，不做 i18n）；无名称时回退通用文案「星区」。
- *  · **星区冷却组**（任务 3，位于**储量条上方**）：为**每个带星区冷却词条 `sector_cd_ticks` 的模块**
- *    各一行（识别函数与引擎门控**同源**：`data/sector.js hasSectorCdFx`；按 `MODULES` **自动枚举、
- *    不硬编码模块 id**），整组带一个**小节标题**、与储量条**视觉上独立成组**（同一栏内、储量条之前）；
+ *  · 栏目标题＝**星区名称原样显示**（用户自定义字符串，不做 i18n）；无名称时回退通用文案「星区」。
+ *  · **星区冷却组**：为**每个带星区冷却词条 `sector_cd_ticks` 的模块**各一行（识别函数与引擎门控
+ *    **同源**：`data/sector.js hasSectorCdFx`；按 `MODULES` **自动枚举、不硬编码模块 id**），
  *    行体例复用 `command-alliance-row`（无进度条，仅「模块名 + 剩余冷却」）；
- *    **只在冷却中显示该行、就绪即隐藏**，各模块**各显各的**；无星区数据 → 整栏（含整组）一并隐藏；
- *    数值只读 `battle.sector.cd`。 */
+ *    **只在冷却中显示该行、就绪即隐藏**，各模块各显各的；无星区数据 → 整组隐藏。
+ *  · **星区货物组**（与冷却组**并排**于同一横向行）：**小节标题单独一行 ＋ 货物芯片单独一行**
+ *    （组内**纵向两行**：`.sector-cargo-group` ＞ 标题 / `.sector-cargo-chips`；芯片行内 `flex-wrap` 可换行）。
+ *    为星区每件**货物实体**一个小芯片（**高度固定 32px**；字号与详情页**目标选择器**
+ *    `.target-chk`、编队类型芯片 `.drill-cargo-type` **同一来源 `--chip-font-size`**，
+ *    圆角/边框/水平内距一致）——**构造器唯一**：`buildCargoChip`（详情页「装载货物」栏同源复用）。
+ *    ★ **芯片 DOM＝六段独立元素**（各段各自成元素、各自带 i18n 短模板，**不硬拼成长串**）：
+ *      `[.cargo-chip-seq 序号/占位] [.cargo-chip-name 名称] [.cargo-chip-bonus 加成%]`
+ *      `[.cargo-chip-lv 等级] [.cargo-chip-meta 吨位·装载秒] [.cargo-chip-pad 末尾填充]`
+ *    · 序号：**已入队**显示其**优先队列序号**（1 起，**读引擎 `queueIndex`、UI 不自算**）；
+ *      **未入队**该元素文本为空 ⇒ 由 CSS **定宽保留序号位**（右对齐）⇒ 入队/取消**芯片宽度与文字位置不跳动**；
+ *    · **末尾填充 `.cargo-chip-pad`** 是**与序号列同宽的空占位**（CSS 侧两者**共用同一宽度变量**
+ *      `--cargo-seq-w`，UI 只建一个空元素、不写任何宽度数值）⇒ 左右留白对称、「名称+内容」视觉居中；
+ *    · 名称段：用户自定义名称；空串 ⇒ 回退**类型名**词条 `nameKey`（无额外模板，名称本身即数据）；
+ *    · 加成段（**紧跟名称之后**）：i18n `battle.sector.cargoBonus`（`'{v}%'`），`v` 来自**唯一换算**
+ *      `core/utils.js formatBonusPercent(bonus)`（倍率 → 增量百分比；`bonus=1` ⇒ `'0'` ⇒ **整段隐藏**）；
+ *    · 等级段（**加成之后**）：i18n `battle.sector.cargoLv`（`'Lv{level}'`），**等级 = 1 时整段隐藏**；
+ *    · 末尾文字段：i18n `battle.sector.cargoMeta`（`'{tons}t · {load}s'`；装载秒数走**唯一换算**
+ *      `core/tick.js formatTickSeconds`）；
+ *    · 段间分隔符由 CSS `::before` 提供 ⇒ **某段隐藏时其分隔符自动消失**（不会留下孤立 `·`）；
+ *    · 文字过长 ⇒ 名称段/末尾段**在段内省略号收尾**，序号列与末尾填充**不收缩** ⇒ 不溢出、不裁切；
+ *    · **边框色＝类型色**：由 `colorKey`（货物定义里的 **CSS 变量名**，如 `--cat-attack`）写入芯片的
+ *      `--chip-color` ⇒ UI 不硬编码任何色值，默认类型 None 即灰 `--cat-none`；
+ *    · 芯片是**可点击按钮**：点击＝调用引擎**唯一切换接口** `battle.toggleCargoQueue(id)`
+ *      （加入/移出**优先队列**；再次点击＝取消），随后按引擎只读口径**重绘**；
+ *    · **选中态**＝引擎派生的 `queued`（**边缘发光 + 内部填充**，颜色仍取类型色）；
+ *    · **装载中**＝引擎派生的 `locked`（CSS 置灰 + 虚线边）：此时**点击不改队列**——引擎
+ *      `toggleCargoQueue` 直接拒绝（`ok:false, reason:'locked'`），UI 不自算“能不能点”；
+ *      悬停提示改用 `battle.sector.cargoLockedHint`；
+ *    · **无货物 → 整组隐藏**（沿用“为空则隐藏”唯一规则）。星区货物列表整场固定 ⇒ 芯片只建一次
+ *      （被装载走的货物不在此列表 ⇒ 芯片自动隐藏；返还后有重新出现）。 */
 function buildSectorZone() {
   const label = el('div', { class: 'zone-label', text: '' });
-  // ★ 星区冷却组（储量条**上方**、独立成组）：小节标题 + 各模块一行（仅冷却中显示）
+  // ★ 星区冷却组：小节标题 + 各模块一行（仅冷却中显示）
   const cdTitle = el('div', { class: 'zone-label', text: i18n.t('battle.sector.cdTitle') });
   const cdRows = Object.values(MODULES)
     .filter((m) => isSectorCdModuleFx(m.effects))
@@ -673,7 +713,25 @@ function buildSectorZone() {
     cdTitle,
     ...cdRows.map((c) => c.row),
   ]);
-  // 储量条（冷却组之下）
+  // ★ 星区货物组：**小节标题单独一行 + 货物芯片单独一行**（组内纵向两行；芯片行内仍可换行）
+  const cargoList = (battle && battle.sector && battle.sector.cargos) || [];
+  const cargoTitle = el('div', { class: 'zone-label', text: i18n.t('battle.sector.cargoTitle') });
+  const cargoChips = cargoList.map((c) => {
+    const item = buildCargoChip(c);
+    // 点击＝调用引擎**唯一切换接口**（入队/出队；**被装载器锁定 ⇒ 引擎拒绝**，UI 不做任何自算，
+    // 一律回到只读口径重绘 ⇒ 状态以引擎为准）
+    item.chip.addEventListener('click', () => {
+      if (!battle || typeof battle.toggleCargoQueue !== 'function') return;
+      battle.toggleCargoQueue(item.cargo.id);
+      refreshSectorZone();
+    });
+    return item;
+  });
+  const cargoChipRow = el('div', { class: 'sector-cargo-chips' }, cargoChips.map((c) => c.chip));
+  const cargoGroup = el('div', { class: 'sector-cargo-group hidden' }, [cargoTitle, cargoChipRow]);
+  // ★ 横向行：冷却组与货物组并排（窄屏由 CSS 断点改为纵向堆叠）
+  const line = el('div', { class: 'sector-line' }, [cdGroup, cargoGroup]);
+  // 储量条（整行、保持现状）
   const fill = el('div', { class: 'command-alliance-fill is-ore' });
   const num = el('span', { class: 'command-alliance-num', text: '' });
   const row = el('div', { class: 'command-alliance-row is-ore hidden' }, [
@@ -681,13 +739,101 @@ function buildSectorZone() {
     el('div', { class: 'command-alliance-track' }, [fill]),
     num,
   ]);
-  const zone = el('div', { class: 'battle-zone sector hidden' }, [label, cdGroup, row]);
-  return { zone, label, cdGroup, cdRows, row, fill, num };
+  const zone = el('div', { class: 'battle-zone sector hidden' }, [label, line, row]);
+  return { zone, label, cdGroup, cdRows, row, fill, num, cargoGroup, cargoChips };
 }
 
-/** 刷新星区资源栏（有星区数据才显示；含星区冷却组：仅冷却中显示、就绪隐藏）。
+/** 货物芯片·**名称段**文本：用户自定义名称优先；空串 ⇒ 回退该货物的**类型名**词条（`nameKey`）。
+ *  （名称本身是数据，故不再套一层 i18n 拼接模板；吨位/装载秒/等级各自成段、各走自己的短模板。） */
+function cargoNameText(c) {
+  return c.name || (c.nameKey ? i18n.t(c.nameKey) : c.type);
+}
+
+/* ===== 货物芯片（**唯一构造器**：星区栏与单位详情「装载货物」栏共用同一套 DOM/样式/文案口径） =====
+ * ★ DOM＝**六段独立元素**（顺序＝视觉顺序）：
+ *     `[.cargo-chip-seq 序号/占位] [.cargo-chip-name 名称] [.cargo-chip-bonus 加成%]
+ *      [.cargo-chip-lv 等级] [.cargo-chip-meta 吨位·装载秒] [.cargo-chip-pad 末尾填充]`
+ *   · 序号列 / 末尾填充**定宽**（宽度口径在 CSS，两段共用同一变量）；详情页不使用序号列（留空占位）。
+ * ★ 文案：名称段＝`cargoNameText`；加成段＝`battle.sector.cargoBonus`（`bonus=1` ⇒ 整段隐藏）；
+ *   等级段＝`battle.sector.cargoLv`（等级=1 ⇒ 整段隐藏）；末段＝`battle.sector.cargoMeta`
+ *   （吨位取整、装载秒走**唯一换算** `core/tick.js formatTickSeconds`）。
+ * ★ 颜色：`--chip-color` 由货物 `colorKey`（CSS 变量名）写入 ⇒ 边框＝**类型色**（None ⇒ 灰）。
+ * 返回 `{ cargo, chip, seqEl, nameEl, bonusEl, lvEl, metaEl, padEl, sig }`（`sig` 供刷新时判“文案要不要重写”）。 */
+function buildCargoChip(c) {
+  const seqEl = el('span', { class: 'cargo-chip-seq' }); // 定宽序号列（详情页恒空＝占位）
+  const nameEl = el('span', { class: 'cargo-chip-name' });
+  const bonusEl = el('span', { class: 'cargo-chip-bonus' });
+  const lvEl = el('span', { class: 'cargo-chip-lv' });
+  const metaEl = el('span', { class: 'cargo-chip-meta' });
+  const padEl = el('span', { class: 'cargo-chip-pad' }); // 末尾对称填充（与序号列同宽）
+  const chip = el('button', { class: 'cargo-chip', type: 'button' }, [
+    seqEl,
+    nameEl,
+    bonusEl,
+    lvEl,
+    metaEl,
+    padEl,
+  ]);
+  // ★ 类型色**唯一来源**＝货物定义的 `colorKey`（CSS 变量名）；缺失 → 兜底 None 灰
+  chip.style.setProperty('--chip-color', `var(${c.colorKey || '--cat-none'})`);
+  const item = { cargo: c, chip, seqEl, nameEl, bonusEl, lvEl, metaEl, padEl, sig: '' };
+  refreshCargoChipText(item);
+  return item;
+}
+/** 刷新货物芯片的**文字段**（名称/加成/等级/吨位·装载秒）——只在文案签名变化时重写 DOM（不逐 tick 抖动）。
+ *  ★ 各段取值口径与 `buildCargoChip` 完全一致（**同一实现**，不存在第二套文案逻辑）：
+ *    进舱后 `loadTicks` 会被引擎永久改写为 20t ⇒ 末段（装载秒数）随之刷新。 */
+function refreshCargoChipText(item) {
+  const c = item.cargo;
+  const bonusV = formatBonusPercent(c.bonus);
+  const sig = `${c.name || ''}|${c.nameKey || ''}|${c.type || ''}|${c.tons}|${c.loadTicks}|${c.level}|${bonusV}`;
+  if (sig === item.sig) return;
+  item.sig = sig;
+  item.nameEl.textContent = cargoNameText(c);
+  // ★ 加成：唯一换算 `core/utils.js formatBonusPercent`（倍率 → 增量百分比）；无加成（`'0'`）⇒ 整段隐藏
+  if (bonusV === '0') {
+    item.bonusEl.classList.add('hidden');
+    item.bonusEl.textContent = '';
+  } else {
+    item.bonusEl.classList.remove('hidden');
+    item.bonusEl.textContent = i18n.t('battle.sector.cargoBonus', { v: bonusV });
+  }
+  // ★ 等级：仅等级 ≠ 1 时显示该段（隐藏时其分隔符随 CSS `::before` 一并消失）
+  if ((c.level | 0) > 1) {
+    item.lvEl.classList.remove('hidden');
+    item.lvEl.textContent = i18n.t('battle.sector.cargoLv', { level: c.level });
+  } else {
+    item.lvEl.classList.add('hidden');
+    item.lvEl.textContent = '';
+  }
+  item.metaEl.textContent = i18n.t('battle.sector.cargoMeta', {
+    tons: Math.round(c.tons),
+    load: formatTickSeconds(c.loadTicks),
+  });
+}
+
+/** 用**最新只读快照**批量刷新一批货物芯片的文字段（星区栏 / 详情页共用同一实现）。
+ *  · `live` ＝该批芯片对应的货物字段对象列表（星区侧读 `battle.sector.cargos`、单位侧读
+ *    `cargoListOf(ship)`：**同一套字段名**，UI 只读、不自算任何值）；
+ *  · 芯片在**建时**持有的货物对象是**快照副本**（星区只读口径每次返回新对象）⇒ 这里用最新快照
+ *    覆盖 `chip.cargo`，从而反映引擎侧的变化（例如**装载完成后 `loadTicks` 被永久改写为 20t**）；
+ *  · 文案重写有**签名兜底**（`refreshCargoChipText` 内）⇒ 未变化时不写 DOM（不逐 tick 抖动）。 */
+function refreshCargoChipList(chips, live) {
+  for (const item of chips || []) {
+    const cur = (live || []).find((x) => x.id === item.cargo.id);
+    if (!cur) continue; // 该货物当前不在本列表（如已被装载/仍在星区）→ 调用方负责显隐
+    item.cargo = cur;
+    refreshCargoChipText(item);
+  }
+}
+
+/** 刷新星区资源栏（有星区数据才显示；含星区冷却组：仅冷却中显示、就绪隐藏；含星区货物组：无货物则整组隐藏）。
  *  ★ 「星区冷却组」的显示规则：**组内至少有一行冷却中**才显示该组（含小节标题）；全就绪 → 整组隐藏；
- *    **无星区数据 → 整组隐藏**（随整栏隐藏）。所有数值只读引擎口径 `battle.sector.cd`，UI 不自算。 */
+ *    **无星区数据 → 整组隐藏**（随整栏隐藏）。所有数值只读引擎口径 `battle.sector.cd`，UI 不自算。
+ *  ★ 「星区货物组」的显示规则：**星区有货物**才显示该组；每个芯片的**选中态**只读
+ *    `battle.sector.cargos[].queued`（引擎派生）——点击只调 `battle.toggleCargoQueue`，
+ *    **UI 不自算队列**；**序号列**只读引擎派生的 `queueIndex`（未入队 ⇒ 该列为空、但**定宽占位仍在**）；
+ *    **装载中**（`locked`）⇒ 置灰 + 虚线边 + 点击无效（引擎拒绝），悬停提示换成「装载中」文案。 */
 function refreshSectorZone() {
   if (!sectorZ) return;
   const sec = battle && battle.sector ? battle.sector : null;
@@ -704,6 +850,37 @@ function refreshSectorZone() {
     if (rem > 0) anyCd = true;
   }
   if (sectorZ.cdGroup) sectorZ.cdGroup.classList.toggle('hidden', !anyCd);
+  // ★ 星区货物组：**无货物 → 整组隐藏**（沿用“为空则隐藏”唯一规则；整栏无星区数据时同样隐藏）。
+  //   芯片只读引擎只读口径：`queued`（选中态）／`queueIndex`（**序号列**，未入队⇒置空、定宽占位仍在）
+  //   ／`locked`（**装载中**：置灰 + 虚线边，且点击无效——引擎侧 `toggleCargoQueue` 拒绝）。
+  const cargoList = has ? (sec.cargos || []) : [];
+  for (const c of sectorZ.cargoChips || []) {
+    const item = cargoList.find((x) => x.id === c.cargo.id); // ★ 芯片建时持有货物快照 ⇒ 以 `cargo.id` 定位
+    const queued = !!(item && item.queued);
+    const locked = !!(item && item.locked); // ★ 引擎派生：被装载器锁定（UI 不自算）
+    const qi = item ? item.queueIndex | 0 : 0; // ★ 引擎派生的队列序号（1 起；0＝未入队）——UI 不自算
+    c.chip.classList.toggle('hidden', !item);
+    c.chip.classList.toggle('queued', queued);
+    c.chip.classList.toggle('locked', locked);
+    c.seqEl.textContent = qi > 0 ? i18n.t('battle.sector.cargoSeq', { n: qi }) : '';
+    c.chip.title = i18n.t('battle.sector.cargoHover', {
+      type: item && item.nameKey ? i18n.t(item.nameKey) : '',
+      hint: i18n.t(
+        locked
+          ? // ★ 装载中：剩余时长＝引擎暴露的「需求 − 已推进」tick，经**唯一换算**
+            //   `core/tick.js formatTickSeconds` 折算为秒（UI **不外写公式**）
+            'battle.sector.cargoLockedHint'
+          : queued
+            ? 'battle.sector.cargoRemoveHint'
+            : 'battle.sector.cargoAddHint',
+        locked && item
+          ? { s: formatTickSeconds(Math.max(0, (item.loadNeedTicks | 0) - (item.loadProgressTicks | 0))) }
+          : undefined
+      ),
+    });
+  }
+  refreshCargoChipList(sectorZ.cargoChips, cargoList);
+  if (sectorZ.cargoGroup) sectorZ.cargoGroup.classList.toggle('hidden', !has || !cargoList.length);
   if (!has) {
     sectorZ.fill.style.width = '0%';
     sectorZ.num.textContent = '';
@@ -1073,6 +1250,12 @@ function perActText(ship, inst) {
   if ((fx.ore_gain || 0) > 0) {
     parts.push(i18n.t('battle.detail.statOreGain', { n: Math.round(fx.ore_gain * coeff(ship, 'mining')) }));
   }
+  // ★ 装载速度词条（`cargo_load`，自身·无目标，配合 `type` 标签 `cargo_loader`）：
+  //   直接展示该等级解析后的**速度加成原值**（不经类别系数缩放——速度公式里它是**加项**：
+  //   `速度 = 1 + 本值 + (运输系数 − 1)`，与引擎 `cargoLoadSpeedOf` 同一口径）。
+  if ((fx.cargo_load || 0) !== 0) {
+    parts.push(i18n.t('battle.detail.statCargoLoad', { v: fmtSignedNum(fx.cargo_load) }));
+  }
   if ((fx.shield_coeff_add || 0) !== 0) {
     // 类别系数**加性**词条（自身）：与 `attack_coeff_add` 同体例——**不经类别系数缩放**（它本身就是系数项）
     parts.push(i18n.t('battle.detail.statShieldCoeff', { v: fmtSignedNum(fx.shield_coeff_add) }));
@@ -1223,9 +1406,9 @@ function moduleRows(ship) {
     //   ② 不含矿物成本的既有模块**继续走原有整句键**（文案逐字不变 → 零回归）。
     //   ★ UI **只放数值、只读配置**：不判断冷却/携带量等运行期条件（那是引擎口径，UI 不自算）。
     const oreCost = fx.ore_cost || 0;
-    const costText = isStateModuleFx(fx)
-      ? i18n.t('battle.detail.stateCost') // 状态型：无激活周期（不显示“能量/冷却 每 Nt”这种误导信息）
-      : oreCost > 0
+    // 常规模块的**周期段**（含矿物成本者按「耗矿 · 耗能 · 周期」分段拼接；否则沿用原有整句键）
+    const cycleText =
+      oreCost > 0
         ? [
             i18n.t('battle.detail.costOre', { n: oreCost }),
             (fx.energy_cost || 0) > 0 ? i18n.t('battle.detail.costEnergy', { n: fx.energy_cost }) : null,
@@ -1236,15 +1419,20 @@ function moduleRows(ship) {
             .filter(Boolean)
             .join(' · ')
         : dur > 0
-          ? i18n.t('battle.detail.costCycleDur', {
-              n: fx.energy_cost || 0,
-              d: dur,
-              cd: fx.cooldown_ticks ?? 1,
-            })
-          : i18n.t('battle.detail.costCycle', {
-              n: fx.energy_cost || 0,
-              cd: fx.cooldown_ticks ?? 1,
-            });
+          ? i18n.t('battle.detail.costCycleDur', { n: fx.energy_cost || 0, d: dur, cd: fx.cooldown_ticks ?? 1 })
+          : i18n.t('battle.detail.costCycle', { n: fx.energy_cost || 0, cd: fx.cooldown_ticks ?? 1 });
+    // ★ **装载器**（`type` 标签 `cargo_loader`）：周期措辞＝**每件货物**（该模块无自身冷却，
+    //   其“忙/闲”由装载过程决定 ⇒ 显示“每 1t”会误导）；仍**只放数值、只读配置**。
+    const costText = isStateModuleFx(fx)
+      ? i18n.t('battle.detail.stateCost') // 状态型：无激活周期（不显示“能量/冷却 每 Nt”这种误导信息）
+      : isCargoLoaderFx(fx)
+        ? [
+            (fx.energy_cost || 0) > 0 ? i18n.t('battle.detail.costEnergy', { n: fx.energy_cost }) : null,
+            i18n.t('battle.detail.perCargo'),
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : cycleText;
     const contribEl = el('div', { class: 'mod-contrib', text: contribText(ship, inst) });
     // 该模块的独立护盾池条（仅当模块当前持有独立池——时长型护盾激活中——时显示）
     const poolMini = makeMiniPool();
@@ -1406,6 +1594,11 @@ function stateModuleUndeactivatable(inst) {
 
 function modStatusText(ship, inst) {
   if (inst.enabled === false) return i18n.t('battle.detail.disabled');
+  // ★ **装载器进行中**（唯一读口径 `battle.cargoLoadingOf`）：装载过程**优先于**“就绪/冷却”措辞
+  //   （该模块无自身冷却，若按冷却分支走会显示「就绪」而实际正在装 ⇒ 误导）。
+  //   进度/需求 tick 直接来自引擎；UI 不自算、不换算（与其它状态词一样按 `t` 显示）。
+  const ld = battle && typeof battle.cargoLoadingOf === 'function' ? battle.cargoLoadingOf(inst) : null;
+  if (ld) return i18n.t('battle.detail.loading', { done: ld.elapsed, need: ld.need });
   // 状态型模块（条件型自身增益）：以引擎结算落地的生效标志为唯一判据
   const st = stateModuleState(inst);
   if (st === true) return i18n.t('battle.detail.stateActive');
@@ -1533,6 +1726,76 @@ function buildCoeffSection(ship) {
   return { titleEl, bodyEl: body, refresh };
 }
 
+/* ===== 单位详情 ·「装载货物」栏（**单位系数区块下方**；标题单独一行 + 芯片单独一行）=====
+ * · 内容＝该单位**已装载（已入舱）**的货物 **＋ 该单位正在装载（锁定中、尚未入舱）**的货物，
+ *   两类都用唯一构造器 `buildCargoChip`（同 `.cargo-chip` 体例、边框色＝类型色、字号随 `--chip-font-size`）；
+ * · **两类芯片的视觉与点击**：
+ *   · **已入舱**：现状不变 —— 点击 ⇒ 引擎**唯一接口** `battle.unloadCargo(shipId, cargoId)` 返还星区；
+ *   · **在装/锁定中**：加 `.cargo-chip.locked`（**置灰 + 虚线边 + not-allowed**，与星区栏同一体例），
+ *     **点击无效**（引擎侧不提供“中途返还”路径：该货物尚不在 `ship.cargos` 中，`unloadCargo` 会返回
+ *     `{ok:false,reason:'cargo'}`）；悬停＝`battle.sector.cargoLockedHint`（`装载中：剩余约 {s}s`）。
+ * · **只读口径（复用既有派生，未新增引擎接口）**：
+ *   · 已入舱 ⇒ `cargoListOf(ship)`（实体清单）；
+ *   · 在装 ⇒ `battle.sector.cargos` 中 **`lockedBy === ship.id`** 的项（引擎派生字段；进度/需求时长
+ *     亦为派生字段）—— UI **只做筛选与展示，不自算任何锁定/进度规则**。
+ * · **有货物才显示**：已入舱或在装**任一存在** ⇒ 显示该栏；两者皆无 ⇒ **整栏隐藏**（唯一规则）。
+ * · **可操作性**：返还仍只在 `我方 且 存活 且 对战中` 生效（与「主要攻击目标」栏同一口径；
+ *   引擎接口本身保持通用）。 */
+function buildShipCargoRow(ship) {
+  const label = el('div', { class: 'detail-cargos-label', text: i18n.t('battle.detail.cargos') });
+  const chipRow = el('div', { class: 'detail-cargos-chips' });
+  const rowEl = el('div', { class: 'detail-cargos hidden' }, [label, chipRow]);
+  const byId = new Map(); // cargoId → 芯片项（货物在星区/单位之间搬移，id 恒定 ⇒ 复用同一芯片）
+  const operable = () => ship.side === 'ally' && ship.alive && !!battle && battle.phase === 'running';
+  const chipFor = (cargo) => {
+    let item = byId.get(cargo.id);
+    if (item) return item;
+    item = buildCargoChip(cargo);
+    item.chip.addEventListener('click', () => {
+      if (!operable() || !battle || typeof battle.unloadCargo !== 'function') return;
+      // 唯一接口：返还星区（**在装货物不在 `ship.cargos` 中 ⇒ 引擎直接拒绝**，无需 UI 自算“能不能点”）
+      battle.unloadCargo(ship.id, cargo.id);
+      refreshSectorZone(); // 星区栏即时反映（芯片重新出现、可再次入队）
+      refresh();           // 本行即时反映（该芯片隐藏或转为在装态）
+    });
+    byId.set(cargo.id, item);
+    chipRow.append(item.chip);
+    return item;
+  };
+  const refresh = () => {
+    const loaded = cargoListOf(ship); // ① 已入舱（实体清单）
+    const sec = battle && battle.sector ? battle.sector : null;
+    // ② 在装/锁定中：只读 `battle.sector.cargos` 的**引擎派生** `lockedBy`（UI 不自算锁定规则）
+    const loading = (sec && sec.cargos ? sec.cargos : []).filter((c) => c.lockedBy === ship.id);
+    const shown = new Set();
+    for (const cargo of loaded) {
+      shown.add(cargo.id);
+      const item = chipFor(cargo);
+      item.cargo = cargo; // 直接取实体（同一对象）⇒ 字段变化（loadTicks → 20t）即时反映
+      refreshCargoChipText(item);
+      item.chip.classList.remove('hidden', 'queued', 'locked'); // 已入舱：队列/装载中语义均不适用
+      item.chip.title = operable() ? i18n.t('battle.detail.cargoUnloadHint') : '';
+    }
+    for (const cargo of loading) {
+      if (shown.has(cargo.id)) continue; // 防御：同一件不会既已入舱又在装
+      shown.add(cargo.id);
+      const item = chipFor(cargo);
+      item.cargo = cargo; // 星区只读快照项（含 loadProgressTicks/loadNeedTicks，均为引擎派生）
+      refreshCargoChipText(item);
+      item.chip.classList.remove('hidden', 'queued');
+      item.chip.classList.add('locked'); // ★ 在装/锁定中：与星区栏同一体例（置灰 + 虚线）
+      item.chip.title = i18n.t('battle.sector.cargoLockedHint', {
+        // 剩余秒数＝formatTickSeconds(需求 − 已推进)（唯一换算，UI 不外写公式）
+        s: formatTickSeconds(Math.max(0, (cargo.loadNeedTicks | 0) - (cargo.loadProgressTicks | 0))),
+      });
+    }
+    for (const [id, item] of byId) if (!shown.has(id)) item.chip.classList.add('hidden');
+    rowEl.classList.toggle('hidden', shown.size === 0); // 两者皆无 ⇒ 整栏隐藏
+  };
+  refresh();
+  return { el: rowEl, refresh };
+}
+
 function buildDetail(ship) {
   const tagKey = ship.side === 'ally' ? 'battle.side.ally' : 'battle.side.enemy';
   const type = SHIPS[ship.typeId];
@@ -1569,6 +1832,8 @@ function buildDetail(ship) {
 
   // ★ 单位系数栏：置于“模块字段”之前（**可折叠、默认折叠**：类别系数 / 受伤减免 / 时间系数 / 其它系数）
   const coeffSec = buildCoeffSection(ship);
+  // ★ 「装载货物」栏：**单位系数区块下方单独一行**（有货物才显示；点芯片＝返还星区）
+  const cargoRow = buildShipCargoRow(ship);
 
   const modsTitle = el('div', { class: 'detail-subtitle', text: i18n.t('battle.detail.modules') });
   // 长期(本体)护盾池显示在所有模块详情信息的最前面
@@ -1587,6 +1852,7 @@ function buildDetail(ship) {
     topRow,
     coeffSec.titleEl,
     coeffSec.bodyEl,
+    cargoRow.el,
     modsTitle,
     modsList,
     targetLabel,
@@ -1616,6 +1882,7 @@ function buildDetail(ship) {
       dOre.el.title = i18n.t('battle.cargo.breakdown', { base: op.base, modules: op.modules });
     }
     coeffSec.refresh(); // 单位系数栏：每 tick 按引擎函数重算（运行期修饰即时反映）
+    cargoRow.refresh(); // 「装载货物」栏：每 tick 只读 `cargoListOf(ship)`（无货物 ⇒ 整行隐藏）
     if (ship.temp && ship.alive && typeof ship.tempLeft === 'number') {
       lifeNote.style.display = '';
       lifeNote.textContent = i18n.t('battle.lifeLeft', { n: Math.max(0, Math.ceil(ship.tempLeft / SEC_TICKS)) });
@@ -2124,12 +2391,19 @@ function bindGlobalListeners() {
   listenersBound = true;
 
   bus.on('tick', () => {
-    if (!battle) return;
-    refreshStatus();
-    refreshCommand();
-    if (battle.phase !== 'running') return;
-    if (updateCards) updateCards();
-    refreshDetail();
+    // ★ **延后一拍（微任务）再刷新**：引擎与本 UI 都订阅 `tick`，而两者的**注册先后**决定了同步回调
+    //   的执行顺序（首局：引擎先注册 ⇒ UI 在结算之后；重开局：UI 先注册 ⇒ 会读到**上一 tick** 的状态）。
+    //   微任务在**本帧全部同步回调跑完之后、渲染之前**执行 ⇒ 无论注册顺序如何，UI 读到的都是
+    //   **本 tick 引擎结算之后**的状态（含「装载完成 ⇒ 货物离开星区栏」这类本 tick 落地结果），
+    //   且仍在同一帧内完成、无可见延迟。
+    queueMicrotask(() => {
+      if (!battle) return;
+      refreshStatus();
+      refreshCommand();
+      if (battle.phase !== 'running') return;
+      if (updateCards) updateCards();
+      refreshDetail();
+    });
   });
 
   bus.on('battle:settled', ({ result }) => {
