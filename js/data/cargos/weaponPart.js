@@ -19,6 +19,6 @@ export default {
   levels: [
     { level: 5, tons: 5, loadTicks: 300, bonus: 1 },
     { level: 10, tons: 5, loadTicks: 300, bonus: 1 },
-    { level: 16, tons: 5, loadTicks: 300, bonus: 1 },
+    { level: 16, tons: 5, loadTicks: 600, bonus: 1 },
   ],
 };

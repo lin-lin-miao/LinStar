@@ -476,18 +476,24 @@ export function oreCapPartsOf(ship) {
   return capPartsOf(ship, ORE_KEY, 'mining', 'baseOreCap');
 }
 /** 当前**已装载货物量**的唯一读口径（＝`hull.cargo`，单位：吨；UI 显示「已用 / 上限」用）。
- *  ★ **唯一写入者**＝战斗层「货物装载」结算（`battle.js` 结算步骤 5 `settleCargoLoads`）：
- *     装载完成时 `+= 货物.tons`；**返还**（单位阵亡 / 详情页点击返还）时 `−= 货物.tons` 并归零兜底。
- *  ★ 与**实体清单** `cargoListOf(ship)` **同源同写**：两者恒在同一处（上列两个函数）一起更新，
+ *  ★ **唯一写入者**＝战斗层「货物链」的四个落地点（`battle.js`，全部与实体清单**同写同源**）：
+ *     ① **装载完成**（结算步骤 5 `settleCargoLoads` → `landCargoOn`）：`+= 货物.tons`；
+ *     ② **返还**（单位阵亡 / 详情页点击返还 → `returnCargoToSector`）：`−= 货物.tons` 并归零兜底；
+ *     ③ **货物传输**（结算步骤 3d-3 `settleCargoTransfers`）：源 `−= 整件吨位`、目标 `+= 同额`（成对原子）；
+ *     ④ **货物维修消耗**（结算步骤 3d-4 `settleCargoRepairs`）：`−= 整件吨位`（货物销毁、不返还星区）。
+ *  ★ 与**实体清单** `cargoListOf(ship)` **同源同写**：两者恒在同一处一起更新，
  *     `hull.cargo` 是该清单吨位的**唯一数值口径**（UI 不得自行按清单求和、引擎也不重算）。 */
 export function cargoLoadOf(ship) {
   return Math.max(0, (ship && ship.hull && ship.hull.cargo) || 0);
 }
-/** ★ 已装载**货物实体**清单的唯一读口径（只读；引擎写入者为 `battle.js` 装载结算步骤 5）。
+/** ★ 已装载**货物实体**清单的唯一读口径（只读；引擎写入者为 `battle.js` 货物链的四个落地点）。
  *  · 每项＝**星区货物实例本身**（同一 `id`/同一对象：从星区列表移出、原样进入本清单 ⇒
  *    “同一件货物”的身份不变，`loadTicks`/`level`/`bonus` 等字段随之保持）；
+ *  · ★ **只有「已装载完成（已入舱）」的货物在本清单内**：**在装（锁定中、尚未入舱）的货物仍在星区列表**
+ *    ⇒ 凡以本清单为数据源的功能（UI「装载货物」栏、`cargo_transfer` 传输、`cargo_repair` 消耗）
+ *    **天然看不到在装货物**（引擎另有 `cargo._loadBy` 锁定索引作防御性复核）；
  *  · 数值口径仍以 `cargoLoadOf(ship)` 为准（本函数只给实体清单，供 UI 渲染/操作）；
- *  · 只读：调用方**不得**增删该数组（增删由装载结算与返还接口统一落地）。 */
+ *  · 只读：调用方**不得**增删该数组（增删由装载结算、传输/维修结算与返还接口统一落地）。 */
 export function cargoListOf(ship) {
   return (ship && ship.cargos) || [];
 }

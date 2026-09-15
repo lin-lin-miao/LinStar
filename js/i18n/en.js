@@ -66,10 +66,13 @@ export default {
   'module.oreTransfer': 'Ore Transfer', // Mining · single ally target (moves own ore 1:1, no coefficient)
   'module.cargoHold': 'Cargo Hold',
   'module.loadingBeam': 'Loading Beam', // Transport · active, targetless (tag cargo_loader + word cargo_load: loads sector cargo into the hold)
+  'module.cargoTransfer': 'Cargo Transfer', // Transport · active, single ally target (tag cargo_transfer: hands over a whole loaded cargo)
+  'module.cargoRepair': 'Cargo Repair', // Transport · active, single ally target incl. self (tag cargo_repair: spends a whole loaded cargo for hp_per_ton)
   'module.oreHold': 'Ore Hold',
   'module.miningLaser': 'Mining Laser',
   'module.oreCompressor': 'Ore Compressor', // Mining · passive booster (own mining coefficient)
   'module.oreRepair': 'Ore Repair', // Mining · single ally target incl. self (spends own ore_cost to heal hp_target, raw value)
+  'module.cargoEnhance': 'Cargo Enhancement', // Mining · single ally target incl. self (ore + energy → raise one not-yet-enhanced cargo's bonus by bonus_add; one-shot, permanent; tag cargo_enhance)
   'module.genesis': 'Genesis', // Mining · targetless active (sector ore reserve, additive)
   'module.oreEnrichment': 'Ore Enrichment', // Mining · targetless active (sector ore reserve, multiplicative)
   'module.emp': 'EMP',
@@ -167,7 +170,8 @@ export default {
   'battle.drill.warn.cargoUnknownTemplate': 'Unknown cargo type ({id}) — it will be ignored',
   'battle.drill.warn.cargoCountClamped': 'Cargo count out of range — counted as {n}',
   'battle.drill.warn.cargoClamped': 'Cargo {field} out of range — clamped to {to}',
-  'battle.drill.warn.cargoOverflow': 'Too much sector cargo (max {n}) — the excess was dropped',
+  // ★ Removed with the total-cargo-cap removal: `battle.drill.warn.cargoOverflow`
+  //   (the engine no longer emits that warning code — cargo entry count is unlimited)
   'battle.zone.enemy': 'Enemy Combat Units',
   'battle.zone.enemyLogistics': 'Enemy Logistics Units',
   'battle.zone.combat': 'Our Combat Units',
@@ -191,7 +195,10 @@ export default {
   //     · cargoBonus incremental bonus percent (`bonus` is a multiplier: 1 → hidden, 1.1 → `10%`);
   //     · cargoLv    level (segment shown ONLY when the level is not 1);
   //     · cargoMeta  tons · load seconds (last text segment);
-  //     · trailing pad  empty spacer of the SAME WIDTH as the queue-number column (CSS only).
+  //     · trailing pad  spacer of the SAME WIDTH as the queue-number column (CSS only); it shows the
+  //                     language-neutral `※` badge when the cargo has been enhanced (engine-derived
+  //                     `cargo.enhanced`; the glyph is a JS constant, NOT an i18n key) and stays empty
+  //                     otherwise ⇒ the chip width never changes.
   'battle.sector.cargoTitle': 'Sector Cargo',
   'battle.sector.cargoSeq': '{n}',
   'battle.sector.cargoBonus': '{v}%',
@@ -201,6 +208,14 @@ export default {
   'battle.sector.cargoAddHint': 'Click to add to the priority queue',
   'battle.sector.cargoRemoveHint': 'Click to remove from the queue',
   'battle.sector.cargoLockedHint': 'Loading — about {s}s left', // Hover hint while locked by a loader; seconds = formatTickSeconds(need − elapsed); clicking does nothing
+  // ★ Hover hint for cargo the PLAYER unloaded manually (engine-derived read-only `manualUnloaded` +
+  //   `manualUnloadedTicks`): `{s}` = seconds left (engine-derived ticks → `core/tick.js
+  //   formatTickSeconds`; the UI never computes expiry itself). Explains that this side's loaders will
+  //   not auto-take it for now and that queueing it re-enables loading immediately.
+  'battle.sector.cargoHoldHint': 'Manually unloaded — auto-loading skips it for {s}s (click to queue it again)',
+  // ★ Hover text for the `※` "enhanced" badge (the glyph is a language-neutral JS constant, NOT an i18n
+  //   key); attached to the trailing pad ONLY when `cargo.enhanced === true`.
+  'battle.sector.cargoEnhanced': 'Enhanced',
   'battle.command.fleet': 'Fleet Primary Target',
   'battle.command.preview': 'Current: {name}',
   'battle.command.noTarget': '(No living targets)',
@@ -343,6 +358,9 @@ export default {
   'battle.detail.statSectorOreAdd': 'Sector ore {v}/shot', // Genesis: sector reserve, additive (uncapped)
   'battle.detail.statSectorOreMul': 'Sector ore ×{v}/shot', // Ore Enrichment: sector reserve, multiplicative
   'battle.detail.statOreT': 'Target ore +{n}', // Ore Transfer: ore moved 1:1 (no coefficient applied, shown raw)
+  'battle.detail.statCargoTransfer': 'Transfers 1 cargo', // Cargo Transfer: moves a whole cargo (no numeric word ⇒ granularity only)
+  'battle.detail.statHpPerTon': 'Heal {v}/ton', // Cargo Repair: `hp_per_ton` (raw word value, no category coeff; heal = tons × value)
+  'battle.detail.statBonusAdd': 'Bonus {v}%', // Cargo Enhancement: `bonus_add` (raw word value, no category coeff; DELTA via formatBonusDeltaPercent, sign included ⇒ no `+` here)
   'battle.detail.statCap': 'Shield cap +{n}',
   // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
   //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
@@ -412,5 +430,31 @@ export default {
   //   amount = HP actually restored (hpMax clamp included, single source of truth); emitted at the
   //   healing landing site (settlement step 4c, same batch as the numbers); owner/target colored.
   'battle.log.oreRepair': "{owner}'s {module}: spent {n} ore, restored {amount} HP to {target}",
+  // ★ Cargo Transfer (`cargo_transfer`): low-frequency — 1 entry only when a whole cargo actually moved
+  //   (`cargo` = the moved cargo's display name); at most 1 per module per tick; emitted at the step 3d-3
+  //   landing site together with the numbers; owner/target colored, module always green, `cargo` plain text.
+  'battle.log.cargoTransfer': "{owner}'s {module}: transferred {cargo} to {target}",
+  // ★ Cargo Repair (`cargo_repair`): low-frequency — only when actual healing > 0 AND a cargo was really
+  //   consumed this tick; `cargo` = the consumed cargo, `amount` = actual healing (hpMax-capped);
+  //   owner/target colored, module always green; emitted at the step 4c healing site.
+  'battle.log.cargoRepair': "{owner}'s {module}: consumed {cargo}, restored {amount} HP to {target}",
+  // ★ Cargo Enhancement (`cargo_enhance`): low-frequency — 1 entry only when the write really happened
+  //   (that cargo was enhanced this tick); at most 1 per module per tick (single target, one cargo);
+  //   emitted at the step 3d-5 landing site together with the numbers; `cargo` = the enhanced cargo's
+  //   display name (same naming source as the UI chip), `v` = bonus_add as a percentage increment
+  //   (sole conversion `core/utils.js formatBonusDeltaPercent`: DELTA semantics, sign included in the
+  //   string ⇒ the template must NOT add `+`, or it would render `++10%`); owner colored, module green.
+  'battle.log.cargoEnhance': "{owner}'s {module}: enhanced {cargo} (bonus {v}%)",
+  // ★ Cargo load complete (`cargo_loader`, settlement step 5): low-frequency — exactly 1 entry only when
+  //   cargo actually lands (sole landing point `landCargoOn`; at most 1 per module per tick); emitted at
+  //   the landing site together with the numbers (numbers first, then the sentence); `cargo` = the cargo's
+  //   display name (same naming source as the UI chip), owner colored, module always green.
+  'battle.log.cargoLoad': "{owner}'s {module}: loaded {cargo}",
+  // ★ Unload back to the sector (player clicks a chip in the unit detail panel): low-frequency — exactly
+  //   1 entry per effective click; the action is driven by the UI BETWEEN ticks ⇒ emitted immediately,
+  //   never queued in `__pending`; `{ok:false}` clicks are not logged and a repeat click produces no
+  //   second entry (the cargo is no longer aboard ⇒ idempotent); `cargo` = display name, owner colored
+  //   (no module segment).
+  'battle.log.cargoUnload': '{owner}: unloaded {cargo} to the sector',
   'battle.result.close': 'Dismiss',
 };

@@ -66,10 +66,13 @@ export default {
   'module.oreTransfer': '矿物输送', // 采矿 · 主动单体友方（把自身携带矿物 **1:1** 输送给目标 ore_target）
   'module.cargoHold': '货舱',
   'module.loadingBeam': '装载光束', // 运输 · 主动无目标（标签 cargo_loader + 词条 cargo_load：把星区货物装进本舰货舱）
+  'module.cargoTransfer': '货物传输', // 运输 · 主动单体友方（标签 cargo_transfer：把**整件已入舱货物**原样搬运给目标）
+  'module.cargoRepair': '货物维修', // 运输 · 主动单体友方含自身（标签 cargo_repair：消耗**整件已入舱货物**换回血 hp_per_ton）
   'module.oreHold': '矿舱',
   'module.miningLaser': '采矿激光',
   'module.oreCompressor': '矿物压缩', // 采矿 · 常驻增幅器（自身采矿系数 mining_coeff_add）
   'module.oreRepair': '矿物维修', // 采矿 · 主动单体友方（含自身；耗自身矿物 ore_cost 修复目标 hp_target，量值按词条原值）
+  'module.cargoEnhance': '货物强化', // 采矿 · 主动单体友方含自身（耗矿+耗能，把目标货舱**一件尚未被强化**的货物 bonus 加性提高 bonus_add；一次性永久；标签 cargo_enhance）
   'module.genesis': '创世纪', // 采矿 · 无目标主动（星区剩余储量**加法** sector_ore_add）
   'module.oreEnrichment': '矿藏富集', // 采矿 · 无目标主动（星区剩余储量**乘法** sector_ore_mul）
   'module.emp': '电磁脉冲',
@@ -166,7 +169,8 @@ export default {
   'battle.drill.warn.cargoUnknownTemplate': '未知货物类型（{id}），将被忽略',
   'battle.drill.warn.cargoCountClamped': '货物数量超出允许范围，已按 {n} 计',
   'battle.drill.warn.cargoClamped': '货物{field}超出允许范围，已钳制为 {to}',
-  'battle.drill.warn.cargoOverflow': '星区货物超出上限（{n} 项），超出部分已截断',
+  // ★ 原 `battle.drill.warn.cargoOverflow`（星区货物总数超上限已截断）已**随总件数上限的取消删除**
+  //   （用户口径：编队定义与运行时都不封顶 ⇒ 引擎不再产生该告警码；删除而非保留，避免留下永不触发的死文案）
   'battle.zone.enemy': '敌方战斗单位',
   'battle.zone.enemyLogistics': '敌方后勤单位',
   'battle.zone.combat': '我方战斗单位',
@@ -189,7 +193,10 @@ export default {
   //     · cargoBonus **加成增量百分比**（`bonus` 是倍率：1 → 整段不显示、1.1 → `10%`）；
   //     · cargoLv    等级（**仅等级 ≠ 1 时显示**该段）；
   //     · cargoMeta  吨位 · 装载秒数（末段文字）；
-  //     · 末尾填充   与序号列**同宽的空占位**（无文案，纯 CSS 定宽，左右留白对称）。
+  //     · 末尾填充   与序号列**同宽**的占位格：**该货物已被「货物强化」强化过**（引擎只读口径
+  //                  `cargo.enhanced`）时在其中显示**语言无关徽标 `※`**（字符为 JS 常量、不走 i18n；
+  //                  无悬停文案键 cargoEnhanced ⇒ 悬停显示「已强化」），否则该格**保持空占位** ——
+  //                  宽度口径不变 ⇒ **芯片宽度与文字位置不跳动**。
   'battle.sector.cargoTitle': '星区货物',
   'battle.sector.cargoSeq': '{n}',
   'battle.sector.cargoBonus': '{v}%',
@@ -199,6 +206,14 @@ export default {
   'battle.sector.cargoAddHint': '点击加入优先队列',
   'battle.sector.cargoRemoveHint': '点击移出队列',
   'battle.sector.cargoLockedHint': '装载中：剩余约 {s}s', // 被装载器锁定（引擎派生 locked）时的悬停提示；剩余秒数＝formatTickSeconds(需求−已推进)；此时点击无效
+  // ★ **玩家手动卸载**（引擎只读派生字段 `manualUnloaded` + `manualUnloadedTicks`）时的悬停提示：
+  //   `{s}`＝**剩余有效秒数**（引擎派生 `manualUnloadedTicks` → `core/tick.js formatTickSeconds`，
+  //   UI **不自算到期**）；说明“本阵营装载器暂时不会自动把它装回去、点击入队即可立即再装”
+  //   （仅在「未入队且未在装载」时替换 cargoAddHint）。
+  'battle.sector.cargoHoldHint': '已手动卸载：{s}s 内不会被自动装载（点击入队可再装）',
+  // ★ 「已强化」徽标（`※`，语言无关符号，字符由 UI 常量提供、**不占 i18n 键**）的**悬停说明**：
+  //   只在货物 `enhanced === true` 时挂到**末尾占位格**上（最短新键；不含 `{v}`，与数值无关）。
+  'battle.sector.cargoEnhanced': '已强化',
   'battle.command.fleet': '全队主要目标',
   'battle.command.preview': '当前命中：{name}',
   'battle.command.noTarget': '（无存活目标）',
@@ -341,6 +356,9 @@ export default {
   'battle.detail.statSectorOreAdd': '星区矿物 {v}/次', // 创世纪：星区剩余储量加法（绝对增量、无上限）
   'battle.detail.statSectorOreMul': '星区矿物 ×{v}/次', // 矿藏富集：星区剩余储量乘法（展示实际乘数 1+比例）
   'battle.detail.statOreT': '目标矿物 +{n}', // 矿物输送：1:1 输送给目标的矿物量（**不乘任何系数**，原样显示）
+  'battle.detail.statCargoTransfer': '传输 1 件货物', // 货物传输：整件搬运（无数值词条 ⇒ 只显示粒度）
+  'battle.detail.statHpPerTon': '每吨回血 {v}', // 货物维修：`hp_per_ton`（词条原值、不乘类别系数；回血＝吨位×本值）
+  'battle.detail.statBonusAdd': '加成 {v}%', // 货物强化：`bonus_add`（词条原值、不乘类别系数；**增量**走唯一换算 formatBonusDeltaPercent，自带正负号 ⇒ 模板不写 `+`）
   'battle.detail.statCap': '护盾上限 +{n}',
   // ★ 自身常驻静态加成（增幅器类自身词条）：只放数值（无机制说明句）
   //   ★ 能量上限可**取负**（护盾电池的代价）→ 统一用带符号数值 {v}（fmtSigned 渲染 +N / −N）。
@@ -409,5 +427,27 @@ export default {
   //   每模块每 tick 至多 1 条；`n`＝**实际扣矿量**、`amount`＝**实际回血量**（含 hpMax 截断，口径唯一）；
   //   owner/target 着色、module 恒绿；成句在结算步骤 4c 的**回血落地处**（与数值同批）。
   'battle.log.oreRepair': '{owner}的{module}：消耗 {n} 点矿物，修复 {target} {amount} 点生命',
+  // ★ 货物传输（`cargo_transfer`）：低频——**仅在整件货物实际搬运成功**时记一条（`cargo`＝被搬运货物的显示名），
+  //   每模块每 tick 至多 1 条（单目标单件）；成句在结算步骤 3d-3 的**落地处**（与数值同批）；
+  //   owner/target 着色、module 恒绿，`cargo` 为纯文本（与 UI 芯片同一名称口径）。
+  'battle.log.cargoTransfer': '{owner}的{module}：把 {cargo} 传输给 {target}',
+  // ★ 货物维修（`cargo_repair`）：低频——**仅在实际回血 > 0 且本 tick 确实消耗了一件货物**时记一条；
+  //   `cargo`＝**实际被消耗的货物**显示名、`amount`＝**实际回血量**（含 hpMax 截断，口径唯一）；
+  //   owner/target 着色、module 恒绿；成句在结算步骤 4c 的**回血落地处**（与数值同批）。
+  'battle.log.cargoRepair': '{owner}的{module}：消耗 {cargo}，修复 {target} {amount} 点生命',
+  // ★ 货物强化（`cargo_enhance`）：低频——**仅在真正写入**（该货物本 tick 确实被强化）时记一条，
+  //   每模块每 tick 至多 1 条（单目标单件）；成句在结算步骤 3d-5 的**落地处**（与数值同批）；
+  //   `cargo`＝被强化货物显示名（与 UI 芯片同一名称口径）、`v`＝`bonus_add` 的**增量百分比**
+  //   （唯一换算 `core/utils.js formatBonusDeltaPercent`：**增量语义**、**字符串自带正负号** ⇒
+  //    模板里**不再写 `+`**，否则会出现 `++10%`）；owner 着色、module 恒绿、`cargo` 为纯文本。
+  'battle.log.cargoEnhance': '{owner}的{module}：强化了 {cargo}（加成 {v}%）',
+  // ★ 装载完成（`cargo_loader`，结算步骤 5）：低频——**仅在货物真正入舱时记 1 条**（唯一入舱点
+  //   `landCargoOn`；每模块每 tick ≤ 1 条）；成句在**完成落地处**（与数值同批：先落数值、后成句）；
+  //   `cargo`＝货物显示名（与 UI 芯片同一名称口径）、owner 着色、module 恒绿。
+  'battle.log.cargoLoad': '{owner}的{module}：装载 {cargo} 完成',
+  // ★ 卸载回星区（玩家在详情页点芯片主动返还）：低频——**一次有效点击 1 条**；
+  //   该动作由 **UI 在 tick 之间即时触发** ⇒ 立即成句、**不写 `__pending`**；`{ok:false}` 不记、重复点击
+  //   因该件已不在货舱而不再成句（幂等）；`cargo`＝货物显示名、owner 着色（无 module 段）。
+  'battle.log.cargoUnload': '{owner}：把 {cargo} 卸载回星区',
   'battle.result.close': '收起',
 };

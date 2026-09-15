@@ -708,7 +708,9 @@
  *      [.cargo-chip-lv 等级] [.cargo-chip-meta 吨位·装载秒] [.cargo-chip-pad 末尾填充]`
  *     · 段间分隔符由 CSS `::before` 提供（语言无关标点）⇒ **某段隐藏时其分隔符自动消失**；
  *     · `.cargo-chip-pad` 与 `.cargo-chip-seq` **共用同一宽度口径 `--cargo-seq-w`**（改宽只改一处），
- *       一左一右等宽对称 ⇒ 「名称+内容」在芯片内视觉居中、左右留白对称。
+ *       一左一右等宽对称 ⇒ 「名称+内容」在芯片内视觉居中、左右留白对称；
+ *       `.cargo-chip-pad` **兼作「已强化」徽标位**（`※`，判据＝引擎只读 `cargo.enhanced`）——
+ *       有徽标时仍**占同一格宽**，故芯片宽度与文字位置不跳动。
  *   · **芯片高度固定 32px**（`height` + `inline-flex` + `align-items:center`）⇒ 内容**垂直居中且不裁切**；
  *     **文字大小不变**（仍读 `--chip-font-size`，**不随高度调整**；本轮该变量 11px → **13px**，
  *     三处同源芯片一并变，高度口径不变）。
@@ -739,12 +741,18 @@
  *   而 `.cargo-chip` 自身带 `display:inline-flex` ⇒ 缺了这条，`classList.add('hidden')` **完全不生效**
  *   （芯片不会消失）。**星区栏「货物被装载走 ⇒ 芯片消失」与详情栏「不在本清单 ⇒ 芯片隐藏」都依赖它。** */
 .cargo-chip.hidden { display: none; }
-/* 序号列 & 末尾填充：**同宽**（同一变量来源）、**不参与收缩** ⇒ 定宽留白无论入队与否都恒定
+/* 序号列 & 末尾占位格：**同宽**（同一变量来源）、**不参与收缩** ⇒ 定宽留白无论入队与否都恒定
  * （序号列右对齐：1 位/2 位序号同宽，入队/取消时芯片宽度与文字位置**不跳动**）。 */
 .cargo-chip-seq,
 .cargo-chip-pad { display: inline-block; flex: 0 0 auto; width: var(--cargo-seq-w); }
 .cargo-chip-seq { text-align: right; margin-right: 4px; opacity: 0.85; }
-.cargo-chip-pad { margin-left: 4px; } /* 与序号列的 4px 间距**对称** */
+/* ★ 末尾占位格：**兼作「已强化」徽标位**（引擎只读 `enhanced` ⇒ UI 在其中写语言无关符号 `※`，否则留空）。
+ *   徽标**不新造配色**（继承芯片正文色＝类型色），也**不改宽度口径**：
+ *   · `text-align:center` ⇒ 符号在格内居中（该格此前恒为空，居中不影响任何既有观感）；
+ *   · `min-width:0` + `overflow:hidden` ⇒ **兜底保证**该格宽度恒为 `--cargo-seq-w`
+ *     （flex 项的自动最小尺寸＝内容尺寸，若个别字体把 `※` 画得比 2.2ch 还宽，没有这两条会把芯片**撑宽**；
+ *      加了之后最多裁掉一点符号边缘，**芯片宽度与文字位置绝不跳动**）。 */
+.cargo-chip-pad { margin-left: 4px; text-align: center; min-width: 0; overflow: hidden; } /* 与序号列的 4px 间距**对称** */
 /* 名称 / 吨位·装载秒数：**可收缩 + 省略号**（文字过长时在段内收尾，不撑破芯片、不溢出） */
 .cargo-chip-name,
 .cargo-chip-meta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

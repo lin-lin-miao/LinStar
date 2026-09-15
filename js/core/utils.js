@@ -69,6 +69,28 @@ export function formatBonusPercent(bonus) {
   return String(Number(inc.toFixed(1)));
 }
 
+/** ★ **增量 → 增量百分比**的唯一换算口径（`delta` 本身就是**增量**，不是倍率）：
+ *  `百分比 = delta × 100`，例如 0 → `'0'`、0.1 → `'+10'`、0.15 → `'+15'`、0.3 → `'+30'`、
+ *  −0.05 → `'−5'`。
+ *  · ★ **与 `formatBonusPercent` 的分工（勿混用）**：
+ *    `formatBonusPercent` 收的是**倍率**（中性值 1，公式 `(b−1)×100`，用于货物芯片的 `bonus` 与
+ *    加成类倍率词条）；本函数收的是**增量**（中性值 0，公式 `d×100`，用于 `bonus_add` 这类
+ *    **加性增量**词条）。把增量当倍率算会得到 “+10% → −90%” 的错误结果 —— 这正是本函数存在的理由。
+ *  · 返回值是**纯数字字符串**（**不含 `%`**，百分号由调用方走 i18n 模板拼；体例同
+ *    `formatTickSeconds` / `formatBonusPercent`）；
+ *  · **带正负号**：正数前缀 `+`、负数前缀 `−`（U+2212，与 `battleView` 的 `fmtSigned`/`fmtSignedNum`
+ *    同一符号体例）、零返回 `'0'`（调用方可据此**整段隐藏**）；
+ *  · 四舍五入到 **1 位小数并去掉无意义 `.0`**（`toFixed(1)` 后转 Number 再转字符串，顺带消掉浮点尾巴）；
+ *  · 非数值按中性值 0 处理（→ `'0'`）。
+ *  ★ 展示层唯一来源：任何界面/战报要显示“增量 x%”都调用本函数，**禁止各自手写 `d*100` 私有公式**。 */
+export function formatBonusDeltaPercent(delta) {
+  const d = Number(delta);
+  const pct = (Number.isFinite(d) ? d : 0) * 100;
+  const n = Number(pct.toFixed(1));
+  if (n === 0) return '0';
+  return `${n > 0 ? '+' : '−'}${Math.abs(n)}`;
+}
+
 /** 深拷贝（JSON 兼容对象） */
 export function deepClone(obj) {
   return obj === undefined ? undefined : JSON.parse(JSON.stringify(obj));

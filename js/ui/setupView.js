@@ -193,8 +193,10 @@ function sectorBlock(onValidityChange) {
  *      `core/tick.js formatTickSeconds`（UI 不自算 tick→秒 公式）；等级变化即就地重算显示；
  *  · **校验**：吨位＝非负整数、**等级＝1..该类型 `maxLevel` 的整数** —— 非法 → 该输入框红框 + 就地提示
  *    + **禁用「开战」**（与星区储量同一处置体例）；数量非法只拦「添加」按钮（它不是提交数据）；
- *  · **上限**：一次添加 ≤ `CARGO_LIMITS.maxCountPerEntry`、总数 ≤ `CARGO_LIMITS.maxTotal`
- *    （**与引擎同一来源**；超出则不再添加，引擎侧另有等价的上限与截断告警）；
+ *  · **上限**：**总件数不限**（用户口径：编队定义阶段**不封顶**，可无限添加货物条目；引擎
+ *    `normalizeSectorCargos` 亦不按总数截断 ⇒ 再无 `cargoOverflow` 告警）——唯一保留的“数量”限制是
+ *    **单次输入的便捷上限** `CARGO_LIMITS.maxCountPerEntry`（一次批量添加的条数，不是总量限制）；
+ *  · 校验仍保留**字段级**（名称长度、吨位/等级合法性 —— 与引擎同一来源 `CARGO_LIMITS`/`cargoMaxLevel`）；
  *  · 输入过程中**不整屏重绘**（避免丢焦点）：就地刷新提示与合法性，经 `onValidityChange()` 通知调用方。 */
 function cargoBlock(onValidityChange) {
   // ★ 类型下拉：**动态取自货物注册表**（顺序＝`CARGO_IDS`，None 在前）
@@ -233,7 +235,7 @@ function cargoBlock(onValidityChange) {
   const syncCount = () => {
     const ok = cargoCountValid(countText);
     countInput.classList.toggle('invalid', !ok);
-    addBtn.disabled = !ok || cargos.length >= CARGO_LIMITS.maxTotal;
+    addBtn.disabled = !ok; // ★ 总件数**不封顶**（用户口径）⇒ 只按“单次数量是否合法”决定可否添加
     syncHint();
   };
 
@@ -313,9 +315,10 @@ function cargoBlock(onValidityChange) {
   addBtn.addEventListener('click', () => {
     if (!cargoCountValid(countText)) return;
     const tpl = getCargo(tplSel.value) || getCargo(CARGO_IDS[0]);
+    // ★ 一次批量添加 `want` 条（**单次输入的便捷上限** `maxCountPerEntry`，非总量限制）：
+    //   总件数**不封顶**（用户口径）⇒ 循环内**不再**做任何总数判断、可无限次添加。
     const want = Math.min(CARGO_LIMITS.maxCountPerEntry, Number(countText));
     for (let i = 0; i < want; i++) {
-      if (cargos.length >= CARGO_LIMITS.maxTotal) break; // 总数封顶（与引擎 CARGO_LIMITS.maxTotal 同一来源）
       cargos.push({
         templateId: tpl.id,
         name: '',                    // 空名称 ⇒ 战斗屏显示**类型名**（i18n 词条 nameKey）
@@ -512,8 +515,8 @@ function warnText(w) {
         field: i18n.t(w.field === 'level' ? 'battle.drill.cargoLevel' : 'battle.drill.cargoTons'),
         to: w.to,
       });
-    case 'cargoOverflow':
-      return i18n.t('battle.drill.warn.cargoOverflow', { n: w.max });
+    // ★ 原 `cargoOverflow`（总数超上限 ⇒ 截断）分支已**随总件数上限的取消一并移除**
+    //   （引擎 `normalizeSectorCargos` 不再产生该告警码，i18n 文案亦已删除）⇒ 落到下面的兜底文案。
     default:
       return i18n.t('battle.drill.warn.invalid');
   }

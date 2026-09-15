@@ -12,7 +12,7 @@
  *   演练界面「开战」、结算「再战」、将来的关卡/剧情入口**都必须走它**，不留第二条开战路径。
  * 调试：window.__battle 暴露当前战斗对象
  */
-import { el, formatBonusPercent } from '../core/utils.js';
+import { el, formatBonusPercent, formatBonusDeltaPercent } from '../core/utils.js';
 import { bus } from '../core/eventBus.js';
 import { i18n } from '../i18n/index.js';
 import { SHIPS } from '../data/ships.js';
@@ -132,7 +132,9 @@ let cmdOreFill = null;
 let cmdOreNum = null;
 // ★ 星区资源栏（指挥栏**下方**独立一栏：星区名 + 星区冷却组 + 矿物储量 + **星区货物**组）
 //   数据唯一来源＝引擎 `battle.sector`
-let sectorZ = null; // { zone, label, cdGroup, cdRows, row, fill, num, cargoGroup, cargoChips }
+let sectorZ = null; // { zone, label, cdGroup, cdRows, row, fill, num, cargoGroup, cargoChipRow, cargoChips }
+//   · `cargoChips` ＝星区货物芯片项数组（**按需补齐**：星区列表队列式、长度不限 ⇒ 运行时可能新增货物）；
+//   · `cargoChipRow` ＝芯片行容器（刷新时按**引擎列表顺序** `append` ⇒ 视觉顺序＝队列顺序）。
 
 /* 迷你护盾池条（详情/长期池用）：无标签小横条 + 数值 */
 function makeMiniPool() {
@@ -675,8 +677,9 @@ function renderSharedRow(row, fill, num, pool) {
  *      `[.cargo-chip-lv 等级] [.cargo-chip-meta 吨位·装载秒] [.cargo-chip-pad 末尾填充]`
  *    · 序号：**已入队**显示其**优先队列序号**（1 起，**读引擎 `queueIndex`、UI 不自算**）；
  *      **未入队**该元素文本为空 ⇒ 由 CSS **定宽保留序号位**（右对齐）⇒ 入队/取消**芯片宽度与文字位置不跳动**；
- *    · **末尾填充 `.cargo-chip-pad`** 是**与序号列同宽的空占位**（CSS 侧两者**共用同一宽度变量**
+ *    · **末尾填充 `.cargo-chip-pad`** 是**与序号列同宽**的占位格（CSS 侧两者**共用同一宽度变量**
  *      `--cargo-seq-w`，UI 只建一个空元素、不写任何宽度数值）⇒ 左右留白对称、「名称+内容」视觉居中；
+ *      该格**兼作「已强化」徽标位**（引擎只读 `enhanced` ⇒ 显示语言无关符号 `※`，否则保持空占位）；
  *    · 名称段：用户自定义名称；空串 ⇒ 回退**类型名**词条 `nameKey`（无额外模板，名称本身即数据）；
  *    · 加成段（**紧跟名称之后**）：i18n `battle.sector.cargoBonus`（`'{v}%'`），`v` 来自**唯一换算**
  *      `core/utils.js formatBonusPercent(bonus)`（倍率 → 增量百分比；`bonus=1` ⇒ `'0'` ⇒ **整段隐藏**）；
@@ -693,8 +696,9 @@ function renderSharedRow(row, fill, num, pool) {
  *    · **装载中**＝引擎派生的 `locked`（CSS 置灰 + 虚线边）：此时**点击不改队列**——引擎
  *      `toggleCargoQueue` 直接拒绝（`ok:false, reason:'locked'`），UI 不自算“能不能点”；
  *      悬停提示改用 `battle.sector.cargoLockedHint`；
- *    · **无货物 → 整组隐藏**（沿用“为空则隐藏”唯一规则）。星区货物列表整场固定 ⇒ 芯片只建一次
- *      （被装载走的货物不在此列表 ⇒ 芯片自动隐藏；返还后有重新出现）。 */
+ *    · **无货物 → 整组隐藏**（沿用“为空则隐藏”唯一规则）。★ 星区货物列表是**队列式（前出后入）、
+ *      长度不限**：装载走 ⇒ 芯片隐藏；返还/新增 ⇒ 芯片**按需补建**并按**引擎列表顺序**排到末尾
+ *      （顺序口径与补齐逻辑见 `refreshSectorZone`，UI 不另算顺序）。 */
 function buildSectorZone() {
   const label = el('div', { class: 'zone-label', text: '' });
   // ★ 星区冷却组：小节标题 + 各模块一行（仅冷却中显示）
@@ -714,21 +718,28 @@ function buildSectorZone() {
     ...cdRows.map((c) => c.row),
   ]);
   // ★ 星区货物组：**小节标题单独一行 + 货物芯片单独一行**（组内纵向两行；芯片行内仍可换行）
-  const cargoList = (battle && battle.sector && battle.sector.cargos) || [];
+  //   ★ 芯片**不在建栏时一次性建齐**：星区列表是**队列式（前出后入）**、长度不限 ⇒ 运行时可能出现
+  //     建栏时并不存在的货物（装载后返还星区的“外来货物”）⇒ 由 `refreshSectorZone` **按需补齐**，
+  //     并按**引擎列表顺序**排列芯片（走 `arrangeChips`：顺序未变则零 DOM 操作 ⇒ 芯片顺序＝队列顺序，
+  //     且不会因每帧搬动节点而丢点击）。
   const cargoTitle = el('div', { class: 'zone-label', text: i18n.t('battle.sector.cargoTitle') });
-  const cargoChips = cargoList.map((c) => {
-    const item = buildCargoChip(c);
-    // 点击＝调用引擎**唯一切换接口**（入队/出队；**被装载器锁定 ⇒ 引擎拒绝**，UI 不做任何自算，
-    // 一律回到只读口径重绘 ⇒ 状态以引擎为准）
-    item.chip.addEventListener('click', () => {
-      if (!battle || typeof battle.toggleCargoQueue !== 'function') return;
-      battle.toggleCargoQueue(item.cargo.id);
-      refreshSectorZone();
-    });
-    return item;
-  });
-  const cargoChipRow = el('div', { class: 'sector-cargo-chips' }, cargoChips.map((c) => c.chip));
+  const cargoChips = []; // 芯片项数组（星区栏专属；身份＝`item.cargo.id`）
+  const cargoChipRow = el('div', { class: 'sector-cargo-chips' });
   const cargoGroup = el('div', { class: 'sector-cargo-group hidden' }, [cargoTitle, cargoChipRow]);
+  // ★ **星区栏货物芯片的唯一点击绑定点＝容器级事件委托**（不逐芯片 `addEventListener`）：
+  //   容器 `cargoChipRow` 与整栏同生命周期、**永不重建** ⇒ 芯片按需补建/被重排都**不会丢绑定**；
+  //   点击 ⇒ 调引擎**唯一切换接口** `battle.toggleCargoQueue(id)`（入队/出队；**被装载器锁定 ⇒ 引擎
+  //   直接拒绝**），随后一律回到只读口径重绘 ⇒ 状态以引擎为准，UI **不自算任何规则**。
+  //   货物 id 取自芯片节点上的 `data-cargo-id`（由 `refreshCargoChipText` 从引擎口径同步）。
+  cargoChipRow.addEventListener('click', (e) => {
+    const node = e.target && typeof e.target.closest === 'function' ? e.target.closest('.cargo-chip') : null;
+    if (!node || !cargoChipRow.contains(node)) return;
+    if (!battle || typeof battle.toggleCargoQueue !== 'function') return;
+    const cargoId = node.dataset ? node.dataset.cargoId : '';
+    if (!cargoId) return;
+    battle.toggleCargoQueue(cargoId);
+    refreshSectorZone();
+  });
   // ★ 横向行：冷却组与货物组并排（窄屏由 CSS 断点改为纵向堆叠）
   const line = el('div', { class: 'sector-line' }, [cdGroup, cargoGroup]);
   // 储量条（整行、保持现状）
@@ -740,7 +751,41 @@ function buildSectorZone() {
     num,
   ]);
   const zone = el('div', { class: 'battle-zone sector hidden' }, [label, line, row]);
-  return { zone, label, cdGroup, cdRows, row, fill, num, cargoGroup, cargoChips };
+  return { zone, label, cdGroup, cdRows, row, fill, num, cargoGroup, cargoChipRow, cargoChips };
+}
+
+/** ★ 把 `nodes` 按给定顺序排进容器 —— **顺序未变时一个 DOM 操作都不做**（顺序稳定＝点击不被干扰）。
+ *  · 为什么必须这样：`append` 对**已在容器内**的节点也会**先移除再插入**（即使目标位置没变），而星区栏/
+ *    详情栏都是**每 tick 刷新**的 ⇒ 若每帧都重排，鼠标按下与抬起之间按钮被“搬动”了一次，浏览器可能把
+ *    `click` 派发到**共同祖先**（容器）而不是按钮本身 ⇒ **点击落空**（表现为“点了没反应”）。
+ *    本函数先比对现有子元素顺序：**完全一致 ⇒ 直接 return**（零 DOM 变更）；
+ *  · 不一致时只对**位置确实不同**的节点做 `insertBefore` 微调（不做整体 `replaceChildren`，
+ *    既有节点与事件状态一律保留）；不在 `nodes` 里的元素（如已隐藏的旧芯片）自然被留在末尾。
+ *  · UI **只按引擎给的顺序排**，本函数不参与任何顺序计算（顺序口径仍在引擎侧）。 */
+function arrangeChips(container, nodes) {
+  if (!container) return;
+  const cur = container.children;
+  if (cur.length === nodes.length) {
+    let same = true;
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (cur[i] !== nodes[i]) { same = false; break; }
+    }
+    if (same) return; // ★ 顺序未变 ⇒ 零 DOM 操作（关键：保住点击）
+  }
+  for (let i = 0; i < nodes.length; i += 1) {
+    const want = nodes[i];
+    const at = container.children[i];
+    if (at === want) continue;
+    container.insertBefore(want, at || null);
+  }
+}
+
+/** ★ 建一个**星区栏**货物芯片：构造器与详情页**共用** `buildCargoChip`（同一套 DOM/样式/文案口径）。
+ *  星区列表是**队列式、长度不限**（可能运行时新增货物）⇒ 建芯片走本函数、**按需补齐**（见 `refreshSectorZone`）。
+ *  ⚠ **本函数不绑点击**：点击由**容器级事件委托**统一处理（唯一绑定点在 `buildSectorZone` 的
+ *  `cargoChipRow` 上）——逐芯片绑定会在“芯片被移动/重建”时有丢绑定的风险，委托从结构上排除该风险。 */
+function buildSectorCargoChip(c) {
+  return buildCargoChip(c);
 }
 
 /** 货物芯片·**名称段**文本：用户自定义名称优先；空串 ⇒ 回退该货物的**类型名**词条（`nameKey`）。
@@ -749,11 +794,21 @@ function cargoNameText(c) {
   return c.name || (c.nameKey ? i18n.t(c.nameKey) : c.type);
 }
 
+/** ★ **「已强化」徽标字符**：`※` —— **语言无关符号**，故直接以**常量**提供、**不占 i18n 键**
+ *  （悬停说明另用最短键 `battle.sector.cargoEnhanced`，只有它需要翻译）。
+ *  出现在芯片**末尾占位格** `.cargo-chip-pad` 内（星区栏与单位详情栏**共用同一构造器** ⇒ 两处同时生效）；
+ *  未强化时该格保持**空占位**，宽度由 CSS 与序号列**同宽口径** `.cargo-seq-w` 固定 ⇒ 芯片宽度与文字位置
+ *  **不跳动**（徽标本身不新造配色：沿用芯片正文色＝类型色）。 */
+const CARGO_ENHANCED_MARK = '※';
+
 /* ===== 货物芯片（**唯一构造器**：星区栏与单位详情「装载货物」栏共用同一套 DOM/样式/文案口径） =====
  * ★ DOM＝**六段独立元素**（顺序＝视觉顺序）：
  *     `[.cargo-chip-seq 序号/占位] [.cargo-chip-name 名称] [.cargo-chip-bonus 加成%]
- *      [.cargo-chip-lv 等级] [.cargo-chip-meta 吨位·装载秒] [.cargo-chip-pad 末尾填充]`
- *   · 序号列 / 末尾填充**定宽**（宽度口径在 CSS，两段共用同一变量）；详情页不使用序号列（留空占位）。
+ *      [.cargo-chip-lv 等级] [.cargo-chip-meta 吨位·装载秒] [.cargo-chip-pad 末尾占位/已强化徽标]`
+ *   · 序号列 / 末尾占位格**定宽**（宽度口径在 CSS，两段共用同一变量）；详情页不使用序号列（留空占位）。
+ *   · ★ **末尾占位格兼作「已强化」徽标位**：货物 `enhanced === true`（**引擎只读口径**，UI 不自算）
+ *     ⇒ 该格显示语言无关符号 `※`（常量 `CARGO_ENHANCED_MARK`）＋悬停说明 `battle.sector.cargoEnhanced`；
+ *     否则**空占位**（定宽 ⇒ 宽度与文字位置不跳动）。
  * ★ 文案：名称段＝`cargoNameText`；加成段＝`battle.sector.cargoBonus`（`bonus=1` ⇒ 整段隐藏）；
  *   等级段＝`battle.sector.cargoLv`（等级=1 ⇒ 整段隐藏）；末段＝`battle.sector.cargoMeta`
  *   （吨位取整、装载秒走**唯一换算** `core/tick.js formatTickSeconds`）。
@@ -765,7 +820,7 @@ function buildCargoChip(c) {
   const bonusEl = el('span', { class: 'cargo-chip-bonus' });
   const lvEl = el('span', { class: 'cargo-chip-lv' });
   const metaEl = el('span', { class: 'cargo-chip-meta' });
-  const padEl = el('span', { class: 'cargo-chip-pad' }); // 末尾对称填充（与序号列同宽）
+  const padEl = el('span', { class: 'cargo-chip-pad' }); // 末尾占位格（与序号列同宽；兼作「已强化」徽标位）
   const chip = el('button', { class: 'cargo-chip', type: 'button' }, [
     seqEl,
     nameEl,
@@ -780,17 +835,25 @@ function buildCargoChip(c) {
   refreshCargoChipText(item);
   return item;
 }
-/** 刷新货物芯片的**文字段**（名称/加成/等级/吨位·装载秒）——只在文案签名变化时重写 DOM（不逐 tick 抖动）。
+/** 刷新货物芯片的**文字段**（名称/加成/等级/吨位·装载秒/末尾徽标）——只在文案签名变化时重写 DOM（不逐 tick 抖动）。
  *  ★ 各段取值口径与 `buildCargoChip` 完全一致（**同一实现**，不存在第二套文案逻辑）：
  *    进舱后 `loadTicks` 会被引擎永久改写为 20t ⇒ 末段（装载秒数）随之刷新。 */
 function refreshCargoChipText(item) {
   const c = item.cargo;
+  // ★ 把**引擎口径的货物 id** 同步到芯片节点（`data-cargo-id`）——**容器级事件委托**靠它定位货物：
+  //   委托把监听器**唯一地**绑在行容器上（星区栏 `.sector-cargo-chips` / 详情栏 `.detail-cargos-chips`），
+  //   容器与面板同生命周期、**永不重建** ⇒ 芯片被移动/重建都**不会丢绑定**（比逐芯片 `addEventListener` 稳）。
+  //   只在变化时写，避免每 tick 无谓的 DOM 属性写。
+  const idStr = c && c.id != null ? String(c.id) : '';
+  if (item.chip.dataset.cargoId !== idStr) item.chip.dataset.cargoId = idStr;
   const bonusV = formatBonusPercent(c.bonus);
-  const sig = `${c.name || ''}|${c.nameKey || ''}|${c.type || ''}|${c.tons}|${c.loadTicks}|${c.level}|${bonusV}`;
+  const enhanced = !!c.enhanced; // ★ 引擎只读口径（一次性强化标记）；UI 不自算
+  const sig = `${c.name || ''}|${c.nameKey || ''}|${c.type || ''}|${c.tons}|${c.loadTicks}|${c.level}|${bonusV}|${enhanced ? 1 : 0}`;
   if (sig === item.sig) return;
   item.sig = sig;
   item.nameEl.textContent = cargoNameText(c);
-  // ★ 加成：唯一换算 `core/utils.js formatBonusPercent`（倍率 → 增量百分比）；无加成（`'0'`）⇒ 整段隐藏
+  // ★ 加成：唯一换算 `core/utils.js formatBonusPercent`（**倍率** → 增量百分比）；无加成（`'0'`）⇒ 整段隐藏
+  //   （⚠ 与「货物强化」效果列/战报用的 `formatBonusDeltaPercent`（**增量**口径）分工不同，见该函数注释）
   if (bonusV === '0') {
     item.bonusEl.classList.add('hidden');
     item.bonusEl.textContent = '';
@@ -810,6 +873,10 @@ function refreshCargoChipText(item) {
     tons: Math.round(c.tons),
     load: formatTickSeconds(c.loadTicks),
   });
+  // ★ **「已强化」徽标**（`enhanced === true`）：写在**末尾占位格**里（**不新增一段 DOM** ⇒ 六段结构不变）；
+  //   未强化 ⇒ 该格文本清空、`title` 清空，宽度由 CSS 定宽保持 ⇒ **芯片宽度与文字位置不跳动**。
+  item.padEl.textContent = enhanced ? CARGO_ENHANCED_MARK : '';
+  item.padEl.title = enhanced ? i18n.t('battle.sector.cargoEnhanced') : '';
 }
 
 /** 用**最新只读快照**批量刷新一批货物芯片的文字段（星区栏 / 详情页共用同一实现）。
@@ -833,7 +900,13 @@ function refreshCargoChipList(chips, live) {
  *  ★ 「星区货物组」的显示规则：**星区有货物**才显示该组；每个芯片的**选中态**只读
  *    `battle.sector.cargos[].queued`（引擎派生）——点击只调 `battle.toggleCargoQueue`，
  *    **UI 不自算队列**；**序号列**只读引擎派生的 `queueIndex`（未入队 ⇒ 该列为空、但**定宽占位仍在**）；
- *    **装载中**（`locked`）⇒ 置灰 + 虚线边 + 点击无效（引擎拒绝），悬停提示换成「装载中」文案。 */
+ *    **装载中**（`locked`）⇒ 置灰 + 虚线边 + 点击无效（引擎拒绝），悬停提示换成「装载中」文案。
+ *  ★★ **芯片顺序＝引擎列表顺序（队列式：前出后入）**：星区列表长度不限、且运行时可能新增货物
+ *    （装载后返还星区的“外来货物”）⇒ 本函数每帧：① 为**列表中有、却还没有芯片**的货物**按需建芯片**；
+ *    ② 按列表顺序 `append` 芯片（既有节点被**移动**）⇒ 溢出/返还后**后入者排到末尾**、其余前移；
+ *    ③ 不在列表中的芯片（被装载走/已消耗）**隐藏但保留 DOM**（不重建、不丢事件绑定）。
+ *    ⚠ 「**优先队列**」`queueIndex`（玩家点击入队的优先级序号）与「**列表顺序**」是**两个概念**：
+ *      前者只读引擎派生的 `queueIndex`、后者＝引擎 `cargos` 数组顺序 —— UI 都不自算。 */
 function refreshSectorZone() {
   if (!sectorZ) return;
   const sec = battle && battle.sector ? battle.sector : null;
@@ -854,6 +927,12 @@ function refreshSectorZone() {
   //   芯片只读引擎只读口径：`queued`（选中态）／`queueIndex`（**序号列**，未入队⇒置空、定宽占位仍在）
   //   ／`locked`（**装载中**：置灰 + 虚线边，且点击无效——引擎侧 `toggleCargoQueue` 拒绝）。
   const cargoList = has ? (sec.cargos || []) : [];
+  // ① **按需补齐芯片**：列表是队列式且长度不限 ⇒ 出现列表中有、芯片还没有的货物时当场建（含点击绑定）
+  for (const c of cargoList) {
+    if (!sectorZ.cargoChips.some((x) => x.cargo.id === c.id)) {
+      sectorZ.cargoChips.push(buildSectorCargoChip(c));
+    }
+  }
   for (const c of sectorZ.cargoChips || []) {
     const item = cargoList.find((x) => x.id === c.cargo.id); // ★ 芯片建时持有货物快照 ⇒ 以 `cargo.id` 定位
     const queued = !!(item && item.queued);
@@ -863,21 +942,39 @@ function refreshSectorZone() {
     c.chip.classList.toggle('queued', queued);
     c.chip.classList.toggle('locked', locked);
     c.seqEl.textContent = qi > 0 ? i18n.t('battle.sector.cargoSeq', { n: qi }) : '';
+    // ★ 悬停提示（**状态优先**：装载中 > 已入队 > **玩家手动卸载** > 可入队）——判据全部来自引擎只读口径：
+    //   · `locked`  ⇒ 装载中（剩余秒数＝唯一换算 formatTickSeconds(需求 − 已推进)）；
+    //   · `queued`  ⇒ 已入优先队列（再点＝移出）；
+    //   · `manualUnloaded` ⇒ 玩家手动卸载（**分阵营 + 带时限**，引擎派生）：本阵营装载器**自动选取
+    //     暂时会跳过它**；剩余秒数＝引擎派生 `manualUnloadedTicks`（**UI 不自算到期**）→ formatTickSeconds；
+    //   · 其余      ⇒ 可点击入队。
+    let hintKey = 'battle.sector.cargoAddHint';
+    let hintParams; // 仅“需要数值”的两态传参（其余键不含 {s} ⇒ 不传，模板原样）
+    if (locked && item) {
+      hintKey = 'battle.sector.cargoLockedHint';
+      hintParams = { s: formatTickSeconds(Math.max(0, (item.loadNeedTicks | 0) - (item.loadProgressTicks | 0))) };
+    } else if (queued) {
+      hintKey = 'battle.sector.cargoRemoveHint';
+    } else if (item && item.manualUnloaded) {
+      hintKey = 'battle.sector.cargoHoldHint';
+      hintParams = { s: formatTickSeconds(Math.max(0, item.manualUnloadedTicks | 0)) };
+    }
     c.chip.title = i18n.t('battle.sector.cargoHover', {
       type: item && item.nameKey ? i18n.t(item.nameKey) : '',
-      hint: i18n.t(
-        locked
-          ? // ★ 装载中：剩余时长＝引擎暴露的「需求 − 已推进」tick，经**唯一换算**
-            //   `core/tick.js formatTickSeconds` 折算为秒（UI **不外写公式**）
-            'battle.sector.cargoLockedHint'
-          : queued
-            ? 'battle.sector.cargoRemoveHint'
-            : 'battle.sector.cargoAddHint',
-        locked && item
-          ? { s: formatTickSeconds(Math.max(0, (item.loadNeedTicks | 0) - (item.loadProgressTicks | 0))) }
-          : undefined
-      ),
+      hint: i18n.t(hintKey, hintParams),
     });
+  }
+  // ② **顺序＝引擎列表顺序**（队列式：前出后入）：按列表顺序排列 ⇒ 返还/新增的货物**排到末尾**；
+  //    ③ 不在列表中的芯片已在上面 `.hidden`（**保留 DOM，不重建** ⇒ 委托绑定天然不受影响）。
+  //    ★ 排列走 `arrangeChips`：**顺序未变 ⇒ 零 DOM 操作**（每帧无条件 `append` 会在鼠标按下与抬起
+  //    之间搬动按钮、可能导致 click 落空 —— 见该函数注释）。
+  if (sectorZ.cargoChipRow) {
+    const ordered = [];
+    for (const c of cargoList) {
+      const chip = sectorZ.cargoChips.find((x) => x.cargo.id === c.id);
+      if (chip) ordered.push(chip.chip);
+    }
+    arrangeChips(sectorZ.cargoChipRow, ordered);
   }
   refreshCargoChipList(sectorZ.cargoChips, cargoList);
   if (sectorZ.cargoGroup) sectorZ.cargoGroup.classList.toggle('hidden', !has || !cargoList.length);
@@ -1071,9 +1168,20 @@ function candList(ship, tgt) {
   const foes = ship.side === 'ally' ? battle.enemies : battle.allies;
   const same = ship.side === 'ally' ? battle.allies : battle.enemies;
   const out = []; // { u, kind }（kind＝来源选择器桶，交给引擎判据）
-  if (kinds.includes('self')) out.push({ u: ship, kind: 'self' });
+  // ★★ **`self` 与 `ally` 同源同序（与引擎 `moduleTargetList` 同一口径，UI 不自算顺序）**：
+  //   两者都按**己方单位数组的自然顺序**一次展开 —— **自身只在其自然位置、不置顶**；
+  //   带 `prefer_self` 的模块由引擎优先级链把自身排在前面（本列表给出的只是**候选顺序**，
+  //   与引擎的“自然顺序”完全一致 ⇒ 默认解析结果＝本列表首位，玩家看到的按钮顺序就是实际选择顺序）。
+  if (kinds.includes('self') || kinds.includes('ally')) {
+    for (const u of same) {
+      if (u.id === ship.id) {
+        if (kinds.includes('self')) out.push({ u, kind: 'self' });
+      } else if (kinds.includes('ally')) {
+        out.push({ u, kind: 'ally' });
+      }
+    }
+  }
   if (kinds.includes('enemy')) for (const u of foes) out.push({ u, kind: 'enemy' });
-  if (kinds.includes('ally')) for (const u of same) if (u.id !== ship.id) out.push({ u, kind: 'ally' });
   if (kinds.includes('any')) for (const u of battle.units()) out.push({ u, kind: 'any' });
   const seen = new Set();
   const res = [];
@@ -1292,6 +1400,22 @@ function perActText(ship, inst) {
   //   故与引擎同一口径，本行**原样显示词条值**（不走下面 `tgtMeta` 的 `× coef` 通用路径）。
   if ((fx.ore_target || 0) > 0) {
     parts.push(i18n.t('battle.detail.statOreT', { n: fx.ore_target }));
+  }
+  // ★ **货物传输**（`type` 标签 `cargo_transfer`）：把**整件已入舱货物**原样搬运给友方 ——
+  //   无数值词条（搬运的是实体本身，不做吨位换算）⇒ 本行只展示**粒度**（“1 件货物”），不编造数值。
+  if (fxType.includes('cargo_transfer')) parts.push(i18n.t('battle.detail.statCargoTransfer'));
+  // ★ **货物维修**（`type` 标签 `cargo_repair`）：`hp_per_ton`＝**每吨货物回复的生命值**（逐级递增）——
+  //   与引擎同一口径：**词条原值、不乘任何类别系数**（回血量＝round(货物吨位 × 本值)）⇒ 不走 `× coef` 路径。
+  if ((fx.hp_per_ton || 0) > 0) {
+    parts.push(i18n.t('battle.detail.statHpPerTon', { v: fmtSignedNum(fx.hp_per_ton) }));
+  }
+  // ★ **货物强化**（`type` 标签 `cargo_enhance`）：`bonus_add`＝给**目标货舱一件尚未被强化的货物**的
+  //   加成系数**加性**提高的量。⚠ 它是**增量**（0.1 ＝ +10%），**不是倍率** ⇒ 必须走**增量口径**的
+  //   唯一换算 `core/utils.js formatBonusDeltaPercent`（0.1 ⇒ '+10'、−0.05 ⇒ '−5'、0 ⇒ '0'），
+  //   **不得**用 `formatBonusPercent`（那是倍率口径，会把 0.1 当成倍率算出 −90%）。
+  //   0 ⇒ 整段不显示；负增量按同公式正常显示（带 `−`）。
+  if ((fx.bonus_add || 0) !== 0) {
+    parts.push(i18n.t('battle.detail.statBonusAdd', { v: formatBonusDeltaPercent(fx.bonus_add) }));
   }
   const tgtMeta = [
     ['hp_target', 'statHpT', null],
@@ -1739,6 +1863,12 @@ function buildCoeffSection(ship) {
  *   · 在装 ⇒ `battle.sector.cargos` 中 **`lockedBy === ship.id`** 的项（引擎派生字段；进度/需求时长
  *     亦为派生字段）—— UI **只做筛选与展示，不自算任何锁定/进度规则**。
  * · **有货物才显示**：已入舱或在装**任一存在** ⇒ 显示该栏；两者皆无 ⇒ **整栏隐藏**（唯一规则）。
+ * · ★ **排列顺序＝引擎口径（队列式：前出后入）**：先已入舱（`cargoListOf(ship)` 顺序＝**入舱顺序**）、
+ *   再在装（星区列表顺序）；每次刷新按该顺序排列 ⇒ 货物被传输/消耗后其余**前移**、新入舱者**排到末尾**
+ *   （与星区栏同一手法：UI **只按引擎列表顺序排列、不自算顺序**）。
+ *   ★ 排列走 `arrangeChips`：**顺序未变 ⇒ 零 DOM 操作**（每帧无条件 `append` 会在鼠标按下与抬起之间
+ *   搬动按钮、可能导致 `click` 落空 —— 这正是“点了没反应”的一大来源，见该函数注释）。
+ *   ★ 点击＝**容器级事件委托**（唯一绑定点在本行容器上）⇒ 芯片被移动/复用/重建都**不会丢绑定**。
  * · **可操作性**：返还仍只在 `我方 且 存活 且 对战中` 生效（与「主要攻击目标」栏同一口径；
  *   引擎接口本身保持通用）。 */
 function buildShipCargoRow(ship) {
@@ -1747,17 +1877,32 @@ function buildShipCargoRow(ship) {
   const rowEl = el('div', { class: 'detail-cargos hidden' }, [label, chipRow]);
   const byId = new Map(); // cargoId → 芯片项（货物在星区/单位之间搬移，id 恒定 ⇒ 复用同一芯片）
   const operable = () => ship.side === 'ally' && ship.alive && !!battle && battle.phase === 'running';
+  // ★ **本行货物芯片的唯一点击绑定点＝容器级事件委托**（`chipRow` 与本行同生命周期、**永不重建**）：
+  //   为什么不再逐芯片 `addEventListener`：本行是**每 tick 刷新**的，芯片还会被重排/按需补建
+  //   ——逐芯片绑定在“节点被移动或重建”的场景下有**丢绑定**的风险（表现＝点了没反应）；
+  //   委托把监听器挂在**恒定容器**上 ⇒ 无论芯片怎么移动/重建，点击都必然到达同一个处理函数。
+  //   处理：调引擎**唯一返还接口** `battle.unloadCargo(shipId, cargoId)`（**在装货物不在 `ship.cargos`
+  //   中 ⇒ 引擎直接拒绝**，无需 UI 自算“能不能点”）；随后星区栏与本行**同 tick 就地刷新**。
+  //   货舱容量/数值都由引擎改，UI 只重绘 ⇒ 幂等：重复点击时第二次引擎已找不到该件（`reason:'cargo'`）⇒ 无副作用。
+  chipRow.addEventListener('click', (e) => {
+    const node = e.target && typeof e.target.closest === 'function' ? e.target.closest('.cargo-chip') : null;
+    if (!node || !chipRow.contains(node)) return;
+    if (!operable() || !battle || typeof battle.unloadCargo !== 'function') return;
+    const cargoId = node.dataset ? node.dataset.cargoId : '';
+    if (!cargoId) return;
+    battle.unloadCargo(ship.id, cargoId);
+    refreshSectorZone(); // 星区栏即时反映（芯片重新出现、可再次入队）
+    refresh();           // 本行即时反映（该芯片隐藏或转为在装态）
+  });
   const chipFor = (cargo) => {
     let item = byId.get(cargo.id);
-    if (item) return item;
+    if (item) {
+      // ★ 复用既有芯片：若它已不在本行容器内（容器被清空/节点被移走）⇒ 当场补回
+      //   （否则会“有货物、无芯片”——点击自然无反应；这是上一版“只建一次”的隐患，一并堵死）
+      if (item.chip.parentNode !== chipRow) chipRow.append(item.chip);
+      return item;
+    }
     item = buildCargoChip(cargo);
-    item.chip.addEventListener('click', () => {
-      if (!operable() || !battle || typeof battle.unloadCargo !== 'function') return;
-      // 唯一接口：返还星区（**在装货物不在 `ship.cargos` 中 ⇒ 引擎直接拒绝**，无需 UI 自算“能不能点”）
-      battle.unloadCargo(ship.id, cargo.id);
-      refreshSectorZone(); // 星区栏即时反映（芯片重新出现、可再次入队）
-      refresh();           // 本行即时反映（该芯片隐藏或转为在装态）
-    });
     byId.set(cargo.id, item);
     chipRow.append(item.chip);
     return item;
@@ -1790,6 +1935,14 @@ function buildShipCargoRow(ship) {
       });
     }
     for (const [id, item] of byId) if (!shown.has(id)) item.chip.classList.add('hidden');
+    // ★ **排列顺序＝引擎口径**（队列式：前出后入）：先**已入舱**（`cargoListOf(ship)` 顺序＝入舱顺序）、
+    //   再**在装/锁定中**（`battle.sector.cargos` 列表顺序）；货物被传输/消耗而离开后其余芯片**前移**，
+    //   新入舱者**排到末尾**（UI 不自算顺序）。★ 走 `arrangeChips`：**顺序未变 ⇒ 零 DOM 操作**
+    //   （每帧无条件 `append` 会在鼠标按下与抬起之间搬动按钮、可能导致 click 落空 —— 见该函数注释）。
+    const ordered = [];
+    for (const cargo of loaded) { const it = byId.get(cargo.id); if (it) ordered.push(it.chip); }
+    for (const cargo of loading) { const it = byId.get(cargo.id); if (it) ordered.push(it.chip); }
+    arrangeChips(chipRow, ordered);
     rowEl.classList.toggle('hidden', shown.size === 0); // 两者皆无 ⇒ 整栏隐藏
   };
   refresh();

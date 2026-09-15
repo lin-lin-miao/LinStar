@@ -46,6 +46,8 @@ import recycle from './modules/function/recycle.js';
 import energyTransfer from './modules/function/energyTransfer.js';
 import cargoHold from './modules/transport/cargoHold.js';
 import loadingBeam from './modules/transport/loadingBeam.js';
+import cargoTransfer from './modules/transport/cargoTransfer.js';
+import cargoRepair from './modules/transport/cargoRepair.js';
 // 采矿模块
 import slagMissileLauncher from './modules/mining/slagMissileLauncher.js';
 import oreTransfer from './modules/mining/oreTransfer.js';
@@ -55,6 +57,7 @@ import oreCompressor from './modules/mining/oreCompressor.js';
 import genesis from './modules/mining/genesis.js';
 import oreEnrichment from './modules/mining/oreEnrichment.js';
 import oreRepair from './modules/mining/oreRepair.js';
+import cargoEnhance from './modules/mining/cargoEnhance.js';
 
 export const MODULES = {
   cannon,
@@ -91,12 +94,15 @@ export const MODULES = {
   energyTransfer,   // 功能 · 能量输送（主动·单体友方：消耗自身能量给目标加能量 energy_target，钳到目标上限）
   cargoHold,        // 运输 · 货舱（C25 常驻增幅器：自身货物容量 cargo_cap_bonus，无冷却/耗能/持续）
   loadingBeam,      // 运输 · 装载光束（主动·无目标：把星区货物装进本舰货舱；标签 cargo_loader + 词条 cargo_load）
+  cargoTransfer,    // 运输 · 货物传输（主动·单体友方：把**整件已入舱货物**原样搬运给目标；标签 cargo_transfer）
+  cargoRepair,      // 运输 · 货物维修（主动·单体友方含自身：消耗**整件已入舱货物**换回血 hp_per_ton；标签 cargo_repair）
   slagMissileLauncher,  // 采矿 · 矿渣导弹发生器（召唤矿渣导弹：**只耗自身携带矿物 ore_cost**、不耗能；参数与欧米茄一致）
   oreTransfer,      // 采矿 · 矿物输送（主动·单体友方：把自身携带矿物 **1:1** 输送给目标 ore_target，不乘任何系数）
   oreHold,          // 采矿 · 矿舱（C34 语义「采矿载货强化」常驻增幅器：自身矿物容量 ore_cap_bonus）
   miningLaser,      // 采矿 · 采矿激光（M4：无目标主动模块，每次激活开采 ore_gain × 采矿系数 → 装入本舰矿物仓）
   oreCompressor,    // 采矿 · 矿物压缩（常驻增幅器：自身采矿系数 mining_coeff_add，无冷却/耗能/持续）
   oreRepair,        // 采矿 · 矿物维修（主动·单体友方含自身：耗自身矿物 ore_cost 修复目标 hp_target，量值按词条原值）
+  cargoEnhance,     // 采矿 · 货物强化（主动·单体友方含自身：耗矿+耗能，把目标货舱一件**尚未被强化**的货物 bonus 加性提高 bonus_add，一次性永久；标签 cargo_enhance）
   genesis,          // 采矿 · 创世纪（无目标主动模块：星区剩余储量**加法** sector_ore_add，自身+星区双冷却）
   oreEnrichment,    // 采矿 · 矿藏富集（无目标主动模块：星区剩余储量**乘法** sector_ore_mul，自身+星区双冷却）
 };
