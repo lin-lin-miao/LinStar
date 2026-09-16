@@ -26,7 +26,7 @@ export default {
       attrs: {                         // 覆写通用模板三围（缺省沿用模板）
         base: { hp: 30, shieldCap: 10, energyCap: 120, energyRegen: 12 },
       },
-      lifespan_ticks: 200,             // 存在时间(tick)，仅 temp:true(临时单位)时生效；当前 temp:false → 忽略，永久作战至死亡
+      lifespan_ticks: 1200,             // 存在时间(tick)，仅 temp:true(临时单位)时生效；当前 temp:false → 忽略，永久作战至死亡
       maxSummoned: 2,                  // 占位：存活上限 2
       temp: true,                     
     },
@@ -35,8 +35,8 @@ export default {
   },
   maxLevel: 16,
   levels: [
-    { level: 5, effects: { summon: { attrs: { base: { hp: 34, shieldCap: 12, energyCap: 130, energyRegen: 13 } }, lifespan_ticks: 300, maxSummoned: 3 } } },
-    { level: 10, effects: { summon: { attrs: { base: { hp: 40, shieldCap: 14, energyCap: 140, energyRegen: 14 } }, lifespan_ticks: 400, maxSummoned: 4 } } },
-    { level: 16, effects: { summon: { attrs: { base: { hp: 48, shieldCap: 18, energyCap: 160, energyRegen: 16 } }, lifespan_ticks: 500, maxSummoned: 5 } } },
+    { level: 5, effects: { summon: { attrs: { base: { hp: 34, shieldCap: 12, energyCap: 130, energyRegen: 13 } }, lifespan_ticks: 1200, maxSummoned: 3 } } },
+    { level: 10, effects: { summon: { attrs: { base: { hp: 40, shieldCap: 14, energyCap: 140, energyRegen: 14 } }, lifespan_ticks: 1200, maxSummoned: 4 } } },
+    { level: 16, effects: { summon: { attrs: { base: { hp: 48, shieldCap: 18, energyCap: 160, energyRegen: 16 } }, lifespan_ticks: 1200, maxSummoned: 5 } } },
   ],
 };

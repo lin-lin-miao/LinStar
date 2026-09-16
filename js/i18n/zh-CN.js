@@ -50,6 +50,16 @@ export default {
   'module.dualLaser': '双向激光',
   'module.denseBarrage': '密集弹幕',
   'module.laserDroneSpawn': '激光无人机',
+  // ★ 无人机类（`category:'drone'`，棕色 `--cat-drone`）本轮新增 5 个召唤模块 + 1 个**无人机专属**模块
+  //   （名称键一律 `module.<id>`；`repairBeam` 的 `picker:false` 使其不出现在编队可选列表中）
+  'module.repairDroneSpawn': '维修无人机',
+  'module.bulwarkDroneSpawn': '壁垒无人机',
+  'module.rocketDroneSpawn': '火箭无人机',
+  'module.laserTurretSpawn': '激光炮塔',
+  'module.sentryTurretSpawn': '哨戒炮塔',
+  // 无人机 · 纳米无人机：携带 火炮 + **本模块自身**（可链式召唤）；无护盾 / hp 50 / 回能 20 / 上限 500 / 存在 400t
+  'module.nanoDroneSpawn': '纳米无人机',
+  'module.repairBeam': '维修光束', // 功能 · **无人机专属**（picker:false）：主动单体友方（不含自身）回血 hp_target（标签 exact_amount）
   'module.rocketLauncher': '火箭发射器',
   'module.rocketWarhead': '火箭爆炸',
   'module.missileLauncher': '导弹发射器',

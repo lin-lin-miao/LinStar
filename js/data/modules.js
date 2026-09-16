@@ -19,6 +19,12 @@ import laser from './modules/attack/laser.js';
 import dualLaser from './modules/attack/dualLaser.js';
 import denseBarrage from './modules/attack/denseBarrage.js';
 import laserDroneSpawn from './modules/drone/laserDroneSpawn.js';
+import repairDroneSpawn from './modules/drone/repairDroneSpawn.js';
+import bulwarkDroneSpawn from './modules/drone/bulwarkDroneSpawn.js';
+import rocketDroneSpawn from './modules/drone/rocketDroneSpawn.js';
+import laserTurretSpawn from './modules/drone/laserTurretSpawn.js';
+import sentryTurretSpawn from './modules/drone/sentryTurretSpawn.js';
+import nanoDroneSpawn from './modules/drone/nanoDroneSpawn.js';
 import rocketLauncher from './modules/attack/rocketLauncher.js';
 import rocketWarhead from './modules/attack/rocketWarhead.js';
 import missileLauncher from './modules/attack/missileLauncher.js';
@@ -44,6 +50,7 @@ import hullArmor from './modules/function/hullArmor.js';
 import shieldBattery from './modules/function/shieldBattery.js';
 import recycle from './modules/function/recycle.js';
 import energyTransfer from './modules/function/energyTransfer.js';
+import repairBeam from './modules/function/repairBeam.js';
 import cargoHold from './modules/transport/cargoHold.js';
 import loadingBeam from './modules/transport/loadingBeam.js';
 import cargoTransfer from './modules/transport/cargoTransfer.js';
@@ -67,6 +74,12 @@ export const MODULES = {
   dualLaser,
   denseBarrage,
   laserDroneSpawn,
+  repairDroneSpawn,   // 无人机 · 维修无人机（召唤维修无人机：自带**无人机专属**「维修光束」repairBeam）
+  bulwarkDroneSpawn,  // 无人机 · 壁垒无人机（携带 固若金汤 + 硬化护盾；hp 50 / 回能 50 / 能量上限 2000）
+  rocketDroneSpawn,   // 无人机 · 火箭无人机（携带 火箭发射器；回能 50 / 能量上限 1000）
+  laserTurretSpawn,   // 无人机 · 激光炮塔（携带 激光 ×2 + 再生护盾；回能 30 / 能量上限 1000 / 存在 2400t）
+  sentryTurretSpawn,  // 无人机 · 哨戒炮塔（携带 火炮 + 同盟护盾；回能 30 / 能量上限 1000 / 存在 2400t）
+  nanoDroneSpawn,     // 无人机 · 纳米无人机（携带 火炮 + **本模块自身** ⇒ 可链式召唤；无护盾 / hp 50 / 回能 20 / 上限 500 / 存在 400t）
   rocketLauncher,   // 攻击 · 召唤一次性火箭（C06）
   rocketWarhead,    // 内部：火箭携带的一次性弹药（picker:false，不进入编队可选）
   missileLauncher,  // 攻击 · 召唤导弹（爆炸范围 blast_range）
@@ -92,6 +105,7 @@ export const MODULES = {
   shieldBattery,    // 功能 · 护盾电池（常驻增幅器：自身护盾系数 +0.1 / 能量上限 −100，无冷却/耗能/持续）
   recycle,          // 功能 · 回收利用（常驻被动：按**上一 tick**非召唤单位阵亡数恢复自身生命）
   energyTransfer,   // 功能 · 能量输送（主动·单体友方：消耗自身能量给目标加能量 energy_target，钳到目标上限）
+  repairBeam,       // 功能 · 维修光束（**picker:false** 无人机专属：主动·单体友方（不含自身）回血 hp_target，标签 exact_amount）
   cargoHold,        // 运输 · 货舱（C25 常驻增幅器：自身货物容量 cargo_cap_bonus，无冷却/耗能/持续）
   loadingBeam,      // 运输 · 装载光束（主动·无目标：把星区货物装进本舰货舱；标签 cargo_loader + 词条 cargo_load）
   cargoTransfer,    // 运输 · 货物传输（主动·单体友方：把**整件已入舱货物**原样搬运给目标；标签 cargo_transfer）

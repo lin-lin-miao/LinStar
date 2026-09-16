@@ -50,6 +50,18 @@ export default {
   'module.dualLaser': 'Twin Laser',
   'module.denseBarrage': 'Dense Barrage',
   'module.laserDroneSpawn': 'Laser Drone',
+  // ★ Drone category — 5 new summon modules + 1 drone-exclusive module added this round
+  //   (name keys are always `module.<id>`; `repairBeam` has `picker:false` so it never shows in the
+  //   formation module picker)
+  'module.repairDroneSpawn': 'Repair Drone',
+  'module.bulwarkDroneSpawn': 'Bulwark Drone',
+  'module.rocketDroneSpawn': 'Rocket Drone',
+  'module.laserTurretSpawn': 'Laser Turret',
+  'module.sentryTurretSpawn': 'Sentry Turret',
+  // Drone · Nano Drone: carries a cannon + this very module (chained summoning); no shield / hp 50 /
+  // energyRegen 20 / energyCap 500 / lifespan 400t
+  'module.nanoDroneSpawn': 'Nano Drone',
+  'module.repairBeam': 'Repair Beam', // Function · drone-exclusive (picker:false): active single ally (never self) heal hp_target, tag exact_amount
   'module.rocketLauncher': 'Rocket Launcher',
   'module.rocketWarhead': 'Rocket Blast',
   'module.missileLauncher': 'Missile Launcher',

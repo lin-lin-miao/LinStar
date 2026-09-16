@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+    <!-- 无人机类棕（#b07a4a）实心正六边形底盘，无填充背景，激光炮塔 -->
+    <polygon points="14,50 32,18.8 68,18.8 86,50 68,81.2 32,81.2" fill="#b07a4a" stroke="#7d5433" stroke-width="2.5" stroke-linejoin="round"/>
+
+    <!-- 发射口（内凹镜座 + 高光芯） -->
+    <circle cx="50" cy="55" r="14" fill="#8a5c34"/>
+    <circle cx="50" cy="55" r="7" fill="#f2d4ba"/>
+
+    <!-- 芯线 / 激光束（向上射出） -->
+    <line x1="50" y1="41" x2="50" y2="25" stroke="#f2d4ba" stroke-width="3" stroke-linecap="round"/>
+    <line x1="42" y1="41" x2="42" y2="31" stroke="#e0b58f" stroke-width="2" stroke-linecap="round"/>
+    <line x1="58" y1="41" x2="58" y2="31" stroke="#e0b58f" stroke-width="2" stroke-linecap="round"/>
+
+    <!-- 底座固定线 -->
+    <line x1="36" y1="73" x2="64" y2="73" stroke="#7d5433" stroke-width="2" stroke-linecap="round"/>
+</svg>
