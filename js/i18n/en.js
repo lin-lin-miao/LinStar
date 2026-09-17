@@ -21,7 +21,73 @@ export default {
   'menu.title': 'LinStar',
   'menu.subtitle': 'A space idle / turn-based web game',
   'menu.start': 'Start Game',
+  'menu.back': 'Back to Menu', // Generic "back to menu" for non-battle screens (e.g. the starfield config placeholder)
   'menu.hint': 'Save: use Export / Import in the top bar',
+
+  /* Starfield Configuration screen (step S0-1 = placeholder page; implemented in step C-3) */
+  'starfield.config.title': 'Starfield Configuration',
+  'starfield.config.todo': 'Coming soon: pick difficulty/play mode, enter a random seed (random by default), configure the starfield radius and per-type sector counts, edit NPC lists, preview, and export/import the config.',
+  'starfield.config.drillHint': 'Dev/testing: the drill formation screen no longer has a UI entry — open it with the console command LS.drill().',
+
+  /* Starfield data layer (steps A-2/A-3/A-4): sector type / NPC list / starfield (difficulty) names
+   * Key convention (enforced by `data/starfieldData.js selfCheck()`) = `sectorType.<id>` / `npcList.<id>` / `starfield.<id>` */
+  'sectorType.star': 'Star Sector',
+  'sectorType.planet': 'Planet Sector',
+  'sectorType.mineral': 'Mineral Field',
+  'sectorType.empty': 'Empty Space',
+  'sectorType.stargate': 'Stargate Sector',
+  'npcList.none': 'No Units',
+  'npcList.patrolLight': 'Light Patrol',
+  'npcList.patrolHeavy': 'Heavy Patrol',
+  // Difficulty ladder names: identical in both languages (H1…Hn); add subtitles here if needed later
+  'starfield.h1': 'H1',
+  'starfield.h2': 'H2',
+  'starfield.h3': 'H3',
+
+  /* Starfield Map (step C-1: read-only view + zoom/pan + click-to-select; full battle sidebar = C-2).
+   * Sector type names are NOT duplicated here — they use the existing `sectorType.<id>` keys. */
+  'starfield.map.title': 'Starfield Map',
+  'starfield.map.back': 'Back to Configuration',
+  'starfield.map.meta': 'Difficulty {id} · Seed {seed} · Radius {r}',
+  'starfield.map.remaining': '{s}s left',
+  'starfield.map.hint': 'Scroll to zoom · drag to pan · click a sector for details (click it again to close)',
+  'starfield.map.legend': 'Legend',
+  'starfield.map.legend.void': 'No sector (empty cell)',
+  'starfield.map.void': 'No sector: ({q}, {r})',
+  'starfield.map.zoom.in': 'Zoom in',
+  'starfield.map.zoom.out': 'Zoom out',
+  'starfield.map.zoom.reset': 'Reset view',
+  'starfield.map.resize': 'Drag to resize the sidebar',
+  'starfield.map.status.running': 'Running',
+  'starfield.map.status.finished': 'Time is up',
+  'starfield.map.status.settled': 'Settled',
+  'starfield.map.status.stopped': 'Stopped',
+  /* Per-**sector** phase text: value = the container's read-only `sectors[].phase` (mapped as-is, never inferred) */
+  'starfield.phase.idle': 'Idle',
+  'starfield.phase.running': 'Running',
+  'starfield.phase.settled': 'Settled',
+  /* Cell details (shown by zoom level): a = allied alive, e = enemy alive, ore = reserve, cargo = item count */
+  'starfield.cell.alive': 'A{a} · E{e}',
+  'starfield.cell.oreCargo': 'Ore {ore} · Cargo {cargo}',
+  /* Overflow hint for the in-cell alive-unit icon preview (icon cap = `ui/starfieldMapView.js CELL_ICON_MAX`) */
+  'starfield.cell.moreAlive': '{n} more alive units not shown',
+  /* Sidebar (this round = sector summary; C-2 mounts the full battle scene here) */
+  'starfield.sidebar.title': 'Sector Summary',
+  'starfield.sidebar.close': 'Close',
+  'starfield.sidebar.index': 'Index',
+  'starfield.sidebar.coord': 'Coordinates',
+  'starfield.sidebar.type': 'Type',
+  'starfield.sidebar.alive': 'Alive units',
+  'starfield.sidebar.ore': 'Ore reserve',
+  'starfield.sidebar.cargo': 'Cargo items',
+  'starfield.sidebar.cd': 'Sector cooldown',
+  'starfield.sidebar.logLines': 'Total log lines',
+  'starfield.sidebar.phase': 'Status',
+  'starfield.sidebar.none': 'None',
+  'starfield.sidebar.stageTodo': 'The full battle scene will be mounted here in step C-2.',
+  /* Starfield configuration placeholder: entry into the map (C-1) */
+  'starfield.config.enterMap': 'Enter Starfield (placeholder)',
+  'starfield.config.mapHint': 'For now (C-1) you can open the read-only Starfield Map; if no starfield exists yet it is created with default config H1 + a random seed (proper configuration arrives in C-3).',
 
   /* Save */
   'save.exported': 'Save exported',

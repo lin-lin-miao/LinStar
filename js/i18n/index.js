@@ -39,6 +39,14 @@ export const i18n = {
     if (text === undefined) return `??${key}`;
     return fillParams(text, params);
   },
+
+  /** ★ 该语言字典**是否有**该词条（缺省＝当前语言）；**只读、不切换语言**
+   *  —— 供数据层/UI 的**自检**逐语言核对（`t()` 缺词条会返回 `??key`，且会回退 zh-CN，
+   *     故“某语言缺词条”只能靠本函数发现；例：`data/starfieldData.js selfCheck()` 的 i18n 项）。 */
+  has(key, locale = current) {
+    const dict = DICTS[locale];
+    return !!dict && dict[key] !== undefined;
+  },
 };
 
 export default i18n;

@@ -21,7 +21,73 @@ export default {
   'menu.title': 'LinStar',
   'menu.subtitle': '太空背景 · 增量 · 回合制网页游戏',
   'menu.start': '开始游戏',
+  'menu.back': '返回主菜单', // 通用「返回主菜单」（星域配置占位页等非战斗屏使用；与 battle.menu.back 同文案、分命名空间）
   'menu.hint': '存档：右上角可导出 / 导入',
+
+  /* 星域配置界面（步骤 S0-1＝占位页；正式实装见开发步骤 C-3） */
+  'starfield.config.title': '星域配置',
+  'starfield.config.todo': '待开发：后续将在此选择难度/玩法、输入随机种子（默认随机）、配置星域半径与各类型星区数量、编辑 NPC 列表，并预览、导出/导入配置。',
+  'starfield.config.drillHint': '开发测试：原「编队配置（单星区模拟）」已移除界面入口，改用控制台指令 LS.drill() 打开。',
+
+  /* 星域数据层（步骤 A-2/A-3/A-4）：星区类型名 / NPC 列表名 / 星域（难度）名
+   * ★ 命名体例（由 `data/starfieldData.js selfCheck()` 核对）＝ `sectorType.<id>` / `npcList.<id>` / `starfield.<id>` */
+  'sectorType.star': '恒星星区',
+  'sectorType.planet': '星球星区',
+  'sectorType.mineral': '矿物区',
+  'sectorType.empty': '空区',
+  'sectorType.stargate': '星门星区',
+  'npcList.none': '无单位',
+  'npcList.patrolLight': '轻型巡逻队',
+  'npcList.patrolHeavy': '重型巡逻队',
+  // 难度阶梯名：两语言同串（H1…Hn）；后续若要给难度加副标题，在此追加即可
+  'starfield.h1': 'H1',
+  'starfield.h2': 'H2',
+  'starfield.h3': 'H3',
+
+  /* 星域大地图（步骤 C-1：只读视图 + 缩放平移 + 点击选中；★ 完整战斗侧栏＝C-2）。
+   * ★ 星区类型名**不在此重复**：直接用既有 `sectorType.<id>`（`data/sectorTypes/` 的 nameKey）。 */
+  'starfield.map.title': '星域大地图',
+  'starfield.map.back': '返回星域配置',
+  'starfield.map.meta': '难度 {id} · 种子 {seed} · 半径 {r}',
+  'starfield.map.remaining': '剩余 {s}s',
+  'starfield.map.hint': '滚轮缩放 · 拖拽平移 · 点击星区查看摘要（再点同一格收起）',
+  'starfield.map.legend': '图例',
+  'starfield.map.legend.void': '无星区（空位）',
+  'starfield.map.void': '无星区：({q}, {r})',
+  'starfield.map.zoom.in': '放大',
+  'starfield.map.zoom.out': '缩小',
+  'starfield.map.zoom.reset': '重置视图',
+  'starfield.map.resize': '拖拽调整侧栏宽度',
+  'starfield.map.status.running': '运行中',
+  'starfield.map.status.finished': '时间耗尽',
+  'starfield.map.status.settled': '已结算',
+  'starfield.map.status.stopped': '已停止',
+  /* 单个**星区**（该区 battle 实例）的阶段文案：值＝容器只读口径 `sectors[].phase`（原样映射、不自算） */
+  'starfield.phase.idle': '未开始',
+  'starfield.phase.running': '运行中',
+  'starfield.phase.settled': '已结算',
+  /* 格上细节（按缩放层级显示）：a＝我方存活、e＝敌方存活、ore＝储量、cargo＝货物件数 */
+  'starfield.cell.alive': '我{a} · 敌{e}',
+  'starfield.cell.oreCargo': '矿{ore} · 货{cargo}',
+  /* 格内“存活单位图标”预览的超额提示（图标上限见 `ui/starfieldMapView.js` 的 `CELL_ICON_MAX`） */
+  'starfield.cell.moreAlive': '另有 {n} 个存活单位未显示',
+  /* 侧栏（本轮＝星区摘要面板；C-2 在此挂载完整战斗场景） */
+  'starfield.sidebar.title': '星区摘要',
+  'starfield.sidebar.close': '关闭',
+  'starfield.sidebar.index': '编号',
+  'starfield.sidebar.coord': '坐标',
+  'starfield.sidebar.type': '类型',
+  'starfield.sidebar.alive': '存活单位',
+  'starfield.sidebar.ore': '矿物储量',
+  'starfield.sidebar.cargo': '货物件数',
+  'starfield.sidebar.cd': '星区冷却',
+  'starfield.sidebar.logLines': '累计战报',
+  'starfield.sidebar.phase': '状态',
+  'starfield.sidebar.none': '无',
+  'starfield.sidebar.stageTodo': '完整战斗场景将在后续步骤（C-2）挂载于此。',
+  /* 星域配置占位页：进入地图的入口（C-1） */
+  'starfield.config.enterMap': '进入星域（占位）',
+  'starfield.config.mapHint': '本轮（C-1）可先进入「星域大地图」查看只读地图；若尚无星域实例，将用默认配置 H1 + 随机种子创建（正式配置见 C-3）。',
 
   /* 存档 */
   'save.exported': '存档已导出',

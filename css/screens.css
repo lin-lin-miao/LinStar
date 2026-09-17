@@ -50,3 +50,235 @@
 
 .panel-placeholder h2 { margin: 0 0 10px; color: var(--accent); }
 .panel-placeholder p { color: var(--text-dim); margin: 0 0 20px; line-height: 1.7; }
+
+/* ================= ★ C-1 星域大地图（屏 `starfieldMap`） =================
+ * 约定：
+ *  · **不新增任何配色**：类型色一律走数据层给的 CSS 变量名（`data/sectorTypes/*.js mapColor`，
+ *    如 `--sector-star`）——由 JS 写到元素上的 `--sf-color`，本文件只用 `var(--sf-color)` 引用；
+ *    其余颜色一律复用既有变量（`--panel/--panel-2/--bg-deep/--border/--accent/--ok/--warn/--hp/--energy`）。
+ *  · **内容不越界**：地图视口 `overflow:hidden`，缩放/平移只作用在 `.sf-canvas` 的 `transform`
+ *    （`transform-origin:0 0`），平移夹取在 JS 侧完成（`applyTransform`）。
+ *  · **`.hidden` 必须显式声明**（本项目没有全局 `.hidden{display:none}` 规则）。
+ *  · 缩放层级（`.sf-zoom-far|mid|near`，由 JS 按倍率切换）决定格上细节的显示：缩小只留标记+类型色。 */
+.screen-starfield {
+  height: 100%;
+  min-height: 0;
+  padding: 10px 12px 12px;
+  gap: 8px;
+}
+
+/* ---- 顶栏 ---- */
+.sf-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.sf-title { color: var(--accent); font-weight: 600; letter-spacing: 1px; }
+.sf-top-meta {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.sf-remain { color: var(--energy); font-variant-numeric: tabular-nums; }
+.sf-status[data-state='running'] { color: var(--ok); }
+.sf-status[data-state='finished'] { color: var(--warn); }
+.sf-status[data-state='stopped'] { color: var(--hp); }
+.sf-zoom { display: flex; align-items: center; gap: 6px; }
+.sf-zoom-label {
+  min-width: 46px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 主体：地图视口 + 侧栏 ---- */
+.sf-body { flex: 1 1 auto; min-height: 0; display: flex; gap: 10px; }
+
+.sf-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden; /* ★ 裁剪：缩放/平移后内容永不越出容器 */
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-deep);
+  cursor: grab;
+  touch-action: none; /* 指针拖拽平移 */
+  user-select: none;
+}
+.sf-viewport.dragging { cursor: grabbing; }
+
+.sf-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0; /* ★ 缩放锚点＝画布左上角（平移/缩放数学见 view 侧 applyTransform/zoomAt） */
+  will-change: transform;
+}
+
+/* ---- 方形网格（列/行数＝layout.width/height，由内联 CSS 变量给出） ---- */
+.sf-grid {
+  --sf-cell: 74px; /* 单格基准尺寸（纯表现层参数） */
+  --sf-gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(var(--sf-cols, 1), var(--sf-cell));
+  grid-template-rows: repeat(var(--sf-rows, 1), var(--sf-cell));
+  gap: var(--sf-gap);
+  padding: var(--sf-gap);
+}
+.sf-cell {
+  position: relative;
+  width: var(--sf-cell);
+  height: var(--sf-cell);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  /* 类型底色＝类型色与面板色的混合（**只引用变量**；不支持 color-mix 的浏览器回退到上一行 --panel-2） */
+  background: color-mix(in srgb, var(--sf-color, var(--border)) 16%, var(--panel));
+}
+.sf-marker { font-size: 20px; line-height: 1; color: var(--sf-color, var(--text-dim)); }
+.sf-marker::before { content: var(--sf-glyph, '·'); }
+.sf-detail { font-size: 11px; line-height: 1.1; text-align: center; color: var(--text-dim); }
+.sf-detail-1 { color: var(--text); }
+
+/* ★ 格内预览（C-1 细化）：**上＝存活单位图标行**（层级 1）、**下＝矿物/货物进度条**（层级 2）。
+ *  · 图标走既有唯一口径 `ui/unitIcon.js`（`.unit-icon-wrap`/`.unit-icon-img`/`.fallback`），
+ *    这里只把它**缩小**到格子尺度（战斗单位卡仍是 36px，互不影响）；
+ *  · 图标行 **nowrap + overflow:hidden** ⇒ 绝不换行、绝不挤破格子；超出的存活数以 `+n` 芯片表示
+ *    （上限与省略规则见 `ui/starfieldMapView.js` 的 `CELL_ICON_MAX` 注释）。 */
+.sf-units {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.sf-unit-ico { display: inline-flex; align-items: center; }
+.sf-unit-ico .unit-icon-wrap { display: inline-flex; }
+.sf-unit-ico .unit-icon-img { width: 12px; height: 12px; filter: none; }
+.sf-unit-ico .unit-icon-wrap.fallback { font-size: 11px; line-height: 1; color: var(--sf-color, var(--accent)); }
+.sf-more { font-size: 9px; line-height: 1; color: var(--text-dim); }
+/* 进度条：复用既有 `.bar-track`/`.bar-fill` 样式族（`css/battle.css` 第 304/310 行，**无父选择器限定** ⇒
+ *  选择器本身能匹配到地图里；灰条真因不在此），这里只覆盖格子内的**尺寸**并**补全块级显示**。
+ *  ★ **真因（已定位）**：`battle.css` 的 `.bar-fill { height:100% }` 之所以在战斗屏生效，是因为其父 `.bar`
+ *    是 `display:grid`（第 301 行）⇒ `<span class="bar-fill">` 被**块级化**（grid item），`height/width` 才生效。
+ *    地图里 `.bar-fill` 的父是 `.bar-track`（普通 `<span>`）⇒ 填充块仍是**行内元素** ⇒ 按 CSS 规则
+ *    **`height`/`width` 对不可替换行内盒不生效** ⇒ 填充块零尺寸（既无进度也无主题色），只剩底槽灰条。
+ *  ⇒ 本处显式给 `.bar-fill` 补 `display:block`（并给底槽补 `display:block`），尺寸/百分比宽度即真实生效；
+ *    **色值仍全部来自既有变量**（底槽＝`battle.css` 的 `rgba(255,255,255,.07)`，填充＝内联 `var(--ore)`/`var(--cargo)`）。 */
+.sf-bars { display: flex; flex-direction: column; gap: 2px; width: 100%; max-width: 56px; }
+.sf-bar { display: flex; }
+/* ★ **值为 0 ⇒ 隐藏该条**（两条独立；都隐藏时 `.sf-bars` 也被 JS 加 `.hidden`）
+ *  本项目没有全局 `.hidden{display:none}` ⇒ 必须逐处显式声明。 */
+.sf-bar.hidden, .sf-bars.hidden { display: none; }
+.sf-bar .bar-track { display: block; flex: 1 1 auto; height: 3px; border-radius: 2px; }
+.sf-bar .bar-fill { display: block; height: 100%; border-radius: 2px; transition: width 0.2s linear; }
+/* ★ 贴图（预留字段 `texture`）：有值 ⇒ 渲染贴图并隐藏 marker；为空/加载失败 ⇒ marker 呈现（回退） */
+.sf-tex { width: 26px; height: 26px; object-fit: contain; }
+.sf-cell.has-tex .sf-marker { display: none; }
+.sf-sb-type.has-tex .sf-sb-marker { display: none; }
+.sf-sb-type .sf-tex { width: 18px; height: 18px; }
+/* ★ 侧栏宽度拖拽把手：细条 + 悬停高亮；拖拽期间全局光标为列宽调整 */
+.sf-splitter { flex: 0 0 6px; border-radius: 3px; background: transparent; cursor: col-resize; }
+.sf-splitter:hover { background: var(--accent); opacity: 0.35; }
+body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
+
+/* 格位变体：恒星星区（容器给的 isStar）／特殊类型（类型定义 kind==='special'，星门即此类）／四方位外缘 */
+.sf-cell.is-star { border-width: 2px; border-color: var(--sf-color); box-shadow: 0 0 10px -2px var(--sf-color); }
+.sf-cell.is-star .sf-marker { font-size: 26px; }
+.sf-cell.is-special {
+  border-style: dashed;
+  border-color: var(--sf-color);
+  background: repeating-linear-gradient(45deg, transparent 0 6px, rgba(255, 255, 255, 0.05) 6px 12px), var(--panel);
+}
+.sf-cell.is-edge { box-shadow: inset 0 0 0 1px var(--sf-color); }
+.sf-cell.selected { outline: 2px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 12px -2px var(--accent); }
+.sf-cell.sf-void {
+  border-style: dashed;
+  border-color: var(--border);
+  background: var(--bg-deep);
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ★ 按缩放层级显示不同细节：缩小（far）只留标记+类型色；中档（mid）加存活数；放大（near）再加矿量/货物 */
+.sf-zoom-far .sf-detail { display: none; }
+.sf-zoom-mid .sf-detail-2 { display: none; }
+
+/* ---- 图例（浮在地图左下，只列本星域实际出现的类型） ---- */
+.sf-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  max-width: calc(100% - 20px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(11, 16, 32, 0.86);
+  font-size: 11px;
+  color: var(--text-dim);
+  pointer-events: none; /* 纯展示：不拦截地图的拖拽/点击 */
+}
+.sf-legend-title { color: var(--text); }
+.sf-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.sf-legend-marker { color: var(--sf-color, var(--text-dim)); }
+.sf-legend-marker::before { content: var(--sf-glyph, '·'); }
+.sf-legend-void .sf-legend-marker { color: var(--text-dim); }
+.sf-legend-void .sf-legend-marker::before { content: '▢'; }
+
+/* ---- 侧栏（本轮＝星区摘要面板；★ C-2 的完整战斗场景挂到 .starfield-sidebar-stage） ---- */
+.starfield-sidebar {
+  flex: 0 0 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.starfield-sidebar.hidden { display: none; } /* ★ 显式声明（无全局 .hidden 规则） */
+.sf-sb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sf-sb-title { color: var(--accent); font-weight: 600; }
+.sf-sb-body { display: flex; flex-direction: column; gap: 8px; }
+.sf-sb-type { display: flex; align-items: center; gap: 6px; color: var(--sf-color, var(--text)); }
+.sf-sb-marker::before { content: var(--sf-glyph, '·'); }
+.sf-sb-rows {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+.sf-sb-row { display: contents; } /* 让 dt/dd 直接参与外层网格 */
+.sf-sb-row dt { color: var(--text-dim); }
+.sf-sb-row dd { margin: 0; color: var(--text); word-break: break-word; }
+.starfield-sidebar-stage:empty { display: none; } /* C-2 挂载点：空时不占高度 */
+.sf-sb-todo { margin: 0; font-size: 11px; line-height: 1.6; color: var(--text-dim); opacity: 0.85; }
+
+.sf-hint { flex: 0 0 auto; margin: 0; font-size: 11px; color: var(--text-dim); }

@@ -400,10 +400,23 @@ function uTok(ship) {
   return { side: ship.side, label: nameForLog(ship) };
 }
 
+/** ★ **战报落库的唯一出口**（B-1）：把一行战报写到**当前实例**的战报缓冲；
+ *  · `logSink` ＝**瞬时上下文指针**（**不是共享状态**）：由实例的公开入口在调用期间指向自己的写入口
+ *    并**在返回时恢复原值**（单线程 + 栈式恢复 ⇒ 可重入安全；两个实例先后 step 互不串台）；
+ *  · 无上下文（理论上不会发生：所有战报都产生在实例公开入口的调用栈内）⇒ 兜底走既有全局日志通道；
+ *  · 实例侧写入口（`createBattle` 内 `sinkLine`）负责：**入本实例缓冲** ＋ 非“星域星区模式”时再写
+ *    `core/log.js` 全局通道（＝战斗屏战报面板的既有数据源）。
+ *  ★ 这样既保住了既有 UI 战报面板（零回归），又让**每个实例拥有自己的战报序列**（多星区容器/C-2 用）。 */
+let logSink = null;
+function writeLine(msg, rich) {
+  if (logSink) logSink(msg, rich);
+  else log.add(msg, 'battle', rich);
+}
+
 /** 战斗战报（channel=battle）：colorKeys 所列占位参数按着色单位名段替换 */
 function battleLog(key, params, colorKeys) {
   const { msg, rich } = formatRich(key, params, colorKeys);
-  log.add(msg, 'battle', rich);
+  writeLine(msg, rich);
 }
 
 /* ===== 命中成句（逐吸收段）辅助 =====
@@ -457,7 +470,7 @@ function emitHitLog(headKey, headParams, seg, dtypeTag) {
     if (!(s && s.amount > 0)) continue;
     append('battle.log.hit.absorb', { abs: segAbs(s), amount: Math.round(s.amount), dtype }, []);
   }
-  if (msg) log.add(msg, 'battle', rich);
+  if (msg) writeLine(msg, rich); // ★ B-1：经统一出口（实例缓冲 + 非星域模式下再写全局通道）
 }
 
 /** 目标当前是否处于"无敌"：自身有某模块正处于激活的持续期内且其 effects.type 含 invincible。
@@ -483,9 +496,12 @@ function invincibleNow(target) {
  *    (type alliance/blastproof) 按激活顺序代吸；爆炸伤防爆池优先。
  * 每 tick 由 createBattle.step 更新为当前双方编队；承伤时据此在“目标所属友方阵营”内找共享池。
  */
-let activeAllies = [];
-let activeEnemies = [];
-const teamOf = (s) => (s.side === 'ally' ? activeAllies : activeEnemies);
+/* ★ **B-1（可实例化）**：本区 helper **不再读任何模块级“当前阵营引用”** —— 目标所属阵营的当前编队由
+ *   调用方（**实例内部的 `applyHit`**）**显式传入**：`allies`/`enemies` ＝**该战斗实例自己的**单位列表
+ *   ⇒ 多个 battle 实例各自 `step()` 时**零共享状态**、互不干扰（实例化前的 `activeAllies/activeEnemies`
+ *   两个**模块级可变变量已删除**：它们曾是唯一的“跨实例串台”来源）。
+ *   （`absorbByAlliance` / `drainBlastproof` 因此各多出 `allies, enemies` 两个参数；引擎行为一字不变。） */
+const teamOf = (s, allies, enemies) => (s.side === 'ally' ? allies : enemies);
 const isType = (fx, k) => Array.isArray(fx && fx.type) && fx.type.includes(k);
 
 /* ---------- ★「不可停用」标签（`type` 含 `undeactivatable`）----------
@@ -575,11 +591,11 @@ function poolShieldAdd(target, amt) {
  *  (施放者池) 代吸。blast=true 时(爆炸型伤害)：防爆池先吸、随后同盟池；否则只允许非防爆的同盟池。
  *  施放者池被吸收时其护盾条相应闪标（同盟深蓝 _allyFlash、防爆橙 _bpFlash）。
  *  返回 { rest: 仍未吸收量, bpAbsorbed: 进入防爆池的量 }。 */
-function absorbByAlliance(target, amount, blast) {
+function absorbByAlliance(target, amount, blast, allies, enemies) {
   const zero = { rest: amount, bpAbsorbed: 0 };
   if (amount <= 0) return zero;
   const cands = [];
-  for (const O of teamOf(target)) {
+  for (const O of teamOf(target, allies, enemies)) {
     if (!O || !O.alive) continue;
     for (const p of O.hull.pools.values()) {
       if (!p.inst) continue; // 本体池不参与共享
@@ -636,10 +652,10 @@ function noBreakPoolSpent(O, pool) {
 /** 防爆拦截（仅爆炸型伤害）：目标受防爆护盾保护时，先用友方防爆池抵挡本伤害（即使目标自带护盾），
  *  让爆炸不对主要目标造成伤害。池按“释放顺序”逐池扣减并置施放者橙色闪标。
  *  返回 { rest: 剩余量, drained: 进入防爆池的量 }。 */
-function drainBlastproof(target, amount) {
+function drainBlastproof(target, amount, allies, enemies) {
   if (amount <= 0) return { rest: amount, drained: 0 };
   const cands = [];
-  for (const O of teamOf(target)) {
+  for (const O of teamOf(target, allies, enemies)) {
     if (!O || !O.alive) continue;
     for (const p of O.hull.pools.values()) {
       if (!p.inst || !p.blastproof || p.value <= 0) continue;
@@ -667,15 +683,53 @@ function drainBlastproof(target, amount) {
 }
 
 /**
- * 创建一场战斗。
+ * 创建一场战斗（★ **B-1：可实例化** —— 每次调用得到**一个完全独立的实例**）。
  * @param {{ally: [{type, modules}], enemy: [{type, modules}],
  *          sector?: {name, oreReserve, cargos?}}} preset
  *        双方编队配置 + 星区（战斗场景）数据（缺省按 `data/sector.js SECTOR_DEFAULTS` /
  *        `data/cargo.js` 兜底并钳制；`cargos` ＝星区货物设定项数组，见 `normalizeSectorCargos`）
+ * @param {{starfield?: boolean}} [opts] ★ **B-2 星域容器专用选项**（缺省一律 `false` ⇒ **既有单星区玩法零变化**）：
+ *   `opts.starfield = true` ⇒ **「星域星区模式」**（该实例由 `systems/starfield.js` 容器驱动），三个效果：
+ *     ① **不订阅全局 ticker、不发全局事件**（`start()` 里的 `bus.on('tick')` / `combat:state` 一律跳过；
+ *        由容器按固定顺序调用实例的 `step()`）；
+ *     ② **不写全局战报通道**（`core/log.js`）：战报只进**本实例自己的** `battle.log` 缓冲；
+ *     ③ **不执行“一方全灭 ⇒ 结束”判定** —— `checkEnd()` **代码保留但不再被调用**（设计文档 §8：
+ *        “保留但不执行”；星区无单位时**静默空转、仍走 tick**）。
+ * ★ 实例内部状态**互不共享**：单位列表 / 模块实例 / 星区储量与冷却 / 货物与队列 / `__pending` /
+ *   战报缓冲 `battle.log` / tick 计数 `runTicks` 等**全部为本次调用的闭包私有变量**；
+ *   模块级仅保留**只读常量表**（`TPS`/`COEFF_CATEGORIES`/`DTYPE_TAGS`/`TARGET_POLICIES`/`AMOUNT` 等）。
  */
-export function createBattle(preset) {
+export function createBattle(preset, opts) {
+  /* ★ B-1：实例私有**战报缓冲**（`battle.log` 只读口径的来源）＋“星域星区模式”开关 */
+  const starfieldMode = !!(opts && opts.starfield);
+  const LOG_MAX = 1000; // 环形上限（与 `core/log.js` 的 500 条同体例；防止长时间星域运行内存无界）
+  const logEntries = [];
+  let logTotal = 0; // ★ 累计写入条数（**单调递增、不受环形上限影响**）⇒ 供容器/UI 判定“本 tick 有无新战报”
   const allies = [];
   const enemies = [];
+  /** ★ 本实例的**战报写入口**（模块级 `logSink` 指向它，见 `writeLine`）：
+   *  · 先入**本实例**缓冲（`battle.log` 只读口径的来源）；环形上限 `LOG_MAX` 条；
+   *  · 再按模式决定是否写 `core/log.js` **全局通道**（既有战斗屏战报面板的数据源）——
+   *    **星域星区模式**下只进本实例 ⇒ 多星区不互相污染、不刷屏（C-2 侧栏按区读 `battle.log`）。
+   *  ★ 行对象 `Object.freeze`（只读口径 ⇒ 外部改不到引擎内部状态，体例同 `battle.sector`）。 */
+  function sinkLine(msg, rich) {
+    const entry = Object.freeze({ tick: runTicks, msg, rich: rich ? Object.freeze(rich.slice()) : null });
+    logEntries.push(entry);
+    logTotal += 1;
+    if (logEntries.length > LOG_MAX) logEntries.shift();
+    if (!starfieldMode) log.add(msg, 'battle', rich);
+  }
+  /** 公开入口统一包一层：调用期间把战报出口指向本实例，**退出时恢复原值**
+   *  （单线程 + 栈式恢复 ⇒ 可重入安全；两个实例先后/嵌套调用都互不串台）。 */
+  function withSink(fn) {
+    const prev = logSink;
+    logSink = sinkLine;
+    try {
+      return fn();
+    } finally {
+      logSink = prev;
+    }
+  }
   /* ---------- 星区（战斗场景）：名称 + 矿物储量 ----------
    * · `sectorName`      用户自定义名称（UI/战报**原样显示、不做 i18n**；空串＝不显示名称前缀）
    * · `oreReserve`      当前**剩余**矿物储量（初值＝`oreReserveInit`，开采扣减、阵亡返还）
@@ -1454,9 +1508,14 @@ export function createBattle(preset) {
     result = null;
     deathsThisTick = 0; // 死亡计数从零起（首 tick 的"上一 tick 死亡数"＝0 → 不触发任何按阵亡数的词条）
     lastTickDeaths = 0;
-    tickOff = bus.on('tick', step);
-    bus.emit('combat:state', { active: true });
-    log.add(i18n.t('battle.log.start'), 'battle');
+    // ★ 星域星区模式（B-1/B-2）：**不订阅全局 ticker、不发全局事件** —— 由星域容器按固定顺序 `step()`
+    if (!starfieldMode) {
+      // ★ 经 `withSink` 包一层：tick 回调期间战报出口指向**本实例**（入实例缓冲 + 既有全局通道）——
+      //   与公开入口 `battle.step()` 走**同一份** `step()` 实现（结算全序一字不变）。
+      tickOff = bus.on('tick', () => withSink(step));
+      bus.emit('combat:state', { active: true });
+    }
+    writeLine(i18n.t('battle.log.start'), null); // ★ 经统一战报出口（实例缓冲 ＋ 非星域模式下写全局）
   }
 
   /** 中止/离开战斗（未结算） */
@@ -1468,7 +1527,7 @@ export function createBattle(preset) {
     const wasActive = phase === 'running';
     phase = 'idle';
     result = null;
-    if (wasActive) bus.emit('combat:state', { active: false });
+    if (wasActive && !starfieldMode) bus.emit('combat:state', { active: false });
   }
 
   /** 结算完成（随后自动存档） */
@@ -1480,8 +1539,10 @@ export function createBattle(preset) {
       tickOff();
       tickOff = null;
     }
-    bus.emit('battle:settled', { result: res });
-    bus.emit('combat:state', { active: false }); // 结算完成后允许/触发存档
+    if (!starfieldMode) {
+      bus.emit('battle:settled', { result: res });
+      bus.emit('combat:state', { active: false }); // 结算完成后允许/触发存档
+    }
   }
 
   /* ---------- tick 结算（Pass 0 / Pass 1 行动遍历 / Pass 2 结算遍历） ---------- */
@@ -3620,7 +3681,7 @@ export function createBattle(preset) {
     const seg = [];       // 逐吸收源明细（按引擎实际吸收顺序）：{k, inst?, amount}
     // ① 防爆拦截（仅爆炸型）：受防爆护盾保护时先用友方防爆池挡（即使目标自带护盾，爆炸也不伤目标）
     if (blast && rest > 0) {
-      const bp = drainBlastproof(target, rest);
+      const bp = drainBlastproof(target, rest, allies, enemies); // ★ B-1：阵营编队由本实例显式传入
       const drained = rest - bp.rest;
       if (drained > 0) { allyAbs += drained; bpAbs += drained; seg.push({ k: 'blastproof', amount: drained }); }
       rest = bp.rest;
@@ -3644,7 +3705,7 @@ export function createBattle(preset) {
     // ③ 自身池耗尽且伤害将扣血：友方同盟/防爆护盾(施放者共享模块池)代为吸收；不够的部分才真正扣血
     if (rest > 0) {
       const beforeAlly = rest;
-      const ar = absorbByAlliance(target, rest, !!blast);
+      const ar = absorbByAlliance(target, rest, !!blast, allies, enemies); // ★ B-1：同上
       const ab = beforeAlly - ar.rest;
       allyAbs += ab;
       bpAbs += ar.bpAbsorbed;
@@ -4312,8 +4373,8 @@ export function createBattle(preset) {
   function step() {
     if (phase !== 'running') return;
     runTicks += 1;
-    activeAllies = allies; // 同盟护盾跨单位结算用的当前阵营引用
-    activeEnemies = enemies;
+    // ★ B-1：原先在此写入的两个**模块级**“当前阵营引用”已删除 —— 同盟/防爆共享吸收现在直接由
+    //   `applyHit(target, …, allies, enemies)` 传入本实例自己的编队 ⇒ **多实例零串台**。
     reflectQueue = []; // 每 tick 清空反射返程记账，避免跨 tick 残留/重复
     // ★ 星区「本 tick 已被接受的模块」集合：每 tick 起始清空（Pass1 记账用，非数值状态）——
     //   同一 tick 多个单位携带同一星区模块时，按固定结算顺序（allies → enemies）**只接受第一个**。
@@ -4653,7 +4714,10 @@ export function createBattle(preset) {
     //   的死亡绝不反馈给本 tick 的 Pass1（无反馈环、与遍历顺序无关、镜像对等）。
     lastTickDeaths = deathsThisTick;
     deathsThisTick = 0;
-    checkEnd();
+    // ★ **“一方全灭 ⇒ 结束”判定**（设计文档 §8：**保留在代码中、但星域星区模式下不执行**）：
+    //   · 既有单星区玩法（非星域模式）⇒ 照旧调用（**零回归**）；
+    //   · 星域星区模式 ⇒ **不调用**（星区无单位时静默空转、仍走 tick；何时结束由**星域持续时间**决定）。
+    if (!starfieldMode) checkEnd();
   }
 
   /** 汇总某阵营符合 pred 的“共享护盾池”（模块池，非本体）{value,max}：逐池累加池值/池容量。 */
@@ -4694,7 +4758,7 @@ export function createBattle(preset) {
     return { value, max, base, modules };
   }
 
-  return {
+  const api = {
     get phase() { return phase; },
     get result() { return result; },
     get allies() { return allies; },
@@ -4898,9 +4962,31 @@ export function createBattle(preset) {
     targetableBy: (ship, u, kind) => targetAllowed(ship, u, kind), // ★ 目标可选口径（唯一）：潜行 + role 分离（「可选战斗单位」＝存活且未被潜行屏蔽）
     //   （`kind` ＝ 候选来源选择器桶 'self'|'enemy'|'ally'|'any'；缺省/2 参调用按 'enemy' 对敌语义判定，
     //     与既有 2 参调用完全兼容；UI 候选池只需把桶名带过来，**不自算任何过滤规则**）
+    /** ★ **B-1/B-2：手动推进 1 tick**（不依赖全局 ticker）—— 星域容器按固定顺序逐区驱动用。
+     *  · 语义＝全局 tick 回调的**同一份** `step()` 实现（结算全序一字不变）；
+     *  · `phase !== 'running'` ⇒ **直接返回**（与 `step()` 的门控同口径，不产生任何副作用）；
+     *  · 不订阅/不解除任何 tick 订阅（`start()`/`stop()` 的既有行为**一字不变**）。 */
+    step: () => step(),
+    /** ★ **本实例的战报序列**（B-1；只读快照：每次返回**新数组**，行对象已 `Object.freeze`）
+     *  行 ＝ `{ tick（产生时的 runTicks）, msg, rich }`；**UI 只读本口径、不自算**。
+     *  · 非星域模式：与 `core/log.js` 全局通道**同步**（全局那份供既有战斗屏战报面板）；
+     *  · 星域星区模式：**只进本实例**（不写全局）⇒ 多星区各自独立、C-2 侧栏按区读取。 */
+    get log() { return logEntries.slice(); },
+    /** ★ **累计战报条数**（单调递增；不受 `battle.log` 环形上限影响）—— 供容器/UI 判定
+     *  “本 tick 该星区有没有新战报”（星域地图的“有事件”标记）。 */
+    get logTotal() { return logTotal; },
+    /** ★ 本实例是否处于「星域星区模式」（B-2 容器创建时为 true；既有单星区玩法恒 false） */
+    get starfieldMode() { return starfieldMode; },
     start,
     stop,
   };
+  /* ★ 统一包一层（B-1）：可能产生战报的 4 个公开入口，在调用期间把**战报出口**指向本实例缓冲
+   *   （退出时恢复原值 ⇒ 可重入安全、多实例零串台）；四者的**语义/返回值一字不变**。 */
+  for (const k of ['start', 'stop', 'step', 'unloadCargo']) {
+    const orig = api[k];
+    api[k] = (...args) => withSink(() => orig.apply(api, args));
+  }
+  return api;
 }
 
 /* ================= ★ 唯一的「进入战斗」接口（数据/引擎侧） =================
@@ -5143,14 +5229,163 @@ export function normalizeFormation(formation = {}) {
 }
 
 /** ★ 唯一的「进入战斗」接口（数据/引擎侧）：规范化编队 → 创建双方单位 → 返回句柄。
- *  详见上方契约注释；UI 侧的唯一入口是 `ui/battleView.js enterBattle()`（内部调用本函数）。 */
-export function startBattle(formation = {}) {
+ *  详见上方契约注释；UI 侧的唯一入口是 `ui/battleView.js enterBattle()`（内部调用本函数）。
+ *  ★ **B-2 扩展（可选第 2 参，缺省行为**一字不变**）**：`opts.starfield === true` ⇒ **星域星区模式**
+ *   （由 `systems/starfield.js` 容器调用）：
+ *     · **允许空编队**（某一方甚至双方都为空 ⇒ 不再返回 `noUnits`；
+ *       设计文档 §8「星区无战斗单位时静默空转、仍走 tick」）；
+ *     · 实例内部：不订阅全局 ticker/不发全局事件、战报只进实例缓冲、**不执行全灭结束判定**
+ *       （详见 `createBattle` 的 `opts` 说明）。
+ *   ⚠ 既有单星区玩法（演练编队 / 结算再战）**不传 opts** ⇒ 行为与改造前完全一致。 */
+export function startBattle(formation = {}, opts) {
   const norm = normalizeFormation(formation);
-  if (!norm.allies.length || !norm.enemies.length) {
+  const starfield = !!(opts && opts.starfield);
+  if (!starfield && (!norm.allies.length || !norm.enemies.length)) {
     return { ok: false, error: 'noUnits', battle: null, formation: norm, warnings: norm.warnings };
   }
-  const battle = createBattle({ ally: norm.allies, enemy: norm.enemies, sector: norm.sector });
+  const battle = createBattle({ ally: norm.allies, enemy: norm.enemies, sector: norm.sector }, opts);
   return { ok: true, error: null, battle, formation: norm, warnings: norm.warnings };
+}
+
+/* ================= ★ B-1 自检：battle 可实例化（实例间零共享） ================= */
+
+/** 编队/星区造数据（自检用；数值均为占位） */
+function drillFormation(allyCount, ore) {
+  const unit = () => ({ type: 'combat', level: 5, modules: [{ moduleId: 'cannon', level: 3 }, { moduleId: 'hardShield', level: 3 }] });
+  return {
+    allies: Array.from({ length: allyCount }, unit),
+    enemies: [unit(), unit(), { type: 'transport', level: 5, modules: [{ moduleId: 'cargoHold', level: 1 }] }],
+    sector: {
+      oreReserve: ore,
+      cargos: [
+        { templateId: 'weaponPart', tons: 5, level: 1 },
+        { templateId: 'miningRig', tons: 8, level: 2 },
+      ],
+    },
+  };
+}
+
+/** 实例“可比较快照”（**只取确定性数值字段**，避开 `uid()` 生成的非确定性单位 id：
+ *  单位出场序号 `order` 才是引擎内的稳定标识，见 `spawnList`）。 */
+function vitalsOf(b) {
+  const units = b
+    .units()
+    .map(
+      (u) =>
+        `${u.side}#${u.order}:${u.typeId}:${Math.round(u.hull.hp)}/${Math.round(u.hull.shield)}/${Math.round(u.hull.energy)}@${u.alive ? 1 : 0}`
+    )
+    .join('|');
+  const s = b.sector;
+  return `${units};ore=${s.oreReserve}/${s.oreReserveInit};cargo=${s.cargos.length};ticks=${b.runTicks}`;
+}
+
+/** ★ **B-1 自检**（「battle 可实例化 / 实例之间零共享」的自动化验收）——控制台 **`LS.battle.selfCheck()`**
+ *  检查项（全部纯本地、同步、无全局副作用 —— 星域星区模式不订阅 ticker、不写全局战报）：
+ *   ① **两实例并行推进互不影响**：tick 计数 / 单位数 / 星区储量 / 战报序列各自独立；
+ *   ② **战报隔离**：A 推进 5 tick 期间 B 的战报**不增**（B 的 `log.length` 恒为 1＝仅“战斗开始”）；
+ *   ③ **同编队两实例逐 tick 数值一致**（同 tick 快照全等 ⇒ 无跨实例串台、引擎确定）；
+ *   ④ **星域星区模式不执行「一方全灭 ⇒ 结束」**（全灭后 `phase` 仍为 `running`、`result` 仍为 `null`）；
+ *   ⑤ **星域星区模式允许空编队**且可正常 `step()`；非星域模式空编队**仍是 `noUnits`**（既有语义不变）；
+ *   ⑥ **星域星区模式不写全局战报通道**（`core/log.js` 行数在创建 + 推进前后**不变**）。
+ *  @returns {{ pass:boolean, checks:{name,pass,detail}[] }} */
+export function battleSelfCheck() {
+  const checks = [];
+  const add = (name, pass, detail) => checks.push({ name, pass: !!pass, detail: detail == null ? '' : String(detail) });
+
+  // ①/② 两实例并行推进 + 战报隔离
+  const A = startBattle(drillFormation(2, 1000), { starfield: true });
+  const B = startBattle(drillFormation(1, 500), { starfield: true });
+  const a = A.battle;
+  const b = B.battle;
+  a.start();
+  b.start();
+  const bLogAtStart = b.log.length; // 预期＝1（仅“战斗开始”行）
+  const aUnits = a.units().length;
+  const bUnits = b.units().length;
+  for (let i = 0; i < 5; i += 1) a.step();
+  const aTicksAfter = a.runTicks;
+  const bTicksAfter = b.runTicks;
+  const bLogAfterA = b.log.length;
+  for (let i = 0; i < 3; i += 1) b.step();
+  const ok1 =
+    aTicksAfter === 5 &&
+    bTicksAfter === 0 && // A 推进时 B 一步未动
+    b.runTicks === 3 &&
+    a.runTicks === 5 && // B 推进时 A 的 tick 不受影响
+    a.units().length === aUnits &&
+    b.units().length === bUnits &&
+    a.log.length >= 1 &&
+    a.log.every((l) => l.tick <= 5) &&
+    b.log.every((l) => l.tick <= 3);
+  add('① 两实例并行推进互不影响（tick/单位/星区/战报独立）', ok1, `A=${aTicksAfter}→${a.runTicks}t B=${bTicksAfter}→${b.runTicks}t`);
+  add('② 战报隔离：A 推进期间 B 战报不增', bLogAfterA === bLogAtStart && bLogAtStart === 1, `B.log=${bLogAfterA}（起始 ${bLogAtStart}）`);
+
+  // ③ 同编队两实例逐 tick 数值一致
+  {
+    const C = startBattle(drillFormation(2, 1000), { starfield: true });
+    const D = startBattle(drillFormation(2, 1000), { starfield: true });
+    C.battle.start();
+    D.battle.start();
+    for (let i = 0; i < 30; i += 1) {
+      C.battle.step();
+      D.battle.step();
+    }
+    const vc = vitalsOf(C.battle);
+    const vd = vitalsOf(D.battle);
+    add('③ 同编队两实例逐 tick 数值一致（30 tick）', vc === vd, vc === vd ? 'vitals 全等' : `C=${vc} D=${vd}`);
+  }
+
+  // ④ 星域星区模式：一方全灭后仍不结束（保留代码、不执行）
+  {
+    const E = startBattle(
+      {
+        allies: [{ type: 'transport', level: 1, modules: [] }],
+        enemies: [
+          { type: 'combat', level: 16, modules: [{ moduleId: 'heavyCannon', level: 16 }] },
+          { type: 'combat', level: 16, modules: [{ moduleId: 'heavyCannon', level: 16 }] },
+          { type: 'combat', level: 16, modules: [{ moduleId: 'heavyCannon', level: 16 }] },
+          { type: 'combat', level: 16, modules: [{ moduleId: 'heavyCannon', level: 16 }] },
+        ],
+        sector: { oreReserve: 100 },
+      },
+      { starfield: true }
+    );
+    const e = E.battle;
+    e.start();
+    for (let i = 0; i < 240; i += 1) e.step();
+    const allyAlive = e.units().filter((u) => u.side === 'ally' && u.alive).length;
+    add(
+      '④ 星域星区模式：一方全灭不结束（phase 仍 running）',
+      e.phase === 'running' && e.result === null,
+      `allyAlive=${allyAlive}, phase=${e.phase}, result=${String(e.result)}`
+    );
+  }
+
+  // ⑤ 空编队：星域模式允许；非星域模式仍 noUnits
+  {
+    const F1 = startBattle({ allies: [], enemies: [], sector: { oreReserve: 100 } }, { starfield: true });
+    let okEmpty = false;
+    if (F1.ok && F1.battle) {
+      F1.battle.start();
+      for (let i = 0; i < 3; i += 1) F1.battle.step();
+      okEmpty = F1.battle.runTicks === 3 && F1.battle.units().length === 0;
+    }
+    add('⑤ 星域星区模式允许空编队并可 step', okEmpty);
+    const F2 = startBattle({ allies: [], enemies: [] });
+    add('⑤ 非星域模式空编队仍返回 noUnits（既有语义不变）', F2.ok === false && F2.error === 'noUnits', `ok=${F2.ok}, error=${String(F2.error)}`);
+  }
+
+  // ⑥ 星域星区模式不写全局战报通道
+  {
+    const before = log.lines.length;
+    const G = startBattle(drillFormation(2, 1000), { starfield: true });
+    G.battle.start();
+    for (let i = 0; i < 10; i += 1) G.battle.step();
+    const after = log.lines.length;
+    add('⑥ 星域星区模式不写全局战报通道', before === after, `全局日志 ${before} → ${after}（本实例 log=${G.battle.log.length}）`);
+  }
+
+  return { pass: checks.every((c) => c.pass), checks };
 }
 
 export default createBattle;

@@ -188,6 +188,10 @@
 }
 /* ★ 空栏自动隐藏（战斗/后勤 × 敌我共四条同规则，由 syncZoneVisibility 统一切换 .hidden） */
 .battle-zone.hidden { display: none; }
+/* ★ **星域驱动星区不显示战报**（用户口径）：判据＝实例只读标志 `battle.starfieldMode`
+ *   （`ui/battleView.js applyLogPanelVisibility`；**面板代码保留**，仅显式隐藏）。
+ *   本项目没有全局 `.hidden{display:none}` ⇒ 必须在此显式声明。 */
+.battle-log.hidden { display: none; }
 .zone-hint.hidden { display: none; }
 .battle-zone.enemy {
   border-color: rgba(255, 93, 108, 0.35);

@@ -34,6 +34,7 @@ import {
   cargoListOf,
 } from '../entities/ship.js';
 import { bar } from './widgets.js';
+import { unitIcon } from './unitIcon.js'; // ★ 单位图标唯一口径（与星域地图格内预览共用）
 import { router } from './router.js';
 import { setupView } from './setupView.js'; // ★ 演练编队配置屏（单一职责；本文件只挂载它并接收回调）
 // ★ 星区侧冷却词条的**唯一识别口径**（与引擎同源）：UI 枚举「星区冷却」行时不自行判词条
@@ -299,34 +300,11 @@ function isInvincibleShip(ship) {
 }
 
 /** 单位图标：
+ *  ★ **已抽到 `ui/unitIcon.js`（唯一口径）**：战斗屏与星域地图（C-1 格内预览）**共用同一实现**
+ *    （召唤模块图标 / 船型解析 icon / 约定素材路径三级优先，加载失败降级 ▲）——本文件改为 import。
  *  - 召唤(无人机)单位：使用所属召唤模块的图标(ship.summonIcon)；模块无图标时直接降级 ▲。
  *  - 常规单位：读取独立素材文件 assets/img/ship-<type>-<side>.svg；加载失败回退 ▲。
  */
-function unitIcon(ship) {
-  const wrap = el('span', { class: 'unit-icon-wrap' });
-  if (ship.tempNoIcon) {
-    wrap.classList.add('fallback');
-    wrap.appendChild(document.createTextNode('▲'));
-    return wrap;
-  }
-  const img = el('img', {
-    class: 'unit-icon-img',
-    alt: '',
-    draggable: 'false',
-    // 图标优先级：召唤模块图标（summon.attrs.icon / 模块 icon） > **船型等级解析出的 icon**
-    // （`ship.typeCfg.icon`，船型任意条目可逐级覆写） > 既有按 typeId+side 约定的素材路径。
-    src:
-      ship.summonIcon ||
-      (ship.typeCfg && ship.typeCfg.icon) ||
-      `./assets/img/ship-${ship.typeId}-${ship.side}.svg`,
-  });
-  img.addEventListener('error', () => {
-    wrap.replaceChildren(document.createTextNode('▲'));
-    wrap.classList.add('fallback');
-  });
-  wrap.append(img);
-  return wrap;
-}
 
 function nextActionText(ship) {
   let shieldInfo = null;
@@ -2411,6 +2389,21 @@ function exitToMenu() {
   router.show('menu');
 }
 
+/** ★★ **打开「演练编队配置」界面**（原主菜单入口已移除 ⇒ 改为控制台指令 `LS.drill()`）★★
+ *  · 定位（设计文档 §7 / §10 S0-1）：编队界面**保留、仅开发测试用**；**界面中不再提供入口**；
+ *  · 本函数**不新增任何流程**，只把既有路径接起来（**编队界面与开战流程零改动**）：
+ *      ① 有对局（`battle` 非空）⇒ 走**既有唯一离开路径** `leaveBattle()`
+ *         （停战斗 + 清运行态 + 就地重挂编队配置屏，回调仍指向唯一开战入口 `enterBattle`）；
+ *      ② 清掉对局后若当前不在战斗屏 ⇒ `router.show('battle')`
+ *         （`root()` 在无战斗时 `mountSetup()` 挂编队配置屏）；
+ *      ③ 已在编队屏且无对局 ⇒ **幂等无操作**（不重复挂载、不重置编辑态 ⇒ 玩家的编队微调不丢）。
+ *  · 返回 `{ ok:true }`（供控制台打印；本函数恒成功、无失败分支）。 */
+export function enterDrill() {
+  if (battle) leaveBattle(); // ①「离开」＝既有清理 + 重挂编队屏（编队编辑态保留在 setupView 内）
+  if (router.current !== 'battle') router.show('battle'); // ② 切屏（root() 无战斗时挂编队屏）
+  return { ok: true }; // ③ 已在编队屏时上面两句都不会改变界面 ⇒ 幂等
+}
+
 /* ================= 根节点 ================= */
 
 function root() {
@@ -2474,6 +2467,20 @@ function refreshStatus() {
   });
 }
 
+/** ★ **星域驱动星区的「战报面板」可见性开关**（C-1 细化 · 用户口径）：
+ *  · 判据＝**实例侧只读标志** `battle.starfieldMode`（唯一来源；UI **不自算**“是否星域驱动”）；
+ *    —— 该标志由 `systems/battle.js createBattle(..., {starfield:true})` 置位（星域容器用），
+ *       既有单星区玩法恒为 `false`。
+ *  · `true` ⇒ 给战报面板加 `.hidden`（CSS 里**显式**声明 `.battle-log.hidden{display:none}`）；
+ *    ★ **代码保留**：面板结构、订阅、渲染逻辑**一行未删**，只是**不显示**。
+ *  · `false` ⇒ 移除 `.hidden` ⇒ 与本轮之前**完全一致**（既有战斗屏零回归）。
+ *  · 调用点：`renderRunning()`（每次重建舞台之后）。C-2 侧栏若复用战斗渲染，请套用**同一判据**。 */
+function applyLogPanelVisibility() {
+  const panel = stageArea ? stageArea.querySelector('.battle-log') : null;
+  if (!panel) return;
+  panel.classList.toggle('hidden', !!(battle && battle.starfieldMode));
+}
+
 function renderRunning() {
   const built = buildStage();
   stageArea.replaceChildren(built.stage);
@@ -2482,6 +2489,11 @@ function renderRunning() {
   allyZone = built.combatZ;
   allyLogZone = built.logisticsZ;
   logPanelEl = built.logLines;
+  // ★ **星域驱动星区不显示战报面板（用户口径）**：开关＝**实例侧只读标志** `battle.starfieldMode`
+  //   （`systems/battle.js createBattle(..., {starfield:true})` 置位；既有单星区玩法恒 false）。
+  //   · **代码保留**：战报面板、订阅、渲染逻辑**一行未删**，只是**显式隐藏**该面板（`.battle-log.hidden`）；
+  //   · 单星区玩法（`LS.drill()`/战斗屏）`starfieldMode === false` ⇒ 照旧显示战报（**零回归**）。
+  applyLogPanelVisibility();
   rebuildUnits();
   overlay.overlay.classList.add('hidden');
   if (selectedId && findUnit(selectedId)) buildDetail(findUnit(selectedId));
@@ -2571,6 +2583,7 @@ function bindGlobalListeners() {
 
   bus.on('log', (line) => {
     if (!logPanelEl || !battle || battle.phase === 'idle') return;
+    if (battle.starfieldMode) return; // ★ 星域驱动星区：不发也不显示战报（面板已隐藏；代码保留）
     if (line.kind !== 'battle') return;
     const entry = el('div', {
       class: `log-line${line.msg.includes('击毁') || line.msg.includes('destroyed') ? ' destroy' : ''}`,
@@ -2623,6 +2636,7 @@ export const battleView = {
   root,
   enterBattle, // ★ 唯一「进入战斗」入口（UI 侧）：演练开战 / 结算再战 / 将来关卡入口统一走它
   leaveBattle, // 「离开」：结束战斗并回编队配置界面（含完整清理）
+  enterDrill,  // ★ S0-1：打开「演练编队配置」界面（原主菜单入口已移除 ⇒ 控制台指令 `LS.drill()` 走它）
 };
 
 export default battleView;

@@ -15,7 +15,10 @@ function root() {
     el('button', {
       class: 'btn primary',
       text: i18n.t('menu.start'),
-      onclick: () => router.show('battle'),
+      // ★ S0-1：原「编队配置（单星区模拟）」入口位置改为「**星域配置界面**」（本轮为占位页，C-3 正式实装）；
+      //   编队界面**不再有界面入口**，改用控制台指令 `LS.drill()`（见 `js/main.js`）；
+      //   编队界面本身与开战流程**零改动**（仍走 `setupView` + 唯一开战入口 `enterBattle`）。
+      onclick: () => router.show('starfield'),
     }),
     storageNotice,
     el('div', { class: 'hint', text: i18n.t('menu.hint') }),
