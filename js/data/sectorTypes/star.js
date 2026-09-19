@@ -27,7 +27,8 @@ export default {
     },
     structures: [], // 特殊结构【占位 · 待开发】：本轮恒空数组（纯数据、JSON 可序列化）
   },
-  npcListId: null, // 默认 NPC 列表引用（null＝该类型默认无单位；引用见 `data/npcLists/`）
+  // ★ 默认 NPC 列表**可配置多个**（`npcListIds: string[]`；生成时按种子随机抽一个；`[]`＝无单位）
+  npcListIds: [], // 默认 NPC 列表引用（空数组＝该类型默认无单位；引用见 `data/npcLists/`）
   specialEffect: null, // 特殊效果【占位 · 待开发】（本轮恒 null）
   texture: null, // ★ 贴图字段（预留）：非空 ⇒ 渲染贴图；为空 ⇒ 回退「类型色 + marker」（本轮不新增图片文件）
   fill: false, // 填充类型标记：**非**「剩余格位填充类型」（唯一 `fill:true` 者见 `empty.js`）

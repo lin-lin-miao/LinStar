@@ -13,11 +13,14 @@ export default {
 
   sectorTypes: {
     star: { enabled: true, count: { min: 1, max: 1 } }, // 中心恒星固定 1 个
-    planet: { enabled: true, count: { min: 3, max: 6 }, npcListId: 'patrolLight' }, // 【占位预填】
-    mineral: { enabled: true, count: { min: 2, max: 5 }, npcListId: 'patrolLight' }, // 【占位预填】中档起矿物区有轻巡逻
+    planet: { enabled: true, count: { min: 3, max: 6 }, npcListIds: ['patrolLight'] }, // 【占位预填】
+    mineral: { enabled: true, count: { min: 2, max: 5 }, npcListIds: ['patrolLight'] }, // 【占位预填】中档起矿物区有轻巡逻
     empty: { enabled: true, count: { min: 2, max: 8 } }, // 【占位预填】
-    stargate: { enabled: true, count: { min: 1, max: 3 }, npcListId: null }, // 【占位预填】
+    stargate: { enabled: true, count: { min: 1, max: 3 }, npcListIds: [] }, // 【占位预填】
   },
+
+  // ★ 玩家单位列表（我方初始编队；与 NPC 列表 `units[]` 同构；`[]`＝不给初始编队。字段含义见 `h1.js`）
+  playerUnits: [],
 
   sideRules: {
     playerEntryTypeId: 'stargate',

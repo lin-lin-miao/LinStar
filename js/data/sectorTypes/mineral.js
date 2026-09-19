@@ -20,7 +20,8 @@ export default {
     },
     structures: [],
   },
-  npcListId: null, // 默认无驻守（由星域配置按难度覆写，例如 H2/H3 派重巡逻）
+  // ★ 默认 NPC 列表**可配置多个**（`npcListIds: string[]`；生成时按种子随机抽一个；`[]`＝无单位）
+  npcListIds: [], // 默认无驻守（由星域配置按难度覆写，例如 H2/H3 派重巡逻）
   specialEffect: null,
   texture: null, // ★ 贴图字段（预留）：非空 ⇒ 渲染贴图；为空 ⇒ 回退「类型色 + marker」（本轮不新增图片文件）
   fill: false, // 填充类型标记：**非**「剩余格位填充类型」（唯一 `fill:true` 者见 `empty.js`）

@@ -9,6 +9,10 @@
  *   / **`seed`**（可选默认种子；`null` ⇒ 由「星域配置界面」随机生成后写入，界面可覆写）
  *   / **`sectorTypes`**（**类型开关 + 各类型数量最小/最大值 + 默认 NPC 列表覆写**；
  *     键＝既有星区类型 id（`data/sectorTypes/`），**逐类型可只写要覆写的那几项**）
+ *   / ★ **`playerUnits`**（**玩家单位列表**：我方初始编队，与 NPC 列表 `units[]` **同构** ——
+ *     `[{ shipId, count, level?, modules?:[{moduleId,level?}] }]`；阵营恒为**我方**；
+ *     进入星域时按 `sideRules.playerEntryTypeId` 生成在**星门星区**，无星门 ⇒ `#1` 号星区；
+ *     `[]`＝不给初始编队）
  *   / **`sideRules`**（敌我分布规则【占位 · 玩法层用】）/ **`specialEffects`**（特殊效果【占位 · 待开发】）。
  * ★ 数值说明：**【占位预填 · 待用户调校】** —— 半径 2 / 持续 3600t（20tps ⇒ 3 分钟）/ 各类型数量区间
  *   与 NPC 列表分配全部为占位。
@@ -22,18 +26,28 @@ export default {
 
   /* ★ 各类型星区开关 + 数量区间（可覆写类型默认值；未写到的条目自动沿用类型定义 `data/sectorTypes/`）
    * ★ 占位数值已按**该半径的格位数**粗校（`radius:2` ⇒ 到中心欧氏距离 ≤2 的格位约 13 个）：
-   *   本档各类型**数量上限之和 = 1+4+3+3+2 = 13** ⇒ 恰好在容量内（不保证每档都填满）【占位预填】 */
+   *   本档各类型**数量上限之和 = 1+4+3+3+2 = 13** ⇒ 恰好在容量内（不保证每档都填满）【占位预填】
+   * ★ NPC 列表覆写＝**数组 `npcListIds`**（可配多个；生成时按种子在该集合内随机抽一个；
+   *   `[]`＝无单位；兼容读取既有单值 `npcListId`） */
   sectorTypes: {
     star: { enabled: true, count: { min: 1, max: 1 } }, // 中心恒星：固定 1 个（口径，非占位）
-    planet: { enabled: true, count: { min: 2, max: 4 }, npcListId: 'patrolLight' }, // 【占位预填】
-    mineral: { enabled: true, count: { min: 1, max: 3 }, npcListId: null }, // 【占位预填】入门档矿物区无驻守
+    planet: { enabled: true, count: { min: 2, max: 4 }, npcListIds: ['patrolLight'] }, // 【占位预填】
+    mineral: { enabled: true, count: { min: 1, max: 3 }, npcListIds: [] }, // 【占位预填】入门档矿物区无驻守
     empty: { enabled: true, count: { min: 0, max: 3 } }, // 【占位预填】允许 0 个（上限按格位容量收窄）
-    stargate: { enabled: true, count: { min: 1, max: 2 }, npcListId: null }, // 【占位预填】玩家进出用，无 NPC
+    stargate: { enabled: true, count: { min: 1, max: 2 }, npcListIds: [] }, // 【占位预填】玩家进出用，无 NPC
   },
+
+  /* ★ **玩家单位列表**（我方初始编队；纯数据、可 JSON 往返、与 NPC 列表 `units[]` **同构**）：
+   *   每条＝`{ shipId, count, level?, modules?:[{moduleId,level?}] }`（`count` 固定值；
+   *   如需随机数量可写 `countRange:[min,max]`，由 `systems/starfield.js` 用**独立子流** `fork('playerUnits')` 抽）。
+   *   · **阵营**＝**我方**（`side:'ally'`）；**入场星区**＝`sideRules.playerEntryTypeId` 指到的类型
+   *     （缺省回退：**第一个启用的 `placement.mode === 'edges'` 类型**，仍无 ⇒ `#1` 号星区）。
+   *   · 本轮默认空 ＝ **不给初始编队**（零回归：星域行为与改造前一致；由界面「玩家单位列表」编辑后生效）。 */
+  playerUnits: [],
 
   /* ★ 敌我分布规则【占位 · 玩法层用】（设计文档 §2-6：按玩法决定；默认难度阶梯模式含星门处理） */
   sideRules: {
-    playerEntryTypeId: 'stargate', // 玩家单位从「星门星区」进出（默认模式口径；引用既有星区类型 id）
+    playerEntryTypeId: 'stargate', // 玩家单位从「星门星区」进场（默认模式口径；引用既有星区类型 id）
     npcSide: 'enemy', // NPC 默认敌对【占位】（'enemy' | 'ally'，后续玩法可覆写）
     allyNpcListIds: [], // 友方援军 NPC 列表【占位】空＝无
     neutralSectorTypeIds: [], // 中立星区类型【占位】空＝本轮不区分中立

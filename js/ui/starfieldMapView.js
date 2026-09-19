@@ -34,13 +34,14 @@ import { getSectorType } from '../data/sectorTypes/index.js';
 import { router } from './router.js';
 import { ensureStarfield, getStarfield } from './starfieldSession.js';
 import { unitIcon } from './unitIcon.js'; // ★ 单位图标**唯一口径**（与战斗屏共用；见 `ui/unitIcon.js`）
+import { mountSectorScene } from './battleView.js'; // ★ C-2：复用**同一套**战斗场景渲染/交互链（无第二套实现）
 
 /* ---------- 交互常量（纯表现层参数，非游戏数值） ---------- */
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 2.6;
 const ZOOM_STEP = 1.15; // 滚轮/按钮每档倍率
 const DRAG_THRESHOLD = 4; // 位移小于该像素数 ⇒ 视为“点击选中”而非“拖拽平移”
-const PAN_PAD = 40; // 平移夹取的容差（像素）
+// ★ 原 `PAN_PAD`（平移夹取容差 40px）已随「取消平移夹取」一并删除（用户口径：拖拽范围不限制）
 /* ★ **格内单位预览的图标上限与省略规则**（用户口径要求：写进注释并回报）：
  *  · 只统计**存活**单位（`u.alive`）；死亡/已移除者**不显示预览**；
  *  · 最多显示 **`CELL_ICON_MAX = 4`** 个图标；**第 5 个起不再画图标**，改为在其后追一枚 **`+n` 小芯片**
@@ -61,11 +62,16 @@ const CELL_ICON_MAX = 4;
  *  · **值为 0 则隐藏该条**：`ore <= 0` 隐藏矿物条、`cargoCount <= 0` 隐藏货物条（两条独立判断）；
  *    两条都隐藏时**整块进度条区域隐藏**。 */
 
-/* ★ 侧栏宽度（**会话内记忆**：模块级变量 ⇒ 切换星区/重绘/离开再进入都保持；刷新页面自然重置） */
+/* ★ 侧栏宽度（**会话内记忆**：模块级变量 ⇒ 切换星区/重绘/离开再进入都保持；刷新页面自然重置）
+ *  ★ 默认宽度＝**半屏**（`.sf-body` 可用宽 × 0.5，见 `clampSidebarW(null)`）：
+ *    · `sidebarW === null` 且 `sidebarUserSet === false` ⇒ **尚未确定/用户未拖动过** ⇒ 每次按当前可用宽取半屏；
+ *    · 用户拖动后 `sidebarUserSet = true` ⇒ **会话内记忆优先**（窗口 resize 时只做夹取、不再回到半屏）。 */
 const SIDEBAR_MIN_W = 220;
-const SIDEBAR_MAX_W = 560;
-const SIDEBAR_DEFAULT_W = 300;
-let sidebarW = SIDEBAR_DEFAULT_W;
+const SIDEBAR_DEFAULT_W = 300; // 仅用于「首帧尚未布局、拿不到可用宽」时的确定性兜底
+const SF_SIDE_PAD = 24; // 侧栏上限推导时的**留白**（像素；保证地图一列星区两侧仍有呼吸空间）
+const SIDEBAR_DEFAULT_RATIO = 0.5; // ★ 默认＝半屏
+let sidebarW = null; // null ⇒ 未拖动过：按半屏推导
+let sidebarUserSet = false; // 用户是否拖动过（决定"会话内记忆"是否优先于默认）
 
 /* ---------- 模块状态（视图重绘时复用：缩放/平移/选中在 `repaint()` 后保持） ---------- */
 let mounted = false;
@@ -78,27 +84,15 @@ let remainEl = null;
 let zoomEl = null;
 let legendEl = null;
 let sidebarEl = null;
-let sbTypeEl = null;
-let sbRowsEl = null;
+let sbTitleEl = null; // 侧栏标题（显示星区名，与战斗屏星区栏同一文案口径）
+let sbStageEl = null; // ★ C-2：战斗场景挂载容器（`.starfield-sidebar-stage`）
+let sceneHost = null; // ★ C-2：当前侧栏场景宿主（`battleView.mountSectorScene` 返回值；只刷新当前星区）
+let gridCols = 1; // 网格列数（建图时记录；用于推导「单列星区」的实际宽度 ⇒ 侧栏最大宽度）
 let selectedIndex = null;
 let scale = 1;
 let tx = 0;
 let ty = 0;
 const cellRefs = new Map(); // index → { cell, units, unitSig, bars:{ore,cargo}, cache:{…} }（DOM 复用 + 变化才写）
-let sbRenderedIndex = null; // 侧栏当前已渲染的星区 index（null＝需重建行结构）
-let sbValueRefs = []; // 侧栏各行的值节点（`dd`，与 SIDEBAR_ROW_KEYS 同序；每 tick 只改变化的值）
-/** 侧栏行的**标签词条 key**（顺序＝显示顺序；值节点与之一一对应） */
-const SIDEBAR_ROW_KEYS = [
-  'starfield.sidebar.index',
-  'starfield.sidebar.coord',
-  'starfield.sidebar.type',
-  'starfield.sidebar.alive',
-  'starfield.sidebar.ore',
-  'starfield.sidebar.cargo',
-  'starfield.sidebar.cd',
-  'starfield.sidebar.logLines',
-  'starfield.sidebar.phase',
-];
 
 /* ---------- 小工具 ---------- */
 
@@ -128,6 +122,14 @@ function statusKey(sf) {
 /** **星区**（该区 battle 实例）阶段文案：直接用容器只读口径给的 `phase`（`idle|running|settled`），
  *  UI 不自算、不映射内部状态 ⇒ 未知值由 `i18n.t` 原样回显 `??key`（便于发现遗漏词条）。 */
 const phaseText = (s) => i18n.t(`starfield.phase.${s.phase}`);
+
+/** ★ **星区显示名（唯一口径）**：`#{显示编号} {类型名}（{q}, {r}）`
+ *  · `{显示编号}` ＝ **1 起的显示编号**（只读 `index + 1`；`index` 是引擎生成顺序、从 0 起）——纯呈现层换算；
+ *  · `{类型名}` 复用既有 `sectorType.<id>` 词条；`{坐标}` 取只读 `q/r`；
+ *  · 同一字符串既用于**战斗屏星区栏**（`battleView.mountSectorScene(..., { zoneName })`）也用于**侧栏标题**
+ *    ⇒ 两处显示**必然一致**（无第二套拼法）。 */
+const zoneNameOf = (s) =>
+  i18n.t('starfield.zoneName', { n: s.index + 1, name: typeName(s.typeId), q: s.q, r: s.r });
 
 /* ---------- 格内预览的小工具（只读 `battleOf(index)` 的既有口径） ---------- */
 
@@ -219,6 +221,7 @@ function buildGrid(sf) {
   const byPos = new Map(sectors.map((s) => [`${s.q},${s.r}`, s]));
   cellRefs.clear();
   gridEl = el('div', { class: `sf-grid sf-zoom-${zoomTier()}` });
+  gridCols = layout.width; // ★ 记录列数：侧栏上限推导「单列星区宽度」用（`oneColumnWidth()`）
   gridEl.style.setProperty('--sf-cols', String(layout.width));
   gridEl.style.setProperty('--sf-rows', String(layout.height));
   const frag = document.createDocumentFragment();
@@ -254,12 +257,14 @@ function buildGrid(sf) {
         //   **不再显示文字摘要**（文字信息保留在悬停 title 与右侧侧栏里）。
         const units = el('div', { class: 'sf-detail sf-detail-1 sf-units' });
         // 两条条各自独立（**当前值为 0 ⇒ 该条隐藏**；两条都隐藏 ⇒ 整块隐藏）：
-        //   矿物条＝`--ore` 主题色、货物条＝`--cargo` 主题色（**不新增配色**），样式族复用 `.bar-track`/`.bar-fill`
+        //   ★ **取色改用分类主题色（用户口径）**：矿物条＝`--cat-mining`（采矿紫）、货物条＝`--cat-transport`（运输亮黄）；
+        //     **星域新 UI 的进度条不再使用 `--ore`/`--cargo`**（那两条是既有战斗屏/星区资源栏的资源语义配色，未改动）。
+        //     底槽色仍沿用既有 `.bar-track` 的既有灰（`css/battle.css`）⇒ **不新增配色值**。
         const oreRow = el('div', { class: 'sf-bar sf-bar-ore' }, [
-          el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: { background: 'var(--ore)' } })]),
+          el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: { background: 'var(--cat-mining)' } })]),
         ]);
         const cargoRow = el('div', { class: 'sf-bar sf-bar-cargo' }, [
-          el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: { background: 'var(--cargo)' } })]),
+          el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: { background: 'var(--cat-transport)' } })]),
         ]);
         const bars = el('div', { class: 'sf-detail sf-detail-2 sf-bars' }, [oreRow, cargoRow]);
         cell.append(marker, units, bars);
@@ -303,27 +308,26 @@ function buildLegend(sf) {
   ]);
 }
 
-/** 侧栏（本轮＝**星区摘要面板**；★ C-2 的完整战斗场景挂到 `.starfield-sidebar-stage`） */
+/** 侧栏（**只承载战斗场景**：C-1 的「星区摘要」面板已按用户口径删除——
+ *  那些信息战斗场景里都有，星区名集成到战斗屏的**星区栏** `.zone-label`） */
 function buildSidebar() {
-  sbTypeEl = el('div', { class: 'sf-sb-type' });
-  sbRowsEl = el('dl', { class: 'sf-sb-rows' });
+  sbTitleEl = el('span', { class: 'sf-sb-title' }); // 标题＝星区名（与星区栏同一口径）
+  // ★★ C-2 挂载点：`battleView.mountSectorScene()` 在此渲染该星区**完整战斗场景**（同一套渲染/交互链；
+  //   数据＝`starfield.battleOf(index)` 只读口径；**星域容器是实例生命周期的唯一所有者**）。
+  sbStageEl = el('div', { class: 'starfield-sidebar-stage' });
   sidebarEl = el(
     'aside',
     { class: 'starfield-sidebar hidden' },
     [
       el('div', { class: 'sf-sb-head' }, [
-        el('span', { class: 'sf-sb-title', text: i18n.t('starfield.sidebar.title') }),
+        sbTitleEl,
         el('button', {
           class: 'btn tiny',
           text: i18n.t('starfield.sidebar.close'),
           onclick: () => selectSector(null),
         }),
       ]),
-      el('div', { class: 'sf-sb-body' }, [sbTypeEl, sbRowsEl]),
-      // ★★ **C-2 挂载点**：后续步骤在此渲染该星区的**完整战斗场景**（可操作指挥；数据取自
-      //    `starfield.battleOf(index)` 的既有只读口径 + `battle.log`）。本轮**只留容器**，不渲染任何战斗内容。
-      el('div', { class: 'starfield-sidebar-stage' }),
-      el('p', { class: 'sf-sb-todo', text: i18n.t('starfield.sidebar.stageTodo') }),
+      sbStageEl,
     ]
   );
   return sidebarEl;
@@ -399,62 +403,13 @@ function refreshCells(sf) {
   }
 }
 
-/** 侧栏内容（全部来自 `sectors` 快照；UI 不自算）
- *  ★ DOM 复用：**切换星区/首次打开时**才重建行结构（标签 + dd 容器），此后每 tick 只把**变化的**值写进
- *    已存在的 `dd`（体例同既有货物芯片/单位卡的“变化才更新”）⇒ 侧栏开着时也不会每 tick 重建 DOM。 */
-function refreshSidebar(sf) {
-  if (selectedIndex == null) return;
-  const s = sf.sectors.find((x) => x.index === selectedIndex);
-  if (!s) {
-    // 选中项已不存在（例如换了星域）⇒ 自动收起
-    selectSector(null);
-    return;
-  }
-  const cdIds = Object.keys(s.cd || {});
-  const cdText = cdIds.length
-    ? cdIds.map((id) => `${i18n.t(`module.${id}`)} ${formatTickSeconds(s.cd[id])}s`).join(' · ')
-    : i18n.t('starfield.sidebar.none');
-  const values = [
-    `#${s.index}`,
-    `(${s.q}, ${s.r})`,
-    typeName(s.typeId),
-    i18n.t('starfield.cell.alive', { a: s.alive.ally, e: s.alive.enemy }),
-    `${s.ore} / ${s.oreInit}`, // 矿物：当前 / 初始（与格内矿物条**同一分母口径**）
-    `${s.cargoCount} / ${s.cargoInit}`, // 货物：当前件数 / **初始件数**（与格内货物条同一分母口径）
-    cdText,
-    String(s.logLines),
-    phaseText(s),
-  ];
-  if (sbRenderedIndex !== s.index) {
-    // 结构重建（切换星区 / 语言切换后重绘 / 首次打开）
-    const def = typeOf(s.typeId);
-    paintCell(sbTypeEl, def);
-    // ★ 贴图（预留）：与地图格子同一口径 —— 有 `texture` ⇒ 渲染贴图（C-2 的正式侧栏同样用它）；
-    //   为空/加载失败 ⇒ 回退 marker（CSS `.has-tex .sf-sb-marker{display:none}`）。
-    const sbTex = buildTexture(def);
-    sbTypeEl.replaceChildren(
-      ...(sbTex ? [sbTex, el('span', { class: 'sf-sb-marker' })] : [el('span', { class: 'sf-sb-marker' })]),
-      el('span', { class: 'sf-sb-typename', text: `#${s.index} ${typeName(s.typeId)}` })
-    );
-    sbTypeEl.classList.toggle('has-tex', !!sbTex);
-    sbRowsEl.replaceChildren(
-      ...SIDEBAR_ROW_KEYS.map((key) =>
-        el('div', { class: 'sf-sb-row' }, [el('dt', { text: i18n.t(key) }), el('dd')])
-      )
-    );
-    sbValueRefs = [...sbRowsEl.querySelectorAll('dd')];
-    sbRenderedIndex = s.index;
-  }
-  values.forEach((v, i) => setText(sbValueRefs[i], v)); // ★ 只有值变化时才写 DOM（setText 内部比较）
-}
-
 /** 统一刷新（每 tick 调用一次；`queueMicrotask` 中执行 ⇒ 读到本 tick 结算后的状态） */
 function refresh() {
   const sf = getStarfield();
   if (!mounted || !sf || !gridEl) return;
   refreshTopbar(sf);
   refreshCells(sf);
-  refreshSidebar(sf);
+  if (sceneHost) sceneHost.refresh(); // ★ C-2：**只刷新当前选中星区**的侧栏战斗场景
 }
 
 /* ---------- 缩放 / 平移 / 选中 ---------- */
@@ -465,22 +420,47 @@ function zoomTier() {
   return 'near';
 }
 
-function clampAxis(v, content, view) {
-  const lo = Math.min(0, view - content) - PAN_PAD;
-  const hi = Math.max(0, view - content) + PAN_PAD;
-  return Math.max(lo, Math.min(hi, v));
+/** ★ `clampAxis()` 已按用户口径**删除**（原「内容不越出视口 ±PAN_PAD」的平移夹取）——
+ *  自由平移：任何边缘星区都能拖到视口中心/对侧；越界内容由视口 `overflow:hidden` 裁剪，不外溢到其它 UI。 */
+
+/* ---------- ★ C-2：侧栏战斗场景的挂载 / 切换 / 卸载 ---------- */
+
+/** 把侧栏场景绑定到指定星区（`null` ⇒ 关闭/卸载）：
+ *  · 切换星区或关闭侧栏 ⇒ **先 `destroy()` 旧场景**（严格还原本视图的模块级场景引用 ⇒ 无上一区残留）；
+ *  · 场景渲染/交互 **100% 复用 `battleView` 的同一套实现**（`mountSectorScene`）⇒ 无第二套逻辑；
+ *  · **星域容器仍是实例生命周期的唯一所有者**：这里只做 UI 挂载/卸载，绝不 `start/stop`、绝不碰 `ticker`。 */
+function mountSceneFor(index) {
+  if (sceneHost) {
+    sceneHost.destroy();
+    sceneHost = null;
+  }
+  if (!sbStageEl) return;
+  const sf = getStarfield();
+  const s = index == null || !sf ? null : sf.sectors.find((x) => x.index === index) || null;
+  const b = s && sf.battleOf(index) ? sf.battleOf(index) : null;
+  if (sbTitleEl) setText(sbTitleEl, s ? zoneNameOf(s) : ''); // 侧栏标题＝星区名（与星区栏同一口径）
+  // ★ `zoneName` 由**地图视图按只读口径拼好**后交给战斗场景注入星区栏（`.zone-label`）⇒ UI 不自算、引擎零改动
+  // ★ `zoneName`（星区显示名）与 `fleetPolicy`（**星域级「全队主要目标」单一来源**适配器）都由本视图
+  //   按**容器只读口径**提供：读＝`sf.fleetPolicy`，写＝`sf.setFleetPolicy()`（容器再用引擎既有唯一接口
+  //   `battle.setAllyPolicy` 下发给所有星区）⇒ 任一星区指挥栏的改动**跨所有星区同时生效**、切换星区不跳变。
+  sceneHost = b
+    ? mountSectorScene(sbStageEl, b, {
+        zoneName: s ? zoneNameOf(s) : '',
+        fleetPolicy: sf ? { get: () => sf.fleetPolicy, set: (kind) => sf.setFleetPolicy(kind) } : null,
+      })
+    : null;
+  sbStageEl.classList.toggle('hidden', !sceneHost); // 无实例 ⇒ 隐藏舞台（避免空框）
+  if (sceneHost) sceneHost.refresh();
 }
 
 function applyTransform() {
   if (!canvasEl) return;
-  // ★ 内容尺寸＝未缩放的网格尺寸（offsetWidth/Height 不受 transform 影响）
-  const view = viewportEl;
-  const baseW = gridEl.offsetWidth || 0;
-  const baseH = gridEl.offsetHeight || 0;
-  const viewW = view ? view.clientWidth : 0;
-  const viewH = view ? view.clientHeight : 0;
-  tx = clampAxis(tx, baseW * scale, viewW);
-  ty = clampAxis(ty, baseH * scale, viewH);
+  // ★★ **拖拽范围：不设限制（用户口径 · 方案 A）** —— 已**完全取消平移夹取**：
+  //   · 原实现把 `tx/ty` 夹在「内容不越出视口（±PAN_PAD 容差）」内 ⇒ 处在星域边缘的星区**无法**被拖到
+  //     视口中心、更无法拖到对侧；现在**自由平移**，任何边缘星区都能拖到中心或视口另一侧；
+  //   · 副作用口径未变：视口仍 `overflow:hidden`（内容**绝不溢出**到其它 UI 之上）；
+  //     缩放（滚轮锚点、0.5×~2.6×）与「重置视图」的居中逻辑**均未改动**（重置会把 translate 归位到初始居中）；
+  //   · 迷路兜底：顶栏既有「重置视图」按钮即为唯一复位入口（**不新增控件**），并在提示文案里写明可自由拖拽。
   canvasEl.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
   gridEl.classList.remove('sf-zoom-far', 'sf-zoom-mid', 'sf-zoom-near');
   gridEl.classList.add(`sf-zoom-${zoomTier()}`);
@@ -522,33 +502,80 @@ function selectSector(index) {
   if (!sidebarEl) return;
   const open = selectedIndex != null;
   sidebarEl.classList.toggle('hidden', !open);
-  sbRenderedIndex = null; // 开合/切换 ⇒ 下次刷新重建行结构
+  // ★ C-2：关闭侧栏 ⇒ 卸载场景（停止该区 UI 刷新）；切换星区 ⇒ 卸载旧区 + 挂载新区
+  mountSceneFor(selectedIndex);
   if (open) refresh();
 }
 
 let dragState = null;
 let suppressClick = false;
 
-/* ---------- 侧栏宽度拖拽（会话内记忆；夹取在 MIN/MAX 与「地图至少留 240px」之间） ---------- */
+/* ---------- 侧栏宽度拖拽（会话内记忆；上限＝「地图仅剩一列星区」） ---------- */
 
 let splitterDrag = null;
 
-/** 夹取侧栏宽度：`[SIDEBAR_MIN_W, SIDEBAR_MAX_W]`，并保证**地图视口至少留 240px** */
-function clampSidebarW(v) {
-  const bodyW = viewportEl && viewportEl.parentElement ? viewportEl.parentElement.clientWidth : 0;
-  const byBody = bodyW ? Math.max(SIDEBAR_MIN_W, bodyW - 240) : SIDEBAR_MAX_W;
-  const hi = Math.min(SIDEBAR_MAX_W, byBody);
-  return Math.round(Math.max(SIDEBAR_MIN_W, Math.min(hi, v)));
+/** ★ **单列星区的实际渲染宽度**（用于推导侧栏上限）：`网格内容宽 ÷ 列数`——
+ *  网格是 CSS grid（`repeat(cols, var(--sf-cell))` + gap），因此列步长＝内容宽/列数，天然把
+ *  **格子宽 + 列间距**都算进去；容器内边距/滚动条由调用处的**留白常量**覆盖。 */
+function oneColumnWidth() {
+  if (!gridEl || gridCols <= 0) return 0;
+  const w = gridEl.offsetWidth || gridEl.scrollWidth || 0;
+  return w > 0 ? w / gridCols : 0;
 }
 
-/** 应用侧栏宽度（唯一写入口；`sidebarW` 为**会话内记忆**的模块级变量） */
+/** ★ **夹取侧栏宽度**：`[SIDEBAR_MIN_W, 可用宽度 − 单列星区宽 − 留白]`
+ *  · **上限推导**（不再用写死的 240px 常量）：`bodyW`＝`.sf-body` 实际可用宽（含视口 + 把手 + 侧栏），
+ *    上限 ＝ `bodyW − 单列星区宽 − SF_SIDE_PAD(24px 留白)` ⇒ 拖到底时**地图恰好多出“一列星区”的宽度**；
+ *  · **下限**：`SIDEBAR_MIN_W = 220px`（与既有口径一致）；
+ *  · **默认值（★ 用户口径：半屏）**：`v == null`（＝用户**未拖动过**）⇒ 目标宽 ＝ `bodyW × 0.5`；
+ *    用户拖动过（调用方传入数值）⇒ 以该数值为准（**会话内记忆优先**）；
+ *  · **确定性退化规则**：若窗口极窄导致「上限 < 下限」（数学上不可行）⇒ 取 `SIDEBAR_MIN_W`
+ *    （即**优先保住侧栏可用性**，地图可横向滚动）；`bodyW/单列宽` 取不到（首帧未布局）⇒ 退回默认宽。 */
+function clampSidebarW(v) {
+  const bodyW = viewportEl && viewportEl.parentElement ? viewportEl.parentElement.clientWidth : 0;
+  const colW = oneColumnWidth();
+  const hi = bodyW > 0 && colW > 0 ? bodyW - colW - SF_SIDE_PAD : SIDEBAR_DEFAULT_W;
+  const want = Number.isFinite(v) ? v : bodyW > 0 ? bodyW * SIDEBAR_DEFAULT_RATIO : SIDEBAR_DEFAULT_W;
+  if (!(hi >= SIDEBAR_MIN_W)) return SIDEBAR_MIN_W; // ★ 极窄窗口的确定性退化
+  return Math.round(Math.max(SIDEBAR_MIN_W, Math.min(hi, want)));
+}
+
+/** 应用侧栏宽度（唯一写入口）：
+ *  · `sidebarUserSet === false`（用户未拖动过）⇒ 传 `null` ⇒ **每次都按当前可用宽取半屏**
+ *    （窗口 resize 后仍是半屏）；拖动过 ⇒ 用记忆值，只在 resize 时**夹取**、不回到半屏。 */
 function applySidebarW() {
   if (sidebarEl) {
-    sidebarW = clampSidebarW(sidebarW);
+    sidebarW = clampSidebarW(sidebarUserSet ? sidebarW : null);
     sidebarEl.style.flexBasis = `${sidebarW}px`;
   }
   // 宽度变化后地图可用区域变了 ⇒ 重新夹取平移量（内容不越界的口径保持）
   applyTransform();
+  // ★ 图例栏联动：拖拽改宽 / 窗口 resize 都汇聚到这里 ⇒ 同一处重新判定「2/3 阈值隐藏」
+  syncLegendVisibility();
+}
+
+/* ---------- ★ 图例栏：不换行 ＋ 「压缩到自然宽的 2/3 就整栏隐藏」 ---------- */
+
+let legendNaturalW = 0; // 图例栏**自然宽度**缓存（不写死像素：一次测量后缓存，resize/重建时重算）
+
+/** 测量并缓存自然宽（`nowrap` 下 `scrollWidth` 即自然宽；隐藏状态测得 0 ⇒ 只在可见时重算，避免抖动） */
+function measureLegend() {
+  if (!legendEl || legendEl.classList.contains('hidden')) return;
+  const w = legendEl.scrollWidth || 0;
+  if (w > 0) legendNaturalW = w;
+}
+
+/** 阈值判定（**按实际渲染宽度推导**）：
+ *  · 可用宽 ＝ `.sf-viewport.clientWidth`（图例是**绝对定位覆盖层** ⇒ 其显隐不改变该值 ⇒ 无反馈抖动）；
+ *  · **隐藏**：可用宽 < 自然宽 × 2/3；**恢复显示**：可用宽 ≥ 自然宽 × 0.7（**滞回**，避免临界来回跳）；
+ *  · 自然宽未知（首帧尚未测量）⇒ 不判定，保持现状。 */
+function syncLegendVisibility() {
+  if (!legendEl || !viewportEl || legendNaturalW <= 0) return;
+  const avail = viewportEl.clientWidth || 0;
+  if (avail <= 0) return;
+  const hidden = legendEl.classList.contains('hidden');
+  if (!hidden && avail < legendNaturalW * (2 / 3)) legendEl.classList.add('hidden');
+  else if (hidden && avail >= legendNaturalW * 0.7) legendEl.classList.remove('hidden');
 }
 
 function onSplitterDown(e) {
@@ -561,7 +588,8 @@ function onSplitterDown(e) {
 
 function onSplitterMove(e) {
   if (!splitterDrag) return;
-  // 侧栏在右 ⇒ 指针左移（dx < 0）增大宽度
+  // 侧栏在右 ⇒ 指针左移（dx < 0）增大宽度；★ 一旦拖动过 ⇒ 标记「用户已设定」⇒ 会话内记忆优先于半屏默认
+  sidebarUserSet = true;
   sidebarW = clampSidebarW(splitterDrag.w - (e.clientX - splitterDrag.x));
   applySidebarW();
 }
@@ -640,12 +668,18 @@ function bindGlobalListeners() {
   if (bindGlobalListeners.bound) return;
   bindGlobalListeners.bound = true;
   bus.on('tick', onTick);
+  // ★ 窗口尺寸变化 ⇒ 用**同一夹取函数**重算侧栏宽度（保证「地图至少剩一列星区」在 resize 后仍成立）
+  window.addEventListener('resize', () => applySidebarW());
   bus.on('route', ({ name }) => {
     if (name !== 'starfieldMap') {
       // ★ 离开视图 ⇒ 停止驱动（不再 step）；DOM 由 router 换掉，引用清空即可
       mounted = false;
       dragState = null;
       splitterDrag = null; // 调宽拖拽同样清空（宽度值本身保留在 `sidebarW` ⇒ 会话内记忆）
+      // ★ C-2：离开地图 ⇒ **卸载侧栏场景**（还原 battleView 的场景引用；**不停星区实例**）
+      mountSceneFor(null);
+      sbStageEl = null;
+      sbTitleEl = null;
     }
   });
 }
@@ -654,6 +688,7 @@ function bindGlobalListeners() {
 
 function root() {
   bindGlobalListeners();
+  mountSceneFor(null); // ★ C-2 防御：重绘前先卸载旧侧栏场景（严格还原 battleView 的场景引用）
   const sf = ensureStarfield(); // 兜底：尚无星域实例时用「默认配置 h1 + 随机种子」建一个（见 starfieldSession.js）
   const body = el('div', { class: 'sf-body' });
   viewportEl = el('div', { class: 'sf-viewport' }, [buildGrid(sf)]);
@@ -685,7 +720,9 @@ function root() {
   mounted = true;
   // 首帧：等布局完成后再算尺寸（transform 依赖 offsetWidth/clientWidth）
   requestAnimationFrame(() => {
-    applySidebarW(); // 布局完成后按真实宽度再夹取一次（保证地图至少留 240px）
+    applySidebarW(); // 布局完成后按真实宽度再夹取一次（保证地图至少留一列星区）
+    measureLegend(); // ★ 布置完成后测量图例自然宽（用于「压缩到 2/3 即整栏隐藏」判定）
+    syncLegendVisibility();
     resetView();
     refresh();
     selectSector(selectedIndex); // 重绘后恢复侧栏开合状态

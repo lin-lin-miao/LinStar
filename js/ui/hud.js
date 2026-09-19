@@ -1,6 +1,6 @@
 /* ===== ui/hud.js —— 顶栏：品牌 / tick/s / 战斗控件 / 语言 / 导出 / 导入 =====
  * - tick 区域显示实测每秒 tick（tick/s，M0 修正），高频更新仅改 textContent；
- * - 暂停/调速按钮仅在战斗中显示（正常界面隐藏）；
+ * - 暂停/调速按钮仅在战斗中（**或星域大地图打开时**）显示（其余界面隐藏）；
  * - 战斗中导出/导入按钮禁用（保存节点在结算完成后自动落档）。
  */
 import { el } from '../core/utils.js';
@@ -17,6 +17,7 @@ let tickEl = null;
 let combatControlsEl = null;
 let fileInput = null;
 let combatActive = false;
+let mapOpen = false; // ★ 星域大地图是否打开（打开时同样显示暂停/逐帧/倍速控件；与战斗控件共用同一组 DOM）
 
 function tpsLabel() {
   return i18n.t('hud.tps', { n: ticker.tps });
@@ -62,7 +63,10 @@ function build() {
 
   combatControlsEl = el('span', {
     class: 'hud-combat-controls',
-    style: combatActive ? '' : 'display:none',
+    // ★ 星域大地图也显示**同一组** tick 控件（暂停/逐帧/倍速）：星域地图由**同一个全局 `ticker`** 驱动
+    //   （暂停 ⇒ 不再发 `tick` ⇒ 星域不推进；倍速 ⇒ 每间隔多发 tick；逐帧 ⇒ 暂停下补发 1 个 tick
+    //     ⇒ 地图的 `onTick` 恰好推进 1 个星域 tick）⇒ **控件语义天然一致、无第二套实现**。
+    style: combatActive || mapOpen ? '' : 'display:none',
   }, [pauseBtn, stepBtn, speedBtn]);
 
   // —— 全局控件 ——
@@ -134,6 +138,14 @@ export const hud = {
     // 战斗状态：战斗中显示暂停/调速并禁用存档按钮；结束自动落档（save.js 处理）
     bus.on('combat:state', ({ active } = {}) => {
       combatActive = Boolean(active);
+      this.refresh();
+    });
+    // ★ 星域大地图打开期间同样显示↑那三个 tick 控件（暂停/逐帧/倍速）——复用既有 HUD 控件与词条，
+    //   星域地图与战斗屏共用**同一个全局 ticker** ⇒ 语义一致；离开地图即隐藏。
+    bus.on('route', ({ name } = {}) => {
+      const next = name === 'starfieldMap';
+      if (next === mapOpen) return;
+      mapOpen = next;
       this.refresh();
     });
 

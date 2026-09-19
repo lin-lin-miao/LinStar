@@ -125,6 +125,8 @@ function attachDebug() {
     //        / `LS.starfield.step(20)` ⇒ 推进 20 个星域 tick（返回含 `ms`＝本次耗时毫秒，供性能核对）
     //        / `LS.starfield.summary()` ⇒ 星域级只读摘要（各区存活/储量/货物/冷却/有无事件）
     //        / `LS.starfield.stop()` ⇒ 手动停止（不结算）；`LS.starfield.current` ⇒ 当前星域句柄
+    //        / `LS.starfield.current.playerEntryIndex` ⇒ **玩家单位入场星区**（只读下标，显示编号＝下标+1）
+    //          与 `.playerUnitCount`（已注入的玩家单位数；口径＝`data/starfield.js resolvePlayerEntryIndex`）
     //   ★ 只读/可控：不破坏既有单星区玩法（各区实例为「星域星区模式」：不发全局事件、不写全局战报、
     //     不执行“一方全灭即结束”判定）；星域**不接管**战斗屏（UI 绑定仍由 `enterBattle` 负责）。
     starfield: {
@@ -149,6 +151,17 @@ function attachDebug() {
         return sf ? sf.stop() : { ok: false, reason: 'none' };
       },
       get current() { return getStarfield(); },
+      /** ★ **星域级「全队主要目标」**（跨所有星区统一的**单一来源**）：
+       *  · `LS.starfield.fleetPolicy` ⇒ 读当前值；`LS.starfield.setFleetPolicy('weakest')` ⇒ 改（对**所有**星区立即生效，
+       *    走引擎既有唯一接口 `battle.setAllyPolicy` 下发；返回是否被引擎接受）。 */
+      get fleetPolicy() {
+        const sf = getStarfield();
+        return sf ? sf.fleetPolicy : null;
+      },
+      setFleetPolicy(kind) {
+        const sf = getStarfield();
+        return sf ? sf.setFleetPolicy(kind) : false;
+      },
     },
     // ★ **编队配置界面**（原主菜单入口已移除，改为本控制台指令；界面与开战流程零改动）。
     //   用法：`LS.drill()` ⇒ 打开「演练编队配置」屏（有对局则先经既有「离开」路径回到编队屏）。
@@ -159,6 +172,11 @@ function attachDebug() {
       openStarfieldMap: () => {
         ensureStarfield();
         router.show('starfieldMap');
+        return true;
+      },
+      /** ★ C-3：打开「星域配置界面」（正式主入口；路由 `'starfield'`） */
+      openStarfieldConfig: () => {
+        router.show('starfield');
         return true;
       },
     },
@@ -177,6 +195,12 @@ function attachDebug() {
     //     `LS.starfieldData.getStarfield('h1')` / `.getSectorType('stargate')` / `.getNpcList('patrolLight')`
     //     `LS.starfieldData.STARFIELD_IDS` / `.SECTOR_TYPE_IDS` / `.NPC_LIST_IDS`
     //     `LS.starfieldData.STARFIELDS` / `.SECTOR_TYPES` / `.NPC_LISTS`（注册表本体，只读查看）
+    //     `LS.starfieldData.readNpcListIds(x)` / `.normalizeNpcListIds(v)`
+    //     （★ NPC 列表字段**数组形态**的唯一归一：`npcListIds: string[]`，兼容单值 `npcListId`）
+    //     ★★ C-3b **内嵌自定义 NPC 列表**（配置根层 `npcLists`，id 以 `custom:` 开头）：
+    //       `LS.starfieldData.resolveNpcList(id, cfg)`（**内置优先 → 配置内嵌 → null** 的唯一解析入口）
+    //       `LS.starfieldData.getCustomNpcList(id, cfg)` / `.customNpcListIds(cfg)`
+    //       `LS.starfieldData.isCustomNpcListId(id)` / `.CUSTOM_NPC_LIST_PREFIX`
     starfieldData: {
       selfCheck: () => starfieldData.selfCheck(),
       list: () => starfieldData.listStarfieldData(),
@@ -184,6 +208,13 @@ function attachDebug() {
       getStarfield: (id) => starfieldData.getStarfield(id),
       getSectorType: (id) => starfieldData.getSectorType(id),
       getNpcList: (id) => starfieldData.getNpcList(id),
+      resolveNpcList: (id, cfg) => starfieldData.resolveNpcList(id, cfg),
+      getCustomNpcList: (id, cfg) => starfieldData.getCustomNpcList(id, cfg),
+      customNpcListIds: (cfg) => starfieldData.customNpcListIds(cfg),
+      isCustomNpcListId: (id) => starfieldData.isCustomNpcListId(id),
+      CUSTOM_NPC_LIST_PREFIX: starfieldData.CUSTOM_NPC_LIST_PREFIX,
+      readNpcListIds: (holder) => starfieldData.readNpcListIds(holder),
+      normalizeNpcListIds: (v) => starfieldData.normalizeNpcListIds(v),
       STARFIELD_IDS: starfieldData.STARFIELD_IDS,
       SECTOR_TYPE_IDS: starfieldData.SECTOR_TYPE_IDS,
       NPC_LIST_IDS: starfieldData.NPC_LIST_IDS,
@@ -192,9 +223,10 @@ function attachDebug() {
       NPC_LISTS: starfieldData.NPC_LISTS,
     },
     // ★ **星域生成器**（步骤 A-5：纯函数「配置 + 种子 ⇒ 星域初始状态」；**不调用随机默认值**）。
-    //   用法：`LS.starfieldGen.generate('h1', 'demo')` ⇒ 完整星域初始状态（JSON 可往返）
+    //   用法：`LS.starfieldGen.generate('h1', 'demo')` ⇒ 完整星域初始状态（JSON 可往返；
+    //        含只读派生 `playerEntryIndex`＝玩家单位入场星区下标）
     //        / `LS.starfieldGen.preview('h1', 'demo')` ⇒ 摘要（星区数/各类型数/货物与单位总数/告警）
-    //        / `LS.starfieldGen.selfCheck()` ⇒ `{pass, checks[]}`（确定性/分区性/截断兜底等 9 项）
+    //        / `LS.starfieldGen.selfCheck()` ⇒ `{pass, checks[]}`（确定性/分区性/截断兜底等 15 项）
     starfieldGen: {
       generate: (configOrId, seed) => generateStarfield(configOrId, seed),
       preview: (configOrId, seed) => previewStarfield(configOrId, seed),

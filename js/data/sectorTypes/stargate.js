@@ -14,7 +14,7 @@ export default {
   kind: 'special', // ★ 特殊星区类型
   // ★ **四方位边缘随机**（mode:'edges' + edges 四方位；A-5 只按本字段生成，不认类型 id）
   placement: { mode: 'edges', edges: ['top', 'bottom', 'left', 'right'] },
-  count: { min: 1, max: 4 }, // 默认数量范围【占位预填】（星域配置可覆写；四个方位各至多 1 个 ⇒ 上限建议 ≤ 4）
+  count: { min: 1, max: 1 }, // 默认数量范围【占位预填】（星域配置可覆写；四个方位各至多 1 个 ⇒ 上限建议 ≤ 4）
   content: {
     ore: { min: 0, max: 0 }, // 星门区默认无储量【占位口径】
     cargos: {
@@ -26,7 +26,8 @@ export default {
     },
     structures: [], // 星门本体暂用 `specialEffect`/地图标记表达；结构体【占位 · 待开发】
   },
-  npcListId: null, // 默认无 NPC（玩家进出用）；如需守卫由星域配置覆写
+  // ★ 默认 NPC 列表**可配置多个**（`npcListIds: string[]`；生成时按种子随机抽一个；`[]`＝无单位）
+  npcListIds: [], // 默认无 NPC（玩家进出用）；如需守卫由星域配置覆写
   specialEffect: null, // 特殊效果【占位 · 待开发】
   texture: null, // ★ 贴图字段（预留）：非空 ⇒ 渲染贴图；为空 ⇒ 回退「类型色 + marker」（本轮不新增图片文件）
   fill: false, // 填充类型标记：**非**「剩余格位填充类型」（唯一 `fill:true` 者见 `empty.js`）

@@ -8,6 +8,11 @@
  *      货物用**同形实例数组**喂给星区货物规范化口径（`normalizeSectorCargos`，经 `sector.cargos` 设定项）；
  *      ★ **不复制、不共享**任何实例间状态（每个实例的战报/单位/星区/货物都是自己的闭包私有变量）；
  *   ③ 持有**星域自身持续时间**并驱动 tick 循环（固定顺序 = `sectors[]` 索引序 ⇒ 确定可复现）；
+ *   ③b ★ **玩家单位入场（容器构造时一次性完成，不新增运行时逻辑）**：
+ *      把星域配置的 **`playerUnits[]`**（我方初始编队，与 NPC 列表 `units[]` 同构）按既有编队口径
+ *      `{type, level, modules}` 注入**入场星区**的 **allies**（我方）；入场星区＝`gen.playerEntryIndex`
+ *      （判定唯一口径 `data/starfield.js resolvePlayerEntryIndex`：`sideRules.playerEntryTypeId`
+ *      → 回退第一个 `placement.mode:'edges'` 星区 → 仍无 ⇒ `#1`）；**不改引擎战斗逻辑**；
  *   ④ **跨星区阶段**占位（`crossSectorPhase`，本轮空实现，仅留调用点与接口）；
  *   ⑤ **结算入口预留**（`settle()`；时间耗尽时自动调用一次）。
  *
@@ -29,12 +34,16 @@
  *   · `starfield.battleOf(index)` ⇒ 该星区的 **battle 实例**（C-2 侧栏用它渲染完整战斗场景）；
  *   · `starfield.runTicks / remainingTicks / durationTicks / finished / stopped / settled`；
  *   · `starfield.configId / seed / radius / generation（A-5 原始生成结果，只读）/ warnings`；
+ *   · ★ `starfield.playerEntryIndex`（**玩家单位入场星区**的只读下标，显示编号＝下标+1）
+ *     与 `starfield.playerUnitCount`（注入的玩家单位数）——口径见文件头「玩家单位入场」；
  *   · `starfield.summary()` ⇒ 星域级只读摘要（含各类型星区数、敌我存活合计、货物合计、告警）。
  *
  * ★ 确定性与性能：本文件**不含任何随机数/时间戳**（种子只经 A-5 生成器；
  *   `step()` 只按固定顺序调用各区既有 `step()`）；星区间本轮**无相互影响** ⇒ 天然确定可复现。
  */
-import { generateStarfield } from '../data/starfield.js';
+import { generateStarfield, expandUnitSpecs } from '../data/starfield.js';
+import { getStarfield } from '../data/starfields/index.js';
+import { createRng } from '../core/rng.js';
 import { startBattle } from './battle.js';
 
 /** ★ **③ 跨星区阶段**（**占位接口 · 本轮空实现**）：后续轮次在此实装
@@ -66,6 +75,26 @@ function cargoSpecsOf(cargos) {
     .map((c) => ({ templateId: c.templateId, tons: c.tons, level: c.level }));
 }
 
+/** ★ 解析配置对象（id 或对象；**与 A-5 生成器同一认可范围**：生成器已先抛错，这里只做取值） */
+function configOf(configOrId) {
+  if (configOrId && typeof configOrId === 'object') return configOrId;
+  return getStarfield(configOrId) || {};
+}
+
+/** ★ **玩家单位列表 → 我方编队条目**（`{type, level, modules}`；字段＝星域配置 `playerUnits[]`）：
+ *  · 与 NPC 列表 `units[]` **同构**：`{ shipId, count | countRange:[min,max], level?, modules?:[{moduleId,level?}] }`
+ *    ⇒ 展开走**唯一口径** `data/starfield.js expandUnitSpecs`（**不自写第二套**）；
+ *  · **数量**：`count` 固定值（推荐）；`countRange` 亦支持 ⇒ 用**独立子流** `createRng(seed).fork('playerUnits')`
+ *    抽取（**不消耗**星域生成流/星区内容流 ⇒ 版图与 NPC 内容零影响；同种子完全确定）；
+ *  · **阵营恒为我方**（调用方把结果并入目标星区的 `allies`）；`side` 字段不在本函数的产物里。
+ *  ★ 不修改配置对象（`expandUnitSpecs` 逐条深拷贝）。 */
+function expandPlayerUnits(cfg, seed) {
+  const units = cfg && Array.isArray(cfg.playerUnits) ? cfg.playerUnits : [];
+  if (!units.length) return [];
+  const rng = createRng(seed).fork('playerUnits'); // ★ 独立子流（core/rng.js）
+  return expandUnitSpecs(units, rng);
+}
+
 /**
  * ★ 创建星域（容器）：**配置（或 id） + 种子 ⇒ 可运行的星域**。
  * @param {string|object} configOrId 星域配置 id（如 `'h1'`）或配置对象（同 A-5）
@@ -77,12 +106,25 @@ export function createStarfield(configOrId, seed) {
   const warnings = (gen.warnings || []).map((w) => ({ ...w }));
   const durationTicks = Math.max(0, gen.durationTicks | 0);
 
+  /* ★ **玩家单位入场**（用户口径）：
+   *   · 入场星区＝生成结果的只读派生 `gen.playerEntryIndex`（判定唯一口径＝`resolvePlayerEntryIndex`：
+   *     `sideRules.playerEntryTypeId` → 回退「第一个 `placement.mode:'edges'` 星区」→ 仍无 ⇒ `#1`）；
+   *   · 玩家单位按**既有编队口径** `{type, level, modules}` 并入该星区的 **allies**（我方）；
+   *   · 判定与展开都**不改星区内容、不消耗星域随机流**（独立子流 `fork('playerUnits')`）⇒
+   *     同配置同种子 ⇒ 入场星区与编队完全确定；无 `playerUnits` ⇒ 与改造前逐字节一致（零回归）。 */
+  const playerUnits = expandPlayerUnits(configOf(configOrId), gen.seed);
+  const playerEntryIndex = Number.isInteger(gen.playerEntryIndex) ? gen.playerEntryIndex : -1;
+
   // 内部条目：星区元数据 + **该区专属的 battle 实例**（实例间零共享）
   const entries = [];
   for (const s of gen.sectors) {
     const units = Array.isArray(s.units) ? s.units : [];
     const allies = formationOf(units.filter((u) => u.side === 'ally'));
     const enemies = formationOf(units.filter((u) => u.side !== 'ally')); // 缺省/未标 side ⇒ 敌方（契约见 `sideRules.npcSide`）
+    // ★ 玩家单位**只进「入场星区」的我方编队**（置于队首＝玩家自己的舰队优先；不改引擎任何规则）
+    if (playerUnits.length && s.index === playerEntryIndex) {
+      allies.unshift(...playerUnits.map((u) => ({ type: u.type, level: u.level, modules: u.modules.map((m) => ({ ...m })) })));
+    }
     const entry = startBattle(
       { allies, enemies, sector: { oreReserve: s.ore, cargos: cargoSpecsOf(s.cargos) } },
       { starfield: true } // ★ 星域星区模式：允许空编队 + 不订阅全局 ticker/不发全局事件 + 战报只进本实例 + 不执行全灭判定
@@ -117,6 +159,8 @@ export function createStarfield(configOrId, seed) {
   let finished = false; // 时间耗尽（自动结算）
   let settled = false;
   let settleResult = null;
+  // ★ 星域级「全队主要目标」的**唯一持有处**（初始 'order' ＝ 引擎 `createBattle` 的默认档）
+  let fleetPolicy = 'order';
 
   const aliveCounts = () => {
     let ally = 0;
@@ -221,6 +265,11 @@ export function createStarfield(configOrId, seed) {
     durationTicks,
     /** ★ A-5 **原始生成结果**（只读参考；只读用途：C-3 预览/导出、调试对拍）——容器不修改它 */
     generation: gen,
+    /** ★ **玩家单位入场星区**（只读下标；判定口径见 `data/starfield.js resolvePlayerEntryIndex`；
+     *  显示编号 ＝ 下标 + 1；`-1` ＝ 无星区可入场）；UI **只读本字段、不自算** */
+    playerEntryIndex,
+    /** ★ 已注入的**玩家单位数量**（我方编队条目数；`0` ＝ 本星域未配置玩家单位） */
+    playerUnitCount: playerUnits.length,
     /** 星域级告警（A-5 截断告警 + 编队/货物规范化告警，后者带 `index`） */
     warnings,
     get runTicks() {
@@ -302,6 +351,23 @@ export function createStarfield(configOrId, seed) {
     },
     /** ★ 结算入口（时间耗尽时自动调用；也可手动调用 ⇒ 手动调用会置 `settled` 但不改 `finished`） */
     settle,
+    /** ★★ **星域级「全队主要目标」**（用户口径：星域模式下**全队唯一**，跨所有星区统一）——
+     *  · **单一来源＝本容器**（`fleetPolicy`，取值同既有唯一实现 `battle.setAllyPolicy` 的合法值域）；
+     *  · 各星区实例**不各自持有一份 UI 状态**：读走本 getter，写走下面的 `setFleetPolicy()`；
+     *  · **镜像对等**：`setFleetPolicy` 用**引擎既有唯一接口** `entry.battle.setAllyPolicy(kind)` 把同一值
+     *    下发给**每个**星区实例（scalar 赋值 + 各实例自重置 `_stick`）⇒ 各实例 `allyPolicy` 恒等于本值；
+     *  · **不影响确定性**：不引入任何遍历顺序依赖（各实例独立赋值，与 `sectors[]` 索引序无关），
+     *    目标链实现（`orderedFoes(foes, policies[side])`）**一字未改**。 */
+    get fleetPolicy() {
+      return fleetPolicy;
+    },
+    /** 修改星域级「全队主要目标」⇒ 立即对**所有**星区生效（返回是否被引擎接受） */
+    setFleetPolicy(kind) {
+      let ok = false;
+      for (const e of entries) ok = e.battle.setAllyPolicy(kind) || ok; // ★ 唯一接口；顺序无关
+      if (ok) fleetPolicy = kind;
+      return ok;
+    },
     /** ★ 星域级只读摘要 */
     summary,
   };

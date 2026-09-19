@@ -21,7 +21,8 @@ export default {
     },
     structures: [],
   },
-  npcListId: null, // ★ 空区＝默认无单位（可由星域配置覆写，如把伏击队伍放进空区）
+  // ★ 默认 NPC 列表**可配置多个**（`npcListIds: string[]`；生成时按种子随机抽一个；`[]`＝无单位）
+  npcListIds: [], // ★ 空区＝默认无单位（可由星域配置覆写，如把伏击队伍放进空区）
   specialEffect: null,
   // ★★ **填充类型标记（用户口径）**：`fill:true` ＝「**该类型是「剩余格位」的填充类型**」——
   //   生成器（`data/starfield.js`）在类型数量分配完成后，把**圆内所有没被任何类型占到的格位**

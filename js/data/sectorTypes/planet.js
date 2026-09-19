@@ -23,7 +23,11 @@ export default {
     },
     structures: [],
   },
-  npcListId: 'patrolLight', // 默认驻守：轻型巡逻队（星域配置可覆写为其它列表或 null）
+  // ★ **默认 NPC 列表（可配置多个）**：`npcListIds: string[]` —— 生成时**从候选集合里按种子随机抽一个**
+  //   （每星区独立、用该星区自己的子流 `root.fork('sector:' + index)`）⇒ 同配置同种子完全一致；
+  //   空数组 / 缺省 ⇒ **无单位**；**单元素数组 ≡ 原单值 `npcListId`**（逐字节等价，见 `data/starfield.js`）。
+  //   （兼容读取既有单值写法 `npcListId`，归一在 `data/starfieldData.js readNpcListIds`。）
+  npcListIds: ['patrolLight'], // 默认驻守：轻型巡逻队（星域配置可覆写成其它集合或 []＝无单位）
   specialEffect: null,
   // ★★ **贴图字段（预留 · 本轮为空）**：`texture` ＝ 贴图/图标资源路径（相对仓库根，如 `assets/img/planet.svg`）；
   //   · **有值** ⇒ 地图格子与（后续 C-2）侧栏**渲染该贴图**；

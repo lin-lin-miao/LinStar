@@ -212,6 +212,13 @@ body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
 }
 .sf-cell.is-edge { box-shadow: inset 0 0 0 1px var(--sf-color); }
 .sf-cell.selected { outline: 2px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 12px -2px var(--accent); }
+/* ★ 图例栏（用户口径）：**不换行**（条目按需横向收缩，必要时条目内省略号）；且当可用宽度
+ *  < 自然宽 × 2/3 时 **整栏隐藏**（不再继续压缩）——判定与显隐见 `ui/starfieldMapView.js syncLegendVisibility()`。
+ *  这里显式声明绝对定位：确保图例是**覆盖层**（显隐不改变 `.sf-viewport` 可用宽度 ⇒ 无布局抖动）。 */
+.sf-legend { position: absolute; flex-wrap: nowrap; white-space: nowrap; }
+.sf-legend.hidden { display: none; } /* ★ 显式声明（无全局 .hidden 规则） */
+.sf-legend-item { flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.sf-legend-name { overflow: hidden; text-overflow: ellipsis; }
 .sf-cell.sf-void {
   border-style: dashed;
   border-color: var(--border);
@@ -265,20 +272,137 @@ body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
 .starfield-sidebar.hidden { display: none; } /* ★ 显式声明（无全局 .hidden 规则） */
 .sf-sb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sf-sb-title { color: var(--accent); font-weight: 600; }
-.sf-sb-body { display: flex; flex-direction: column; gap: 8px; }
-.sf-sb-type { display: flex; align-items: center; gap: 6px; color: var(--sf-color, var(--text)); }
-.sf-sb-marker::before { content: var(--sf-glyph, '·'); }
-.sf-sb-rows {
-  margin: 0;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 10px;
-  font-size: 12px;
-}
-.sf-sb-row { display: contents; } /* 让 dt/dd 直接参与外层网格 */
-.sf-sb-row dt { color: var(--text-dim); }
-.sf-sb-row dd { margin: 0; color: var(--text); word-break: break-word; }
+/* ★ C-1 的「星区摘要」面板已按用户口径**整块删除**（DOM/代码路径/下列 CSS 一并移除）——
+ *   侧栏**只承载战斗场景**，星区名集成到战斗屏的星区栏（`.zone-label`，见 `battleView.mountSectorScene`）。
+ *   已删除的类：`.sf-sb-body` / `.sf-sb-type` / `.sf-sb-marker` / `.sf-sb-rows` / `.sf-sb-row` /
+ *   `.sf-sb-scene-head` / `.sf-sb-todo`（不再有任何 DOM 使用它们）。 */
 .starfield-sidebar-stage:empty { display: none; } /* C-2 挂载点：空时不占高度 */
-.sf-sb-todo { margin: 0; font-size: 11px; line-height: 1.6; color: var(--text-dim); opacity: 0.85; }
+/* ★ C-2：侧栏内的**完整星区战斗场景**（由 `battleView.mountSectorScene()` 用同一套战斗渲染链构建）。
+ *  舞台自带 battle.css 的布局（网格/分区），这里只负责**在窄侧栏里可滚动**，不改变其内部样式。 */
+.starfield-sidebar-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.starfield-sidebar-stage.hidden { display: none; } /* ★ 显式声明（无全局 .hidden 规则） */
 
 .sf-hint { flex: 0 0 auto; margin: 0; font-size: 11px; color: var(--text-dim); }
+
+/* ===== ★ C-3：星域配置界面（`.screen-starcfg`；表单体例沿用既有编队界面：字段行 + 输入 + 提示 + 红框） ===== */
+.screen-starcfg { gap: 12px; overflow: auto; align-items: stretch; }
+.cfg-head h2 { margin: 0 0 4px; color: var(--accent); }
+.cfg-sub { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-dim); }
+.cfg-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.cfg-panel h3 { margin: 0; font-size: 13px; color: var(--accent); }
+.cfg-row { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 6px 10px; }
+.cfg-label { font-size: 12px; color: var(--text-dim); }
+.cfg-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cfg-hint { grid-column: 2; font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+.cfg-text, .cfg-num, .cfg-select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.cfg-num { width: 68px; }
+.cfg-text { width: 220px; font-variant-numeric: tabular-nums; }
+.cfg-text.invalid { border-color: var(--hp); outline: 1px solid var(--hp); } /* ★ 非法种子：红框 */
+.cfg-type {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.cfg-type.off { opacity: 0.55; }
+.cfg-type-name { display: flex; align-items: center; gap: 6px; }
+.cfg-tag {
+  font-style: normal;
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+}
+.cfg-type-count, .cfg-type-npc { display: flex; align-items: center; gap: 4px; color: var(--text-dim); }
+.cfg-type-npc { flex-wrap: wrap; }
+/* ★ 逐类型的「默认 NPC 列表（可配置多个）」：一行一个下拉 + 移除按钮，末尾「添加列表」 */
+.cfg-npc-rows { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.cfg-npc-row { display: inline-flex; align-items: center; gap: 2px; }
+.cfg-npc-list { display: flex; flex-direction: column; gap: 2px; padding-top: 4px; border-top: 1px dashed var(--border); }
+.cfg-npc-title { font-size: 11px; color: var(--text-dim); }
+.cfg-npc-item { display: grid; grid-template-columns: 120px 1fr; gap: 8px; font-size: 11px; }
+.cfg-npc-name { color: var(--text); }
+.cfg-npc-units { color: var(--text-dim); }
+/* ★★ C-3b 内嵌自定义 NPC 列表（可编辑）：一列表一卡（列表名/id + 重命名/删除 + 单位条目） */
+.cfg-inline { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; border-top: 1px dashed var(--border); }
+.cfg-inline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.cfg-inline-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cfg-inline-name { min-width: 160px; } /* 列表名输入框（沿用 `.cfg-text` 外观） */
+.cfg-inline-id { width: 220px; font-variant-numeric: tabular-nums; } /* id 输入框（重命名的输入处） */
+.cfg-inline-units { display: flex; flex-direction: column; gap: 4px; }
+/* ★ 玩家单位列表（我方初始编队）：一舰一卡（船型/等级/数量/模块） */
+.cfg-units { display: flex; flex-direction: column; gap: 6px; }
+.cfg-unit { display: flex; flex-direction: column; gap: 4px; padding: 6px; border: 1px solid var(--border); border-radius: 4px; }
+.cfg-unit-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cfg-unit-name { font-size: 11px; color: var(--text); min-width: 64px; }
+.cfg-unit-slots { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); }
+.cfg-unit-mods { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.cfg-unit-mod { display: inline-flex; align-items: center; gap: 2px; }
+/* 文件选择（导入主路径）：原生控件，只约束宽度 */
+.cfg-file { max-width: 100%; font-size: 11px; color: var(--text-dim); }
+.cfg-preview {
+  margin: 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+.cfg-io-wrap { display: flex; gap: 10px; }
+.cfg-io-col { display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: 0; }
+.cfg-io-title { font-size: 11px; color: var(--text-dim); }
+.cfg-io {
+  width: 100%;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+.cfg-msg { display: flex; flex-direction: column; gap: 2px; font-size: 11px; line-height: 1.5; }
+.cfg-msg.ok { color: var(--ok); }
+.cfg-msg.err { color: var(--hp); }
+.cfg-errors { display: flex; flex-direction: column; gap: 2px; font-size: 11px; line-height: 1.5; color: var(--hp); }
+.cfg-ok { font-size: 11px; color: var(--ok); }
+.cfg-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

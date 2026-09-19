@@ -13,7 +13,9 @@
  * ★ 单类型字段结构（每个类型文件一致，**全部为纯数据、可 JSON 序列化**）：
  *   `id` / `nameKey`（i18n `sectorType.<id>`）/ `kind` / `placement` / `count` /
  *   `content { ore:{min,max}, cargos:{enabled,templates,count,tonsRange,levelRange}, structures:[] }` /
- *   `npcListId`（默认 NPC 列表引用，见 `data/npcLists/`；null＝无单位）/ `specialEffect`（占位，null）/
+ *   `npcListIds`（**默认 NPC 列表引用，可配置多个**：`string[]`，生成时按种子在该集合内随机抽一个；
+ *    `[]`＝无单位；**兼容读取既有单值 `npcListId`**，归一在 `data/starfieldData.js readNpcListIds`）
+ *   / `specialEffect`（占位，null）/
  *   `mapColor`（**只存 CSS 变量名**，色值在 `css/base.css :root`）/ `marker`（地图标记符号占位）。
  * ★ **本文件不含任何数值/规则判断**：校验与自检在 `data/starfieldData.js`（只读、不改数据）。
  */

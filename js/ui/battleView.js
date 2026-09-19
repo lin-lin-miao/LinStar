@@ -564,7 +564,10 @@ function buildCommandZone() {
   );
   cmdSel.addEventListener('change', () => {
     if (!battle) return;
-    battle.setAllyPolicy(cmdSel.value);
+    // ★ 星域模式：**全队主要目标是星域级单一来源**（容器持有）⇒ 写走容器提供的 hook（容器再用
+    //   引擎既有唯一接口 `battle.setAllyPolicy` 下发给所有星区）；无 hook（单星区玩法）⇒ 既有实例级写入。
+    if (fleetPolicyHook) fleetPolicyHook.set(cmdSel.value);
+    else battle.setAllyPolicy(cmdSel.value);
     refreshCommand();
     if (detail) detail.refreshStats();
     if (updateCards) updateCards();
@@ -961,7 +964,13 @@ function refreshSectorZone() {
     sectorZ.num.textContent = '';
     return;
   }
-  sectorZ.label.textContent = hasName ? sec.name : i18n.t('battle.zone.sector');
+  // ★ C-2：星域侧栏场景注入的**星区显示名**优先（`#编号 类型名（坐标）`，由地图视图按只读口径拼好传入；
+  //   UI 不自算、引擎零改动）；为空 ⇒ 既有口径（星区自定义名 > 「星区」文案）⇒ 单星区玩法逐字不变。
+  sectorZ.label.textContent = sectorZoneNameOverride
+    ? sectorZoneNameOverride
+    : hasName
+      ? sec.name
+      : i18n.t('battle.zone.sector');
   sectorZ.row.classList.toggle('hidden', !hasOre); // 储量为 0 → 该行隐藏（与“为空则隐藏”同规则）
   const pct = hasOre ? Math.max(0, Math.min(100, (sec.oreReserve / sec.oreReserveInit) * 100)) : 0;
   sectorZ.fill.style.width = pct.toFixed(1) + '%';
@@ -981,7 +990,9 @@ function refreshCommand() {
     if (cmdOre) { if (cmdOreFill) cmdOreFill.style.width = '0%'; cmdOre.classList.add('hidden'); }
     return;
   }
-  cmdSel.value = battle.allyPolicy;
+  // ★ 星域模式：读取**星域级单一来源**（容器）而非本实例 —— 切换星区时控件显示**不跳变**；
+  //   单星区玩法无 hook ⇒ 仍读本实例（逐字不变）。
+  cmdSel.value = fleetPolicyHook ? fleetPolicyHook.get() : battle.allyPolicy;
   cmdSel.disabled = battle.phase !== 'running';
   const t = battle.fleetPreview('ally');
   cmdPreview.replaceChildren(
@@ -2343,6 +2354,12 @@ export function enterBattle(formation) {
  *    6) 重新挂载编队配置屏（回调仍指向唯一入口 enterBattle）。
  *  · 编队编辑态**保留在 `setupView` 内**（便于微调后再战）；需要重置调用 `setupView.reset()`。 */
 export function leaveBattle() {
+  // ★ C-2 守卫：模块 `battle` 处于**星域星区模式**时 ⇒ **只卸载侧栏场景**，
+  //   **绝不 `stop()`、绝不清星域实例**（星域容器＝唯一生命周期所有者）。
+  if (battle && battle.starfieldMode) {
+    destroySectorScene();
+    return;
+  }
   if (battle) {
     battle.stop();
     battle = null;
@@ -2372,6 +2389,11 @@ function mountSetup() {
 }
 
 function exitToMenu() {
+  // ★ C-2 守卫：星域星区模式 ⇒ 不 stop/不清（同上）；本入口仅编队屏可达，守卫为防御性
+  if (battle && battle.starfieldMode) {
+    destroySectorScene();
+    return;
+  }
   if (battle) {
     battle.stop();
     battle = null;
@@ -2495,12 +2517,139 @@ function renderRunning() {
   //   · 单星区玩法（`LS.drill()`/战斗屏）`starfieldMode === false` ⇒ 照旧显示战报（**零回归**）。
   applyLogPanelVisibility();
   rebuildUnits();
-  overlay.overlay.classList.add('hidden');
+  // ★ C-2：可选链保护——侧栏场景挂载期间 `overlay` 被置空（不弹战斗屏结算浮层）；
+  //   既战斗屏路径 `overlay` 恒非空 ⇒ 行为与之前**逐字相同**（零回归）。
+  overlay?.overlay.classList.add('hidden');
   if (selectedId && findUnit(selectedId)) buildDetail(findUnit(selectedId));
   refreshStatus();
+  // ★ C-2：星域星区实例恒 `running` ⇒ 侧栏场景不会进这里；可选链为防御性保护（战斗屏路径行为不变）
   if (battle.phase === 'settled' && battle.result) {
-    overlay.show(battle.result);
+    overlay?.show(battle.result);
   }
+}
+
+/* ================= ★★ C-2：星域侧栏「星区战斗场景」（方案 A · 增量复用） =================
+ * 设计：把「战斗屏」这套**模块级场景引用**临时**换绑**到「侧栏容器 + 星区实例」，随后仍调用**同一批**
+ *   既有函数（`renderRunning()` 建舞台、`rebuildUnits()` 建单位卡、`refreshStatus()/refreshCommand()/
+ *   refreshDetail()` 刷新，以及单位卡/详情面板里既有的全部事件处理器）⇒ 侧栏里的单位选择、主要攻击目标、
+ *   模块启停、每模块目标、策略、角色、卸载货物、货物入队……**全部走既有实现与引擎既有唯一接口**，
+ *   **不存在第二套渲染、也不存在第二套指令逻辑**（不会漂移）。
+ * ★ **生命周期所有者＝星域容器**（`systems/starfield.js`）：本路径**绝不** `start()/stop()` 该实例、
+ *   **绝不**触碰 `ticker`（星域驱动依赖全局 ticker 持续推进全部星区，侧栏只负责“显示”）。
+ *   离开地图/关闭侧栏只做 `destroy()`（卸载 UI 绑定），星区战斗照常由星域容器推进。
+ * ★ **战报**：沿用 `battle.starfieldMode` 判据（`applyLogPanelVisibility()`）⇒ 侧栏场景**不显示战报面板**
+ *   （**代码保留**，仅隐藏；与既有战斗屏互不影响）。
+ * ★ **结算浮层**：侧栏挂载期间把 `overlay` 置空 ⇒ **不会**弹出战斗屏的结算浮层（星区结算由星域容器统一处理）。 */
+
+let sideScene = null; // 当前挂载的侧栏场景（{ container, battle, refresh, destroy }）；null＝未挂载
+let sectorZoneNameOverride = null; // ★ C-2：侧栏场景注入的星区显示名（null＝既有口径：星区自定义名/「星区」）
+/** ★ 星域模式注入的「全队主要目标」**单一来源适配器**（`{ get(), set(kind) }`；由星域容器提供）
+ *  —— 它让指挥栏的读/写都落到**星域级唯一来源**（各星区实例不各自持一份 UI 状态），
+ *     而写入仍由容器经**引擎既有唯一接口** `battle.setAllyPolicy` 下发 ⇒ 无第二套策略语义。
+ *     单星区玩法（无星域容器）恒为 `null` ⇒ 走既有实例级口径，**零回归**。 */
+let fleetPolicyHook = null;
+
+/** 卸载当前侧栏场景（幂等；供 `leaveBattle()`/`exitToMenu()`/路由守卫与地图视图调用） */
+export function destroySectorScene() {
+  if (sideScene) sideScene.destroy();
+}
+
+/** ★ **挂载「星区战斗场景」到任意容器**（C-2）：
+ *  · 先**快照**既有场景引用 ⇒ **换绑** `battle = 星区实例`、`stageArea = 容器`（其余场景引用一并清空/置空）
+ *    ⇒ 调既有 `renderRunning()` 建舞台 ⇒ 返回 `{ container, battle, refresh(), destroy() }`；
+ *  · `refresh()`：走**与战斗屏 tick 处理器完全相同**的刷新序列（`refreshStatus/refreshCommand/updateCards/
+ *    refreshDetail`），**不重建舞台 DOM**；且**只对当前挂载的场景生效**（旧场景 `destroy()` 后即失效）
+ *    ⇒ **只刷新当前选中星区**；
+ *  · `destroy()`：清空容器 → **严格还原**快照（含 `battle`，主战斗屏引用零污染）；**幂等**（重复调用安全）。 */
+export function mountSectorScene(container, sectorBattle, opts) {
+  if (!container || !sectorBattle) return null;
+  destroySectorScene(); // 换绑前先卸载上一个场景（切换星区 ⇒ 不残留上一区状态/DOM）
+  // ① 快照（场景渲染链会读写的全部模块级引用）
+  const snap = {
+    battle,
+    stageArea,
+    selectedId,
+    detail,
+    detailEl,
+    updateCards,
+    enemyZone,
+    enemyLogZone,
+    allyZone,
+    allyLogZone,
+    allZones,
+    logPanelEl,
+    sectorZ,
+    overlay,
+    sectorZoneNameOverride,
+    fleetPolicyHook,
+  };
+  // ② 换绑到侧栏场景
+  battle = sectorBattle;
+  stageArea = container;
+  selectedId = null;
+  detail = null;
+  updateCards = null;
+  enemyZone = null;
+  enemyLogZone = null;
+  allyZone = null;
+  allyLogZone = null;
+  allZones = [];
+  logPanelEl = null;
+  sectorZ = null;
+  overlay = null; // ★ 不弹战斗屏结算浮层
+  // ★ 星区栏显示名（`#编号 类型名（坐标）`）：由调用方（星域地图）按只读口径拼好传入；
+  //   为空 ⇒ 走既有口径（星区自定义名 > 「星区」文案）⇒ 单星区玩法不受影响。
+  sectorZoneNameOverride = opts && opts.zoneName ? String(opts.zoneName) : null;
+  // ★ 星域级「全队主要目标」单一来源适配器（由星域容器提供；无 ⇒ null ⇒ 单星区玩法走既有实例级口径）
+  fleetPolicyHook = opts && opts.fleetPolicy ? opts.fleetPolicy : null;
+  barTints.clear();
+  // ③ 复用既有渲染链建舞台（内部按 `battle.starfieldMode` 隐藏战报面板）
+  renderRunning();
+
+  const host = {
+    container,
+    battle: sectorBattle,
+    destroyed: false,
+    /** 只刷新当前场景（体例同战斗屏 tick 处理器：调用方在 `queueMicrotask` 中读到“本 tick 结算后”的状态） */
+    refresh() {
+      if (host.destroyed || sideScene !== host) return; // ★ 只刷新当前选中星区
+      refreshStatus();
+      refreshCommand();
+      if (battle.phase !== 'running') return;
+      if (updateCards) updateCards();
+      refreshDetail();
+    },
+    destroy() {
+      if (host.destroyed) return; // 幂等
+      host.destroyed = true;
+      if (sideScene === host) sideScene = null;
+      try {
+        container.replaceChildren(); // 卸载侧栏场景 DOM
+      } catch {
+        /* 容器已脱离文档 ⇒ 忽略 */
+      }
+      // ★ 严格还原快照（主战斗屏引用不被污染）
+      battle = snap.battle;
+      stageArea = snap.stageArea;
+      selectedId = snap.selectedId;
+      detail = snap.detail;
+      detailEl = snap.detailEl;
+      updateCards = snap.updateCards;
+      enemyZone = snap.enemyZone;
+      enemyLogZone = snap.enemyLogZone;
+      allyZone = snap.allyZone;
+      allyLogZone = snap.allyLogZone;
+      allZones = snap.allZones;
+      logPanelEl = snap.logPanelEl;
+      sectorZ = snap.sectorZ;
+      overlay = snap.overlay;
+      sectorZoneNameOverride = snap.sectorZoneNameOverride;
+      fleetPolicyHook = snap.fleetPolicyHook;
+      barTints.clear();
+    },
+  };
+  sideScene = host;
+  return host;
 }
 
 function overlayEl() {
@@ -2563,6 +2712,9 @@ function bindGlobalListeners() {
     //   且仍在同一帧内完成、无可见延迟。
     queueMicrotask(() => {
       if (!battle) return;
+      // ★ C-2：侧栏场景挂载时，刷新由**侧栏宿主**（`starfieldMapView` 的 tick 驱动）负责 ⇒
+      //   此处直接返回，避免同一 tick 双份刷新（也避免在非战斗屏路由下写侧栏容器）。
+      if (sideScene) return;
       refreshStatus();
       refreshCommand();
       if (battle.phase !== 'running') return;
@@ -2614,6 +2766,9 @@ function bindGlobalListeners() {
   });
 
   bus.on('route', ({ name }) => {
+    // ★ C-2 守卫：星域星区模式下**离开非战斗屏路由不停实例**（星域容器＝唯一生命周期所有者），
+    //   也不清空场景引用（侧栏场景由 `starfieldMapView` 在离开地图时 `destroy()` 卸载）。
+    if (battle && battle.starfieldMode) return;
     if (name !== 'battle' && battle && battle.phase === 'running') {
       battle.stop();
       ticker.setSpeed(1); // 中途离开战斗屏同样重置速度
@@ -2637,6 +2792,8 @@ export const battleView = {
   enterBattle, // ★ 唯一「进入战斗」入口（UI 侧）：演练开战 / 结算再战 / 将来关卡入口统一走它
   leaveBattle, // 「离开」：结束战斗并回编队配置界面（含完整清理）
   enterDrill,  // ★ S0-1：打开「演练编队配置」界面（原主菜单入口已移除 ⇒ 控制台指令 `LS.drill()` 走它）
+  mountSectorScene, // ★ C-2：把**同一套**战斗场景渲染/交互挂到任意容器 + 星区实例（星域侧栏用）
+  destroySectorScene, // ★ C-2：卸载侧栏场景（幂等；星域容器仍是实例生命周期的唯一所有者）
 };
 
 export default battleView;
