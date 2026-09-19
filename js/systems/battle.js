@@ -274,6 +274,33 @@
  *         直接写战报序列、**不写 `__pending`**；失败早退不记、重复点击幂等不重复成句）；
  *       · **阵亡返还**：**不单独播报**（避免死亡刷屏；如需再定）。
  *
+ * ★★ 星域容器专用：单位「跨实例整体搬迁」的两个最小接口（阶段 1「星区间移动」；单星区玩法不调用）★★
+ *   · `battle.takeUnit(id)` —— **摘取单位**：把该单位从本实例场景摘除，但**保留其全部自身状态**
+ *     （血量/护盾与各池现值/能量/模块实例与冷却与持续期/已装货物/携带矿物/定位与策略/目标选择）；
+ *     · 同时 ① 撤销它对**本实例其它单位**的影响（既有 `dropSourceMods`/`releaseCoeffRefs`/`releaseTime`/
+ *       `releaseStealth`/`releaseForced`）、② 作废它自己未触发的后触发载荷、并把它从**其它模块**已冻结的
+ *       后触发作用集合里剔除（防跨实例幽灵写入）、③ 释放在装（未入舱）货物、
+ *       ④ **清除“由其它单位施加”的临时状态**（判据＝来源 key 是否本单位自身模块实例 id，见
+ *       `clearForeignMods`）；⑤ 摘除后刷新 `sideSize`；**不计阵亡数、不置 `alive=false`、不播报阵亡**。
+ *     · 返回 `{ ok, unit, reason }`。
+ *   · `battle.adoptUnit(unit, side)` —— **收编单位**：把**同一个对象实例**挂回本实例阵营数组并**在本实例内
+ *     重绑**（`order` 取本实例下一出场序号、护盾池使用序 `_shieldSeq` 按本实例计数器重编号、`__pending`
+ *     重建、`recomputeCap` 按本实例状态重算上限与护盾池）⇒ 搬迁后**照常参与 Pass1/结算/Phase B/C**。
+ *   ★ 二者**只为星域容器**而设（`crossSectorPhase` 唯一落地处），**不进入** Pass1/Phase A/B/C 结算全序、
+ *     不改变任何既有调用路径 ⇒ 既有战斗屏与 `LS.drill()` 行为、数值、战报序列**一字不变**（零回归）。
+ *   ★ 单位上的**航行字段**（同为星域容器专用，引擎侧只读）：
+ *     · `coefficients.nav` —— **航行系数**（与其它类别系数**同族同链**；唯一读口径
+ *       `entities/ship.js navCoeffOf(ship)` ⇒ 即 `coeff(ship,'nav')`）；战斗数值链**不读它**；
+ *     · `ship.navReadyUntil` —— **航行冷却的绝对到期 tick**（基准＝星域容器 `runTicks`；模型同本实例的
+ *       `sectorCdUntil`）：`≤ 当前 tick` ＝ 就绪（**就绪时下达 ⇒ 立即到期，下一 tick 即迁移**）。
+ *       **唯一写入口＝星域容器**（迁移落地后按 `navCdTicks` 为下一步重新计时，**无论是否还有后续指令**；
+ *       冷却推进的**能量门控**同样只在该阶段落地 —— ★ **「始终充能」口径**：只要处于**充能中**（剩余 > 0）
+ *       且**可指挥**，每 tick 就尝试扣该单位配置的 `navEnergyPerTick`（唯一读口径 `navEnergyPerTickOf`）：
+ *       扣得起 ⇒ 推进；扣不起 ⇒ 不扣、到期 tick 顺延 1；
+ *       **充能完成后不再扣能**）。既有单星区玩法恒为 0、从不读写。
+ *     · `ship.navCdTicks` / `ship.baseNavCdTicks` —— 本步**冻结的冷却长度**（只读展示分母）与
+ *       **船型配置的冷却基准**（`data/ships/<id>.js navCdTicks`，默认 200t；只读口径 `navCdTicksOf`）。
+ *
  * 契约：开始广播 combat:state{active:true}；结算完成广播 active:false（自动落档）。
  * 事件：'battle:settled' { result:'win'|'lose'|'draw' }
  * ★ 开战入口（唯一）：本文件 `startBattle({allies, enemies})` —— 校验/规范化编队 + 建单位；
@@ -702,6 +729,13 @@ function drainBlastproof(target, amount, allies, enemies) {
 export function createBattle(preset, opts) {
   /* ★ B-1：实例私有**战报缓冲**（`battle.log` 只读口径的来源）＋“星域星区模式”开关 */
   const starfieldMode = !!(opts && opts.starfield);
+  /* ★★ **召唤上限的「星域范围」计数注入点**（星域容器专用；缺省 `null` ⇒ **既有“本实例计数”口径逐字不变**）：
+   *   `(side, moduleId) => number` —— 由容器返回**整个星域**中该阵营 `alive && summonMod === moduleId` 的单位数。
+   *   ★ **为什么必须跨星区**：**召唤物不随单位迁移**（用户口径）⇒ 单位迁走后，**留在源星区的召唤物
+   *     仍必须继续占用该召唤模块的上限**；若仍按“本实例”计数，新星区里计数为 0 ⇒ 迁移后会**重复召唤**
+   *     （用户实测 bug：新星区多出一只、源区那只还在）。
+   *   ★ 只读、无副作用；非星域玩法（战斗屏 / `LS.drill()`）**根本不注入** ⇒ 走原分支，零回归。 */
+  const summonCountOf = typeof (opts && opts.summonCountOf) === 'function' ? opts.summonCountOf : null;
   const LOG_MAX = 1000; // 环形上限（与 `core/log.js` 的 500 条同体例；防止长时间星域运行内存无界）
   const logEntries = [];
   let logTotal = 0; // ★ 累计写入条数（**单调递增、不受环形上限影响**）⇒ 供容器/UI 判定“本 tick 有无新战报”
@@ -964,6 +998,175 @@ export function createBattle(preset, opts) {
       arr.splice(i, 1);
       refreshSideSize(side);
     }
+  }
+
+  /* ---------- ★★ 星域容器专用：单位「跨实例整体搬迁」的两个最小接口（阶段 1 修订） ----------
+   * 背景：星域容器把「单位逐格跨星区」落地为 **把同一个单位对象实例从 A 星区实例整体搬到 B 星区实例**
+   * （见 `systems/starfield.js crossSectorPhase`）：
+   *   · **保留该单位全部自身状态** —— 血量/护盾（含各护盾池现值与持续期）/能量/模块实例（冷却 `cooldown`
+   *     与 `cdElapsed`、持续期 `durationLeft`/`durElapsed`、启停、统计）/已装货物（`ship.cargos` 实体与
+   *     `hull.cargo`）/携带矿物（`hull.ore`）/定位与策略（`role`/`policy`）/目标选择（`targetId`、
+   *     模块 `target`、`_lockIds`、`_stick`）；
+   *   · **只清除“由其它单位施加的临时状态”**（判据＝来源是否本单位自身模块，见 `clearForeignMods`）。
+   * 本实例此前没有这种接口（单位只在开局一次性创建、召唤只增不减、阵亡只标记 `alive=false`），故新增两个。
+   * ★ **零回归保证（三条）**：
+   *   ① **不改变任何既有调用路径**：两个接口都是**新增**的公开方法，既不进 Pass1/Phase A/B/C 的结算全序，
+   *      也不被既有玩法（`LS.drill()` / 战斗屏）调用 ⇒ 既有行为、数值、战报序列一字不变；
+   *   ② **不做任何战斗数值结算**：只做「摘除 / 挂回 + 按来源清理外部修饰 + 派生重算」，不写血量/护盾/能量
+   *      当前值（除“上限重算”带来的既有钳制），不产生战报、不计入阵亡数；
+   *   ③ **经 `withSink` 包裹**：即便清理过程产生战报（如时间系数撤销），也只进**本实例**缓冲。
+   * ★ 与判死出口 `onDeath` 的区别：阵亡是**永久离场**（结束自身时长、返还货物/矿物、撤销自身获得的修饰，
+   *   撤销自身获得的修饰）；**跨星区搬迁是“活着换场景”**，自身状态必须原样带走 ⇒ 两者**不共用**清理体。 */
+  /** ★ **清除“由其它单位施加”的临时状态**（唯一判据：**来源 key ∉ 本单位自身模块实例 id**）：
+   *  · 既有家族的 key 一律＝**施加方模块实例 id**（`setCoeffMod`/`setCoeffMulMod`/`setDamageTakeMulMod`/
+   *    `setTimeCoeffMod`/`setStealthMod`，见 ship.js）⇒ 自身模块写的 key ∈ 自身 `modules[].id`
+   *    （**自身状态、保留**），其余 ⇒ **外部施加、清除**（走既有撤销入口 `clear*Mod`，各入口自带派生值
+   *    刷新：受伤减免连乘 / 时间系数组合 / 潜行标记 / 系数求和）；
+   *  · **目标级上限叠加**（其它单位的 `*_cap_target`，由本实例 `capOverlays` 承载）⇒ 删掉本单位的条目
+   *    （上限回到「基准 + 自身常驻」；由 `adoptUnit` 在目标实例内 `recomputeCap` 落地）；
+   *  · **强制目标来源栈**（其它单位施加的“必须打我”）⇒ 清空并刷新派生标签
+   *    （`forcedBy`/`forcedTargetId` 归 null ⇒ 回到正常目标优先级）；
+   *  · ★ **不触碰**：模块实例自身状态（冷却/持续期/启停/统计）、`ship.cargos`/`hull.ore`（货物与矿物跟随）、
+   *    `targetId`/`inst.target`/`inst._lockIds`/`inst._stick`（**自身的目标选择**，属自身状态 —— 若它们指向
+   *    源区单位，迁移后由既有 `clearShipDeadRefs` 按“目标已不存在”的既有口径在下一 tick 回落）。 */
+  function clearForeignMods(ship) {
+    const own = new Set((ship.modules || []).map((i) => i.id));
+    if (ship.coeffMods instanceof Map) {
+      for (const k of [...ship.coeffMods.keys()]) if (!own.has(k)) clearCoeffMod(ship, k);
+    }
+    if (ship.coeffMulMods instanceof Map) {
+      for (const k of [...ship.coeffMulMods.keys()]) if (!own.has(k)) clearCoeffMulMod(ship, k);
+    }
+    if (ship.damageTakeMulMods instanceof Map) {
+      for (const k of [...ship.damageTakeMulMods.keys()]) if (!own.has(k)) clearDamageTakeMulMod(ship, k);
+    }
+    if (ship.timeCoeffMods instanceof Map) {
+      for (const k of [...ship.timeCoeffMods.keys()]) if (!own.has(k)) clearTimeCoeffMod(ship, k);
+    }
+    if (ship.stealthMods instanceof Set) {
+      for (const k of [...ship.stealthMods]) if (!own.has(k)) clearStealthMod(ship, k);
+    }
+    if (capOverlays.has(ship.id)) capOverlays.delete(ship.id); // 其它单位加在它身上的上限叠加
+    if (Array.isArray(ship.forceStack) && ship.forceStack.length) {
+      ship.forceStack.length = 0; // 其它单位施加的“强制打我”
+      refreshForcedTags(ship);
+    }
+  }
+
+  /** ★ **摘取单位**（容器搬迁第一步）：把该单位**从本实例场景摘除**，但**保留其全部自身状态**。
+   *  · 判据＝单位 id（找不到 ⇒ `{ok:false, reason:'none'}`，无副作用）；
+   *  · ① **撤销它对其它单位的影响**（唯一入口＝既有五个 `release*`，与既有“移出场景”同口径）：
+   *       `dropSourceMods`（目标级上限）/`releaseCoeffRefs`（目标级系数）/`releaseTime`（时间系数）/
+   *       `releaseStealth`（潜行）/`releaseForced`（强制目标）；
+   *       ★ **静默离区**：三个带战报的撤销入口一律传 `silent = true`（**不记“加速/减速结束”“潜行结束”
+   *       “强制解除/回落”**）⇒ 搬迁本身**不产生任何战报**；但 `silent` 的既有语义是“同 tick 到期并重新激活
+   *       的延续场景”，它会**保留** `_timeActive`/`_stealthActive` 标记 ⇒ 这里必须**把标记一并归位**
+   *       （否则该模块在目标实例里首次生效会被误判为“延续”，**漏记“开始”战报**）。
+   *  · ② **作废它自己未触发的「后触发」载荷**（`inst._delayedRefs`/`_delayedDmg`）：该载荷的作用集合引用
+   *       **源区单位**，若保留会在目标实例结算时打到源区单位身上（跨实例幽灵写入）——口径与既有
+   *       “提前结束持续期（停用/阵亡/移出场景）不触发”一致（`endDuration` 亦如此清理）；
+   *  · ③ **释放其在装货物**（`releaseCargoLoad`：解锁 + 进度归零、能量不退）：在装货物**尚未入舱**、
+   *       仍是**源区**的货物实体 ⇒ 不随单位走（**已在舱**的货物在 `ship.cargos` 里，原样跟随）；
+   *  · ④ **清除其它单位施加在它身上的临时状态**（`clearForeignMods`，判据＝来源是否自身模块）；
+   *  · ④b **反向清理（源区侧，静默）** —— 把本单位从源区**其它单位/模块**里的一切指向它的引用中摘掉：
+   *       · **目标引用**（等价于既有 `clearShipDeadRefs` 的清引用范围，但**不播报**）：其它单位的
+   *         `targetId`、模块手动目标 `{mode:'unit'|'units'}` 若指向本单位 ⇒ 清成 `null` / `{mode:'follow'}`
+   *         （或仅移除本单位并保留其余），**不产生“回落”类战报**；锁定单位（`lockTargetId`）按既有口径跳过；
+   *       · **作用集合引用**（`_delayedRefs`/`_timeRefs`/`_stealthRefs`/`_coeffRefs`/`_forcedRefs`，判据＝对象
+   *         **同一性**）：剔除本单位 ⇒ ① 这些模块日后撤销时**不会写进已不在本实例的单位**；
+   *         ② **结束类战报的 n 只统计“仍在场”的单位**（离场≠阵亡，计数口径据此修正）；
+   *         ③ 「后触发」载荷不会跨实例写挂账（幽灵写入）。
+   *       ★ 只影响**离场单位**：真正阵亡仍走 `onDeath`（**一字未改**）⇒ 既有“回落/结束”战报与管理口径零回归。
+   *  · ⑤ 从所属阵营数组摘除、刷新 `sideSize`；**不计阵亡数、不置 `alive=false`、不播报阵亡**；
+   *  · ⑥ 重建本实例的 tick 挂账结构 `__pending`（其内容引用本实例闭包状态；下一 tick Pass1 本就会重建），
+   *       并清掉模块上可能残留的“本 tick 到期记录”指针 `_expiryRec`（仅同 tick 内的中间量）。
+   *  ★ 本单位**自身的目标选择**（`targetId`/`inst.target`/`_lockIds`/`_stick`）**保留**（属自身状态）；
+   *    若它指向的源区单位不在目标实例里，则由目标实例**既有**的 `clearShipDeadRefs` 在下一 tick 按
+   *    “目标已不存在”的既有口径回落（与“目标阵亡”完全同源，**未新增机制**）。
+   *  @returns {{ ok:boolean, unit:object|null, reason:'none'|null }} */
+  function takeUnit(id) {
+    const ship = allies.find((u) => u.id === id) || enemies.find((u) => u.id === id);
+    if (!ship) return { ok: false, unit: null, reason: 'none' };
+    for (const inst of ship.modules || []) {
+      dropSourceMods(inst);
+      releaseCoeffRefs(inst);
+      releaseTime(inst, true);      // ★ 静默：不记“加速/减速结束”
+      releaseStealth(inst, true);   // ★ 静默：不记“潜行结束”
+      releaseForced(inst, true);    // ★ 静默：不记“强制解除/回落”
+      releaseCargoLoad(inst);
+      inst._delayedRefs = null; // 未触发的后触发载荷作废（作用集合引用源区单位，见上）
+      inst._delayedDmg = 0;
+      inst._expiryRec = null;   // 同 tick 中间量（引用源实例的 pending 记录）
+      // ★ `silent` 会保留“生效中”标记（那是给“同 tick 到期并重激活”的延续场景用的）⇒ 此处归位
+      inst._timeActive = false;
+      inst._stealthActive = false;
+    }
+    clearForeignMods(ship);
+    // ★ 反向清理（源区侧，静默；见上 ④b）：目标引用 + 五类作用集合引用
+    for (const other of [...allies, ...enemies]) {
+      if (other === ship) continue;
+      if (other.targetId === ship.id && !other.lockTargetId) other.targetId = null; // 目标引用（不播报）
+      for (const oi of other.modules || []) {
+        const t = oi.target;
+        if (t && t.mode === 'unit' && t.id === ship.id) {
+          oi.target = { mode: 'follow' }; // 手动目标指向离场单位 ⇒ 回落为“跟随”，与既有同口径
+        } else if (t && t.mode === 'units' && Array.isArray(t.ids) && t.ids.includes(ship.id)) {
+          const kept = t.ids.filter((x) => x !== ship.id);
+          if (kept.length) t.ids = kept;
+          else oi.target = { mode: 'follow' };
+        }
+        // ★ **粘性目标 `_stick`（存的是单位 id）**：把离场单位的 id 摘掉（静默、幂等）——
+        //   与既有“无可粘目标 ⇒ `undefined`”同口径；否则源区单位会留着一个**跨实例的失效 id**
+        //   （读取时本就不会匹配任何存活单位 ⇒ 无幽灵写入，但按“静默离区不留跨实例引用”的口径一并清理）。
+        if (Array.isArray(oi._stick) && oi._stick.includes(ship.id)) {
+          const keptStick = oi._stick.filter((x) => x !== ship.id);
+          oi._stick = keptStick.length ? keptStick : undefined;
+        }
+        for (const key of ['_delayedRefs', '_timeRefs', '_stealthRefs', '_coeffRefs', '_forcedRefs']) {
+          const list = oi[key];
+          if (Array.isArray(list) && list.includes(ship)) oi[key] = list.filter((x) => x !== ship);
+        }
+      }
+    }
+    const arr = sidesOf(ship.side);
+    const i = arr.indexOf(ship);
+    if (i >= 0) {
+      arr.splice(i, 1);
+      refreshSideSize(ship.side);
+    }
+    ship.__pending = freshPending(); // 换成本实例的挂账结构（不残留源实例闭包引用）
+    return { ok: true, unit: ship, reason: null };
+  }
+
+  /** ★ **收编单位**（容器搬迁第二步）：把**同一个单位对象**挂回本实例的阵营数组，并在**本实例内重绑**。
+   *  · `side` 缺省沿用单位自身 `side`；**幂等**（已在数组中 ⇒ 直接返回 `ok`）；
+   *  · ① 挂回该阵营数组**末尾**、分配本实例的**下一出场序号** `order`（与 `spawnList` 同口径）、
+   *       刷新 `sideSize`（仅影响 `#序号` 显示口径）；
+   *  · ② **重绑本实例引用**：护盾池“激活顺序”序号 `_shieldSeq` 改用**本实例**计数器按模块顺序重新编号
+   *       （`_shieldSeq` 只用于“先激活先用”的排序 ⇒ 本单位内部相对顺序不变、跨实例数值无意义）；
+   *       `__pending` 重建为**本实例**的挂账结构；
+   *  · ③ **按本实例状态重算派生**：`recomputeCap(unit)` —— 本实例 `capOverlays` 中该单位**暂无条目**
+   *       ⇒ 上限回到「基准 + 自身常驻」；护盾池结构/池值按本单位现有模块重算（**只钳制、不补齐**）。
+   *       ★ 自身模块与其写下的自身系数修饰（key ∈ 自身模块 id）都随对象保留 ⇒ 重算结果与原实例一致，
+   *       **血量/护盾/能量当前值不变**（除非上限确实变小 ⇒ 走既有钳制口径）。
+   *  @returns {{ ok:boolean, unit:object|null, reason?:string }} */
+  function adoptUnit(unit, side) {
+    if (!unit || typeof unit !== 'object') return { ok: false, unit: null, reason: 'none' };
+    const s = side === 'ally' || side === 'enemy' ? side : unit.side === 'enemy' ? 'enemy' : 'ally';
+    const arr = sidesOf(s);
+    if (arr.includes(unit)) return { ok: true, unit, reason: 'already' }; // 幂等
+    unit.side = s;
+    seqCount[s] += 1;
+    unit.order = seqCount[s]; // 出场序号由本实例分配（与 spawnList 同口径；稳定、不随队列变化）
+    arr.push(unit);
+    refreshSideSize(s);
+    const pools = unit.hull && unit.hull.pools;
+    for (const inst of unit.modules || []) {
+      if (pools instanceof Map && pools.has(inst.id)) inst._shieldSeq = ++shieldSeq; // 护盾池使用序：本实例重新编号
+    }
+    unit.__pending = freshPending();
+    recomputeCap(unit); // 按本实例状态重算上限/护盾池（capOverlays 无该单位条目 ⇒ 目标级叠加归零）
+    return { ok: true, unit, reason: null };
   }
 
   /* ---------- 统一目标系统 ---------- */
@@ -1614,9 +1817,17 @@ export function createBattle(preset, opts) {
     // 场上存活上限按"所属召唤模块"(family)计：不同召唤模块即使复用同一船型(如 drone)也不互相挤占。
     // ignoreCap：本次为"按目标数齐射"（per_target），不受该模块在场上限限制。
     if (!ignoreCap) {
-      let n = 0;
-      for (const u of sidesOf(side)) if (u.alive && u.summonMod === inst.moduleId) n += 1;
-      if (n >= (sum.maxSummoned || 1)) return; // 已达该模块在场召唤数上限
+      // ★ 上限判据的**唯一分派点**：
+      //   · 有容器注入 ⇒ **星域范围计数**（跨星区；见 `createBattle` 的 `summonCountOf` 说明）；
+      //   · 无注入（战斗屏 / `LS.drill()`）⇒ **本实例计数**（既有口径一字未改）。
+      //   ⚠ “召唤物不随单位迁移” ⇒ 留在源区的召唤物**必须继续占额**，否则迁移后会重复召唤。
+      let total = 0;
+      if (summonCountOf) {
+        total = summonCountOf(side, inst.moduleId);
+      } else {
+        for (const u of sidesOf(side)) if (u.alive && u.summonMod === inst.moduleId) total += 1;
+      }
+      if (total >= (sum.maxSummoned || 1)) return; // 已达该模块在场召唤数上限
     }
     const cost = fx.energy_cost || 0;
     // ★ **矿物成本**（`ore_cost`，自身携带矿物）：与能量成本同批、同体例 —— 记账到 `__pending.oreSpends`，
@@ -2842,7 +3053,10 @@ export function createBattle(preset, opts) {
    *  - 撤销死者自身仍在持续的时长 buff；
    *  - 撤销它与“其它单位”之间的双向影响：它施加的 cap 影响 / 目标级系数修饰 / 强制目标来源，
    *    以及它自身获得的自身词条系数修饰；强制目标只解除来源（被强制者按来源栈回落或回正常优先级）；
-   *  - 清除仍指向“该死者(作为被叠加目标，已死)”的 cap 叠加。 */
+   *  - 清除仍指向“该死者(作为被叠加目标，已死)”的 cap 叠加。
+   *  ★ 本函数**只服务判死**；星域容器的「跨实例整体搬迁」（`takeUnit`/`adoptUnit`）**不共用**它 ——
+   *    搬迁是“活着换场景”，必须**保留**自身状态（时长/货物/矿物/自身修饰），故其清理范围**刻意更小**
+   *    （见 `takeUnit` 注释）。 */
   function onDeath(ship) {
     // ★ 死亡返还（星区矿物）：本舰**携带的矿物**（本舰矿物仓 `hull.ore`）**全额返还星区储量**。
     //   · 落点＝**判死唯一出口**本函数：四个判死点（applyHpTo / applySelfDestruct / applyTempTick /
@@ -2866,11 +3080,11 @@ export function createBattle(preset, opts) {
     //   · 返还的货物保持 `loadTicks`（已装载过者恒为 20t ⇒ “一次装好”是**货物特性**，不随死亡还原）；
     //   · **不自动重新入队**（优先队列是用户的选择）。
     returnCargoToSector(ship);
-    // ★ 在装（**未完成**）货物的解锁：本舰阵亡 ⇒ 立即解锁 + 进度归零、**不完成装载**、能量不退。
-    //   与下方模块清理循环同批（同一 `ship.modules` 遍历），恒在结算步骤 5 之前 ⇒ 本 tick 也不会补完成。
     // ★ 死亡计数（唯一出口）：排除召唤/临时单位（判据与 soloConditionHolds 的"召唤物不计入"同一口径）。
     //   结算阶段累加、tick 收尾提交为 lastTickDeaths → 供**下一 tick** 的 Pass1 读取（"按上一 tick 死亡数"）。
     if (!ship.summonMod && !ship.isSummon) deathsThisTick += 1;
+    // ★ 在装（**未完成**）货物的解锁：本舰阵亡 ⇒ 立即解锁 + 进度归零、**不完成装载**、能量不退。
+    //   与下方模块清理循环同批（同一 `ship.modules` 遍历），恒在结算步骤 5 之前 ⇒ 本 tick 也不会补完成。
     for (const inst of ship.modules) {
       if (inst.durationLeft > 0) endDuration(inst); // 结束自身时长 buff（剩余/已推进一并归 0）
       releaseCargoLoad(inst); // ★ 阵亡 ⇒ 解除其在装货物的锁定（进度归零、不完成装载、能量不退）
@@ -4916,6 +5130,12 @@ export function createBattle(preset, opts) {
     },
     /** 全部存活单位（含双方） */
     units() { return [...allies, ...enemies]; },
+    /* ★★ **星域容器专用：单位「跨实例整体搬迁」的两个最小接口**（阶段 1「星区间移动」；见文件头同名说明）——
+     *  既有单星区玩法（`LS.drill()` / 战斗屏）**从不调用**它们 ⇒ 行为一字不变（零回归）。 */
+    /** ★ **摘取单位**（容器搬迁第一步）：摘除本单位但**保留其全部自身状态**（离场≠阵亡） */
+    takeUnit,
+    /** ★ **收编单位**（容器搬迁第二步）：把**同一实例**挂回本实例阵营并重绑本实例引用 */
+    adoptUnit,
     /** 某阵营同盟共享池的总盾量/上限（只统计非防爆 alliance && !blastproof 的模块池）。 */
     alliancePool(side) {
       return poolTotalFor(side, (p) => p.alliance && !p.blastproof);
@@ -4980,9 +5200,10 @@ export function createBattle(preset, opts) {
     start,
     stop,
   };
-  /* ★ 统一包一层（B-1）：可能产生战报的 4 个公开入口，在调用期间把**战报出口**指向本实例缓冲
-   *   （退出时恢复原值 ⇒ 可重入安全、多实例零串台）；四者的**语义/返回值一字不变**。 */
-  for (const k of ['start', 'stop', 'step', 'unloadCargo']) {
+  /* ★ 统一包一层（B-1）：可能产生战报的 6 个公开入口，在调用期间把**战报出口**指向本实例缓冲
+   *   （退出时恢复原值 ⇒ 可重入安全、多实例零串台）；六者的**语义/返回值一字不变**。
+   *   （`takeUnit`/`adoptUnit` 在清理/重算时可能播报（如时间系数撤销）—— 一并纳入同一出口口径。） */
+  for (const k of ['start', 'stop', 'step', 'unloadCargo', 'takeUnit', 'adoptUnit']) {
     const orig = api[k];
     api[k] = (...args) => withSink(() => orig.apply(api, args));
   }

@@ -319,6 +319,56 @@
 /* ★ 货舱容量条（货物 / 矿物）：容量为 0 → 整条隐藏（单位卡 / 单位详情 / 指挥栏共用同一规则） */
 .bar.hidden { display: none; }
 
+/* ---------- ★★ 航行引擎（单位「星区间移动」阶段 2）：单位卡 / 详情面板**共用**的竖直冷却条 ----------
+ *  · 位置＝单位图标**右侧**（`.unit-icon-row` 为图标行）；形态＝**竖条**、填充自下而上；
+ *  · 取值＝容器只读口径 `unitNav()`（`1 − navRemainTicks / navCdTicks`），**就绪＝满格**（用户口径）；
+ *  · 配色**全部复用既有变量**：绿 `--ok`、能量不足 `--warn`、底槽与既有 `.bar-track` 同色值；
+ *    **不新增任何配色值**，也不改动既有规则（只新增类名）。 */
+.unit-icon-row { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.nav-cool {
+  display: flex;
+  flex-direction: column;
+  width: 5px;
+  height: 34px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.nav-cool-track { display: flex; flex-direction: column; justify-content: flex-end; flex: 1 1 auto; }
+.nav-cool-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--ok);
+  border-radius: 3px;
+  /* 与既有 `.bar-fill` 同一缓动体例：只改高度/颜色，不重建 DOM */
+  transition:
+    height 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.2s ease;
+}
+.nav-cool.stalled .nav-cool-fill { background: var(--warn); }
+/* ★ **满格（就绪）⇒ 隐藏但保留占位**：用 `visibility`（而非 `display:none`）⇒ 不改变布局，
+ *   icon/文字的**位置不跳动**（用户口径：“满了就隐藏、但保持占位”）。 */
+.nav-cool.done { visibility: hidden; }
+/* 排队 ⇒ 卡片按**既有 `--accent`** 描边（`outline` 不与既有 `box-shadow` 选中态冲突） */
+.unit-card.nav-queued { border-color: var(--accent); outline: 1px solid var(--accent); }
+/* ★ 「始终充能」口径：**充能中且扣不起**（`navStalled`，无需有移动指令）⇒ 卡片边框用**既有 `--warn`**；
+ *  排在 `.nav-queued` 之后 ⇒ 两者同时成立时**停滞优先**（更紧急的状态优先显示）。 */
+.unit-card.nav-stalled { border-color: var(--warn); }
+.unit-card.nav-draggable { cursor: grab; }
+/* 「排队目标 / 能量不足」一行：无内容时整行隐藏 ⇒ 既有呈现零变化 */
+.unit-nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 9px;
+  line-height: 1.2;
+}
+.unit-nav-row.hidden { display: none; }
+.unit-nav-queue { color: var(--accent); font-variant-numeric: tabular-nums; }
+.unit-nav-note { color: var(--warn); }
+
 /* 模块图标区 */
 .unit-modules { display: flex; gap: 3px; justify-content: center; margin-top: 0; }
 .module-chip {
@@ -449,6 +499,13 @@
    容量为 0 → 单条隐藏；两条皆 0 → 本区块隐藏（与单位卡/指挥栏同一规则）。 */
 .detail-cargo { display: flex; flex-direction: column; gap: 2px; min-width: 150px; }
 .detail-cargo.hidden { display: none; }
+/* ★★ 航行引擎（阶段 2）：详情面板＝**图标右侧同款竖直冷却条**（在 `.detail-head` 内）＋ 一行数值；
+ *  · 文本行 `.detail-nav` **默认不显示**，仅在“已下达移动 / 冷却中 / 能量不足”时由 JS 取消 `.hidden`；
+ *  · 无星域容器 ⇒ 竖条恒满格（`.done` ⇒ 隐藏但占位）、文本行恒隐藏 ⇒ 既有单星区呈现零变化。 */
+.detail-head .nav-cool { height: 44px; width: 6px; } /* 详情里的竖条略大（与卡片同一位置语义：图标右侧） */
+.detail-nav { display: flex; align-items: center; gap: 7px; }
+.detail-nav.hidden { display: none; }
+.detail-nav-text { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 .detail-subtitle {
   font-size: 11px;

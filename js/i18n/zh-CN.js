@@ -50,7 +50,7 @@ export default {
   'starfield.map.back': '返回星域配置',
   'starfield.map.meta': '难度 {id} · 种子 {seed} · 半径 {r}',
   'starfield.map.remaining': '剩余 {s}s',
-  'starfield.map.hint': '滚轮缩放 · 拖拽平移（范围不限：可把边缘星区拖到中心或对侧）· 点击星区查看摘要（再点同一格收起）· 用「重置视图」回到初始位置',
+  // ★ 地图下方的操作说明（原 `starfield.map.hint`）已按用户口径整段移除 ⇒ 键随之删除。
   'starfield.map.legend': '图例',
   'starfield.map.legend.void': '无星区（空位）',
   'starfield.map.void': '无星区：({q}, {r})',
@@ -216,6 +216,17 @@ export default {
   'starfield.sidebar.phase': '状态',
   'starfield.sidebar.none': '无',
   'starfield.sidebar.stageTodo': '完整战斗场景将在后续步骤（C-2）挂载于此。',
+  /* ★★ 星区间移动（阶段 2 UI）：**从侧栏单位卡拖到地图格子**下达移动 ——
+   * 失败提示的 `reason` 与引擎唯一写入口 `moveUnitTo` 的词表**一一对应**（UI 只做映射、不自造判据）；
+   * ★ **拖到“自身所在星区” ＝ 取消移动**（成功语义，不是失败）⇒ 用 `cancelled` 短提示。 */
+  'starfield.move.failed': '无法移动：{reason}',
+  'starfield.move.cancelled': '已取消移动',
+  'starfield.move.none': '无此单位',
+  'starfield.move.dead': '该单位已阵亡',
+  'starfield.move.owner': '该单位不归你指挥',
+  'starfield.move.far': '版图阻断，无法抵达该星区',
+  'starfield.move.invalid': '目标星区不存在',
+  'starfield.move.finished': '星域已结束，无法再下达指令',
   /* 星域配置占位页：进入地图的入口（C-1） */
   'starfield.config.enterMap': '进入星域（占位）',
   'starfield.config.mapHint': '本轮（C-1）可先进入「星域大地图」查看只读地图；若尚无星域实例，将用默认配置 H1 + 随机种子创建（正式配置见 C-3）。',
@@ -275,6 +286,7 @@ export default {
   'module.loadingBeam': '装载光束', // 运输 · 主动无目标（标签 cargo_loader + 词条 cargo_load：把星区货物装进本舰货舱）
   'module.cargoTransfer': '货物传输', // 运输 · 主动单体友方（标签 cargo_transfer：把**整件已入舱货物**原样搬运给目标）
   'module.cargoRepair': '货物维修', // 运输 · 主动单体友方含自身（标签 cargo_repair：消耗**整件已入舱货物**换回血 hp_per_ton）
+  'module.navThruster': '航行推进器', // 运输 · 常驻增幅器（自身**航行系数** nav_coeff_add ⇒ 星区间移动的航行引擎冷却）
   'module.oreHold': '矿舱',
   'module.miningLaser': '采矿激光',
   'module.oreCompressor': '矿物压缩', // 采矿 · 常驻增幅器（自身采矿系数 mining_coeff_add）
@@ -315,6 +327,8 @@ export default {
   'battle.coeff.transport': '运输系数',
   'battle.coeff.mining': '采矿系数',
   'battle.coeff.drone': '无人机系数',
+  // ★ 航行系数（`coefficients.nav`）：与上面的类别系数**同列同体例**（该行由系数集合自动生成）
+  'battle.coeff.nav': '航行系数',
   // ★ 单位系数栏（详情页）：**只放数值、不放任何解释性文案**（基础值/口径说明/预留说明一律不显示）。
   //   `mulRow` 为预留项（当前无词条映射 → 显示“无”）；`takeMul`＝受伤减免（×值）；
   //   `timeCoeff`＝时间系数（负＝加速 / 正＝放缓；计时器需求量 = 基础量 ×(1+系数)，取整）。
@@ -493,6 +507,18 @@ export default {
   'battle.act.dead': '已击毁',
   'battle.intent': '下一步：{act}',
   'battle.lifeLeft': '存活 {n}s',
+  /* ★★ 航行引擎（单位「星区间移动」；阶段 2 UI）——单位卡竖条 + 详情面板 + 排队标记。
+   * ★ 数值/判据一律来自容器只读口径 `unitNav()`（剩余/暂停/排队目标），**UI 不自算**；
+   * ★ **航行系数不在此处**：它已归位到「单位系数」区（`coefficients.nav` ⇒ `battle.coeff.nav`）。 */
+  'unit.nav': '航行引擎',
+  'unit.navReady': '就绪',
+  'unit.navRemain': '剩余 {s}s',
+  'unit.navStalled': '能量不足',
+  'unit.navQueued': '排队前往 #{n}',
+  'unit.navQueueMark': '⇥#{n}',
+  'unit.navCd': '本步冷却 {n}t',
+  /* ★ 被选单位在移动中“消失”（阵亡/被移出场景）⇒ 收起详情并给一次短提示（不报错） */
+  'starfield.follow.lost': '所选单位已不在星域中',
   'battle.detail.empty': '点击场景中的单位查看详情',
   'battle.detail.slots': '模块槽 {n}',
   'battle.detail.modules': '模块',

@@ -17,6 +17,14 @@ export default {
   picker: false,             // ★ 不进入编队可选列表（与 data/modules.js 的 `picker:false` 同一体例：
                              //   本模板仅供召唤模块经 effects.summon.type 使用，不是玩家可建造单位）
   slots: 3,                  // 通用槽位（召唤携带模组数量可超出此限）
+  /* ★ **航行引擎冷却的基准时长**（星区间移动；【占位预填 · 待用户调校】）：口径见 `data/ships/combat.js`
+   *   的同一字段说明 —— `cd = max(1, round(navCdTicks ÷ 航行系数 × (1 + 时间系数)))`，不影响任何战斗数值。
+   *   （召唤单位默认 Lv1 ⇒ 不写 `levels[]`；召唤单位不归玩家指挥，本字段对其无实际作用。） */
+  navCdTicks: 200,           // 【占位预填】Lv1 航行引擎冷却基准（tick）
+  /* ★ **引擎充能每 tick 的能量代价**（星区间移动；【占位预填 · 待用户调校】）：口径见
+   *   `data/ships/combat.js` 的同一字段说明 —— 充能中每 tick 扣本值、扣得起才推进冷却，充满后零耗能。
+   *   （召唤单位默认 Lv1、且**不归玩家指挥** ⇒ 引擎对其**不充能、不扣能**；本字段仅为体例完整。） */
+  navEnergyPerTick: 1,       // 【占位预填】Lv1 充能能耗 / tick
   base: {
     hp: 50,                  // 血量上限（通用占位；召唤模块可用 attrs 覆写）
     shieldCap: 0,            // 基础护盾上限（占位）
@@ -32,6 +40,7 @@ export default {
     transport: 1,
     mining: 1,
     drone: 1,
+    nav: 1,                  // ★ 航行系数（与上面的类别系数**同族同链**；只影响跨星区移动冷却）
   },
   maxLevel: 1, // 召唤单位按 Lv1 生成（如需成长见上方说明）
 };

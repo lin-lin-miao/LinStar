@@ -55,6 +55,7 @@ import cargoHold from './modules/transport/cargoHold.js';
 import loadingBeam from './modules/transport/loadingBeam.js';
 import cargoTransfer from './modules/transport/cargoTransfer.js';
 import cargoRepair from './modules/transport/cargoRepair.js';
+import navThruster from './modules/transport/navThruster.js';
 // 采矿模块
 import slagMissileLauncher from './modules/mining/slagMissileLauncher.js';
 import oreTransfer from './modules/mining/oreTransfer.js';
@@ -110,6 +111,7 @@ export const MODULES = {
   loadingBeam,      // 运输 · 装载光束（主动·无目标：把星区货物装进本舰货舱；标签 cargo_loader + 词条 cargo_load）
   cargoTransfer,    // 运输 · 货物传输（主动·单体友方：把**整件已入舱货物**原样搬运给目标；标签 cargo_transfer）
   cargoRepair,      // 运输 · 货物维修（主动·单体友方含自身：消耗**整件已入舱货物**换回血 hp_per_ton；标签 cargo_repair）
+  navThruster,      // 运输 · 航行推进器（常驻增幅器：自身**航行系数** nav_coeff_add ⇒ 星区间移动的航行引擎冷却；无冷却/耗能/持续）
   slagMissileLauncher,  // 采矿 · 矿渣导弹发生器（召唤矿渣导弹：**只耗自身携带矿物 ore_cost**、不耗能；参数与欧米茄一致）
   oreTransfer,      // 采矿 · 矿物输送（主动·单体友方：把自身携带矿物 **1:1** 输送给目标 ore_target，不乘任何系数）
   oreHold,          // 采矿 · 矿舱（C34 语义「采矿载货强化」常驻增幅器：自身矿物容量 ore_cap_bonus）

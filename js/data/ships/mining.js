@@ -7,6 +7,14 @@ export default {
   nameKey: 'ship.mining',   // 名称词条 key（i18n -> 采矿船 / Mining Ship）
   role: 'logistics',        // ★ 单位定位：采矿船默认＝后勤单位（编队条目的 `role` 可覆盖；本条目可逐级覆写）
   slots: 3,                 // Lv1 可装模块数
+  /* ★ **航行引擎冷却的基准时长**（星区间移动；【占位预填 · 待用户调校】）：口径见 `data/ships/combat.js`
+   *   的同一字段说明 —— `cd = max(1, round(navCdTicks ÷ 航行系数 × (1 + 时间系数)))`，不影响任何战斗数值；
+   *   本条目**可逐级覆写**。 */
+  navCdTicks: 200,          // 【占位预填】Lv1 航行引擎冷却基准（tick）
+  /* ★ **引擎充能每 tick 的能量代价**（星区间移动；【占位预填 · 待用户调校】）：口径见
+   *   `data/ships/combat.js` 的同一字段说明 —— 充能中每 tick 扣本值、扣得起才推进冷却，充满后零耗能；
+   *   本条目**可逐级覆写**。 */
+  navEnergyPerTick: 1,      // 【占位预填】Lv1 充能能耗 / tick
   base: {
     hp: 120,                // 血量上限
     shieldCap: 50,          // 基础护盾上限
@@ -21,6 +29,7 @@ export default {
     function: 1,            // 功能类模块效果系数
     transport: 0.5,         // 运输类模块效果系数（★ 货物容量用本系数缩放模块部分）
     mining: 1,              // 采矿类模块效果系数（★ 矿物容量 = 本体 + Σ(模块 ore_cap_bonus × 本系数)）
+    nav: 1,                 // ★ 航行系数（与上面的类别系数**同族同链**；只影响跨星区移动冷却）
   },
   maxLevel: 16,
   levels: [

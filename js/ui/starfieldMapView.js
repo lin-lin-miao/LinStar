@@ -25,6 +25,28 @@
  *   **上一帧缓存字符串**逐字段比较 ⇒ **只在变化时写 DOM**（体例同既有货物芯片/单位卡的“变化才更新”）。
  *
  * ★ C-2 挂载点：见 `buildSidebar()` 里的 **`.starfield-sidebar-stage`**（已预留容器 + 注释）。
+ *
+ * ★★ 阶段 2：**拖拽下达「星区间移动」** ★★
+ *   · **拖源**＝侧栏单位卡（由 `battleView` 渲染；卡片 `draggable` 判据＝容器只读 `unitNav().canCommand`）；
+ *   · **落点**＝地图格子（`.sf-cell`，**非空位**）；拖动中该格加 `.sf-cell.drop-target`（**仅描边**，
+ *     复用既有视觉、不新增配色）；
+ *   · **放开** ⇒ 调**唯一写入口** `starfield.moveUnitTo(unitId, targetIndex)`（**UI 绝不自算**可达性/冷却）；
+ *     · **失败**（`dead/owner/far/invalid/finished`）⇒ 顶栏**短提示**（`starfield.move.failed.*` 按 reason
+ *       映射），**不改队列、不改任何字段**；
+ *     · ★ **拖到该单位“自身所在星区” ⇒ 取消移动**（引擎成功返回 `{cancelled:true}`，**不是失败**）⇒
+ *       短提示「已取消移动」并立即清掉卡片 `⇥#n` 与地图路径描边；本来就没有指令 ⇒ 静默无操作；
+ *   · **无新配色**：提示用既有 `--warn`，高亮用既有 `--accent`；
+ *   · **零回归**：既有点击选中 / 平移 / 缩放 / 侧栏宽度逻辑**一字未改**（拖拽只用 `drag*` 事件，
+ *     与既有 `pointer*` 平移/点击链路互不干扰）。
+ *
+ * ★★ 阶段 2 增补②：**侧栏跟随被选单位** ＋ **地图描出其余路径** ★★
+ *   · 选中态来源＝侧栏「单位详情」的选中（`battleView` 经 `navHook.onSelect` 回报；**UI 不另建选中态**）；
+ *   · **跟随**：被选单位跨区移动 ⇒ 侧栏场景自动切到它所在的新星区（`mountSectorScene(newBattle)`）并
+ *     **保持详情展开**（同一渲染链 `battleView.selectSceneUnit`）；单位已不存在 ⇒ 收起详情 + 一次短提示；
+ *   · **描边**：有移动指令 ⇒ 逐格描出**剩余路径**（数据＝容器只读 `unitNav().navPath`，引擎算好、UI 只渲染）；
+ *     无指令 ⇒ 只描其**当前所在格**；随移动逐格消减、随新指令重算；
+ *   · 类名 `.sf-cell.nav-here` / `.sf-cell.nav-path`（**只用既有 `--accent`**），与 `.selected` / `.drop-target`
+ *     三者互不覆盖；描边集合每帧**先清后画**（幂等，不重建 DOM）。
  */
 import { el } from '../core/utils.js';
 import { bus } from '../core/eventBus.js';
@@ -34,7 +56,7 @@ import { getSectorType } from '../data/sectorTypes/index.js';
 import { router } from './router.js';
 import { ensureStarfield, getStarfield } from './starfieldSession.js';
 import { unitIcon } from './unitIcon.js'; // ★ 单位图标**唯一口径**（与战斗屏共用；见 `ui/unitIcon.js`）
-import { mountSectorScene } from './battleView.js'; // ★ C-2：复用**同一套**战斗场景渲染/交互链（无第二套实现）
+import { mountSectorScene, selectSceneUnit } from './battleView.js'; // ★ C-2：复用**同一套**战斗场景渲染/交互链（无第二套实现）
 
 /* ---------- 交互常量（纯表现层参数，非游戏数值） ---------- */
 const ZOOM_MIN = 0.5;
@@ -44,6 +66,8 @@ const DRAG_THRESHOLD = 4; // 位移小于该像素数 ⇒ 视为“点击选中�
 // ★ 原 `PAN_PAD`（平移夹取容差 40px）已随「取消平移夹取」一并删除（用户口径：拖拽范围不限制）
 /* ★ **格内单位预览的图标上限与省略规则**（用户口径要求：写进注释并回报）：
  *  · 只统计**存活**单位（`u.alive`）；死亡/已移除者**不显示预览**；
+ *  · ★ **任何缩放层级都显示本图标行**（用户口径：“地图中始终显示单位图标”）—— 不再有“仅 mid/near
+ *    才显示”的层级限制；层级只影响进度条（`.sf-bars` 仅 near 显示，见 `css/screens.css`）；
  *  · 最多显示 **`CELL_ICON_MAX = 4`** 个图标；**第 5 个起不再画图标**，改为在其后追一枚 **`+n` 小芯片**
  *    （`n` ＝ 存活数 − 4）⇒ 一行最多 5 个元素；该行 `flex-wrap:nowrap` + `overflow:hidden`
  *    ⇒ **绝不换行、绝不挤破格子**（超出部分被裁掉，但信息由 `+n` 与悬停 title 兜住）；
@@ -88,6 +112,20 @@ let sbTitleEl = null; // 侧栏标题（显示星区名，与战斗屏星区栏�
 let sbStageEl = null; // ★ C-2：战斗场景挂载容器（`.starfield-sidebar-stage`）
 let sceneHost = null; // ★ C-2：当前侧栏场景宿主（`battleView.mountSectorScene` 返回值；只刷新当前星区）
 let gridCols = 1; // 网格列数（建图时记录；用于推导「单列星区」的实际宽度 ⇒ 侧栏最大宽度）
+/* ★★ 阶段 2：拖拽下达「星区间移动」的**视图内状态**（与容器/引擎无关，纯 UI 中间态）：
+ *   · `navDragUnitId` ＝ 正在拖拽的单位 id（由单位卡的 `dragstart` 经 `navHook.beginDrag` 登记）；
+ *   · `dropCell`       ＝ 当前高亮的目标格（`.sf-cell.drop-target`；同一时刻至多一个）；
+ *   · `moveMsgEl/Timer`＝ 顶栏短提示（非法下达专用；自动消隐）；
+ *   · `navSelId`       ＝ 侧栏**当前选中（详情已展开）的单位 id**：用于①侧栏跟随其移动 ②地图描边其路径；
+ *   · `navFocusCells`  ＝ 地图上**当前被描边**的格子（`.nav-here`/`.nav-path`）——每帧先清后画（幂等）；
+ *   · `sceneSwitching` ＝ 正在切换侧栏场景（切换过程中的内部“清空选中”通知**不代表用户收起详情**）。 */
+let navDragUnitId = null;
+let dropCell = null;
+let moveMsgEl = null;
+let moveMsgTimer = 0;
+let navSelId = null;
+let sceneSwitching = false;
+const navFocusCells = [];
 let selectedIndex = null;
 let scale = 1;
 let tx = 0;
@@ -197,11 +235,14 @@ function buildTopbar() {
   metaEl = el('div', { class: 'sf-meta' });
   remainEl = el('div', { class: 'sf-remain' });
   statusEl = el('div', { class: 'sf-status' });
+  // ★ 阶段 2：拖拽下达的**短提示**（非法/失败专用；无内容时整块隐藏 ⇒ 既有呈现零变化）
+  moveMsgEl = el('div', { class: 'sf-move-msg hidden' });
   zoomEl = el('div', { class: 'sf-zoom-label', text: '100%' });
   const bar = el('div', { class: 'sf-topbar' }, [
     back,
     el('div', { class: 'sf-title', text: i18n.t('starfield.map.title') }),
     el('div', { class: 'sf-top-meta' }, [metaEl, remainEl, statusEl]),
+    moveMsgEl,
     el('div', { class: 'sf-zoom' }, [
       el('button', { class: 'btn tiny', text: '−', title: i18n.t('starfield.map.zoom.out'), onclick: () => zoomBy(1 / ZOOM_STEP) }),
       zoomEl,
@@ -253,8 +294,9 @@ function buildGrid(sf) {
           cell.classList.add('has-tex');
           cell.append(tex);
         }
-        // ★ 格内预览（本轮改版）：**上＝存活单位图标行**（缩放层级 1）、**下＝矿物/货物进度条**（层级 2）；
-        //   **不再显示文字摘要**（文字信息保留在悬停 title 与右侧侧栏里）。
+        // ★ 格内预览（本轮改版）：**上＝存活单位图标行**（★ **任何缩放层级都显示**，用户口径）、
+        //   **下＝矿物/货物进度条**（**仅 near 显示**，far/mid 由 CSS 隐藏）；**不再显示文字摘要**
+        //   （文字信息保留在悬停 title 与右侧侧栏里）。层级规则只按行类名（`.sf-units`/`.sf-bars`）由 CSS 控制。
         const units = el('div', { class: 'sf-detail sf-detail-1 sf-units' });
         // 两条条各自独立（**当前值为 0 ⇒ 该条隐藏**；两条都隐藏 ⇒ 整块隐藏）：
         //   ★ **取色改用分类主题色（用户口径）**：矿物条＝`--cat-mining`（采矿紫）、货物条＝`--cat-transport`（运输亮黄）；
@@ -407,9 +449,67 @@ function refreshCells(sf) {
 function refresh() {
   const sf = getStarfield();
   if (!mounted || !sf || !gridEl) return;
+  // ★ 阶段 2：**侧栏跟随被选单位**（在刷格子之前先决定“当前该显示哪个星区”，保证同帧一致）
+  followSelectedUnit(sf);
   refreshTopbar(sf);
   refreshCells(sf);
+  paintNavFocus(); // ★ 阶段 2：选中单位的高亮格 + 剩余路径浅色描边（只改类名，不重建 DOM）
   if (sceneHost) sceneHost.refresh(); // ★ C-2：**只刷新当前选中星区**的侧栏战斗场景
+}
+
+/* ---------- ★★ 阶段 2：被选单位的「跟随」与「路径描边」 ---------- */
+
+/** 侧栏跟随：被选单位**跨区移动** ⇒ 侧栏场景自动切到它所在的新星区，并**保持详情展开**；
+ *  · 单位已不存在（阵亡/被移出场景）⇒ 收起详情 + 收起侧栏 + **一次短提示**（不报错）；
+ *  · 只读口径：单位位置一律取容器 `unitNav().sectorIndex`，UI 不自算。
+ *  ★ 幂等：`selectedIndex` 已是目标区 ⇒ 什么都不做（不打断用户在别处的浏览以外的任何交互）。 */
+function followSelectedUnit(sf) {
+  if (navSelId == null) return;
+  const n = sf.unitNav(navSelId);
+  if (!n) {
+    const lost = navSelId;
+    navSelId = null;
+    selectSector(null); // 收起侧栏（内部会卸载场景 ⇒ 选中态随之清空）
+    if (lost) showMoveMsg(i18n.t('starfield.follow.lost'));
+    return;
+  }
+  if (n.sectorIndex !== selectedIndex) {
+    // ★ 切换期间：新场景的“内部清空选中”通知不得清掉跟随目标（见 `onSelect` 的守卫）
+    const want = navSelId;
+    sceneSwitching = true;
+    try {
+      selectSector(n.sectorIndex); // 挂载新星区场景（内部 `mountSceneFor` + `refresh`）
+      // ★ 详情保持展开：在新场景里按同一单位 id 重新打开（同一渲染链，`battleView.selectSceneUnit`）
+      if (sceneHost) selectSceneUnit(want);
+    } finally {
+      sceneSwitching = false;
+    }
+    navSelId = want; // 兜底：无论如何都保持跟随目标（除非上一步判定为“已不存在”）
+  }
+}
+
+/** 被选单位在地图上的**浅色描边**：有移动指令 ⇒ 画**剩余路径**（逐格）；无指令 ⇒ 只高亮其所在格。
+ *  · 路径来自容器只读口径 `unitNav().navPath`（**引擎算好、UI 只渲染**）；
+ *  · 只切换类名（`.sf-cell.nav-path` / `.sf-cell.nav-here`，均用既有 `--accent`，**不新增配色值**）；
+ *  · 与「拖拽落点高亮 `.drop-target`」「星区选中 `.selected`」互不干扰（三个独立类名）。 */
+function paintNavFocus() {
+  for (const ref of navFocusCells) ref.classList.remove('nav-path', 'nav-here');
+  navFocusCells.length = 0;
+  const sf = getStarfield();
+  if (!sf || navSelId == null) return;
+  const n = sf.unitNav(navSelId);
+  if (!n) return;
+  const here = cellRefs.get(n.sectorIndex);
+  if (here) {
+    here.cell.classList.add('nav-here');
+    navFocusCells.push(here.cell);
+  }
+  for (const idx of n.navPath || []) {
+    const ref = cellRefs.get(idx);
+    if (!ref) continue;
+    ref.cell.classList.add('nav-path');
+    navFocusCells.push(ref.cell);
+  }
 }
 
 /* ---------- 缩放 / 平移 / 选中 ---------- */
@@ -447,6 +547,25 @@ function mountSceneFor(index) {
     ? mountSectorScene(sbStageEl, b, {
         zoneName: s ? zoneNameOf(s) : '',
         fleetPolicy: sf ? { get: () => sf.fleetPolicy, set: (kind) => sf.setFleetPolicy(kind) } : null,
+        // ★ 阶段 2：星区间移动的**只读适配器**（单位卡的竖条/详情数值/可拖拽性全走它；写仍走唯一入口）
+        nav: {
+          of: (unitId) => {
+            const cur = getStarfield();
+            return cur ? cur.unitNav(unitId) : null;
+          },
+          beginDrag: (unitId) => {
+            navDragUnitId = unitId;
+          },
+          endDrag: () => endNavDrag(),
+          // ★ 侧栏「单位详情」的选中态回报（侧栏跟随移动单位 + 地图路径描边都基于它；`null` ＝ 收起详情）
+          onSelect: (unitId) => {
+            // ★ 场景切换过程中的内部清空（新场景 `selectedId = null`）**不代表用户收起详情** ⇒ 忽略，
+            //   否则“跟随切换星区”会把详情自己关掉（切换后由 `selectSceneUnit()` 立即重新打开）
+            if (unitId == null && sceneSwitching) return;
+            navSelId = unitId == null ? null : unitId;
+            paintNavFocus(); // 立即重画高亮（不等下一次 refresh）
+          },
+        },
       })
     : null;
   sbStageEl.classList.toggle('hidden', !sceneHost); // 无实例 ⇒ 隐藏舞台（避免空框）
@@ -650,6 +769,89 @@ function onGridClick(e) {
   selectSector(selectedIndex === idx ? null : idx); // ★ 再点同一格 ⇒ 收起
 }
 
+/* ---------- ★★ 阶段 2：拖拽下达「星区间移动」（拖源＝侧栏单位卡；落点＝地图格子） ---------- */
+
+/** 设置/清除落点高亮（同一时刻至多一格；`.sf-cell.drop-target` **仅描边**，见 `css/screens.css`） */
+function setDropCell(cell) {
+  if (dropCell === cell) return;
+  if (dropCell) dropCell.classList.remove('drop-target');
+  dropCell = cell || null;
+  if (dropCell) dropCell.classList.add('drop-target');
+}
+
+/** 结束一次拖拽（清登记 + 清高亮；**幂等**） */
+function endNavDrag() {
+  navDragUnitId = null;
+  setDropCell(null);
+}
+
+/** 失败原因文案：`reason` 与引擎 `moveUnitTo` 词表**一一对应**（缺词条 ⇒ 原样回显，不造词） */
+function moveReasonText(reason) {
+  const key = `starfield.move.${reason || 'none'}`;
+  const t = i18n.t(key);
+  return t && !t.startsWith('??') ? t : String(reason || '');
+}
+
+/** 顶栏**短提示**（非法下达专用；自动消隐 ⇒ 不常驻、不遮挡） */
+function showMoveMsg(text) {
+  if (!moveMsgEl) return;
+  moveMsgEl.textContent = text;
+  moveMsgEl.classList.remove('hidden');
+  if (moveMsgTimer) clearTimeout(moveMsgTimer);
+  moveMsgTimer = setTimeout(() => {
+    moveMsgTimer = 0;
+    if (moveMsgEl) moveMsgEl.classList.add('hidden');
+  }, 2600);
+}
+
+/** `dragover`（网格级事件委托，**只对“单位卡拖拽”生效**）：
+ *  · 非空位格 ⇒ `preventDefault()` 允许落下 + 高亮该格；空位/网格外 ⇒ 清除高亮（不拦截、不改变既有行为）。 */
+function onGridDragOver(e) {
+  if (!navDragUnitId) return; // 非本功能的拖拽（如文件拖入）⇒ 一律不管
+  const cell = e.target instanceof Element ? e.target.closest('.sf-cell') : null;
+  if (!cell || cell.classList.contains('sf-void')) {
+    setDropCell(null);
+    return;
+  }
+  e.preventDefault(); // HTML5 DnD：不 preventDefault 则不允许 drop
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  setDropCell(cell);
+}
+
+function onGridDragLeave(e) {
+  if (!navDragUnitId) return;
+  // 指针离开**整张网格**（而非在格子之间移动）时才清高亮
+  const to = e.relatedTarget;
+  if (!(to instanceof Node) || !gridEl || !gridEl.contains(to)) setDropCell(null);
+}
+
+function onGridDrop(e) {
+  if (!navDragUnitId) return;
+  e.preventDefault();
+  const cell = e.target instanceof Element ? e.target.closest('.sf-cell') : null;
+  const unitId = navDragUnitId;
+  endNavDrag(); // 先收尾（无论成败都清高亮）
+  if (!cell || cell.classList.contains('sf-void')) return;
+  const idx = Number(cell.dataset.index);
+  if (!Number.isFinite(idx)) return;
+  const sf = getStarfield();
+  if (!sf) return;
+  // ★ **唯一写入口**：UI 只调用、不自算（可达性/冷却/能量判据全在引擎）
+  const res = sf.moveUnitTo(unitId, idx);
+  if (!res || !res.ok) {
+    showMoveMsg(i18n.t('starfield.move.failed', { reason: moveReasonText(res && res.reason) }));
+    return; // 非法 ⇒ 不改队列、不改任何字段（引擎侧本就无副作用）
+  }
+  // ★ **拖到“自身所在星区” ＝ 取消移动**（引擎成功返回 `cancelled`；**不是失败**）：
+  //   仅当本次**确实清掉了一条指令**（`cleared === true`）才提示；本来就没有指令 ⇒ 静默无操作。
+  if (res.cancelled) {
+    if (res.cleared) showMoveMsg(i18n.t('starfield.move.cancelled'));
+    refresh(); // 取消后立即清掉卡片上的 `⇥#n` 与地图路径描边
+    return;
+  }
+  refresh(); // 立即反映“排队标记 / 已冻结冷却”，不等下一 tick
+}
+
 /* ---------- tick 驱动（打开期间推进星域；离开路由即停） ---------- */
 
 function onTick() {
@@ -676,6 +878,17 @@ function bindGlobalListeners() {
       mounted = false;
       dragState = null;
       splitterDrag = null; // 调宽拖拽同样清空（宽度值本身保留在 `sidebarW` ⇒ 会话内记忆）
+      // ★ 阶段 2：清拖拽中间态 + 提示定时器 + 跟随目标/描边（DOM 即将被 router 换掉 ⇒ 引用一并置空）
+      navDragUnitId = null;
+      dropCell = null;
+      navSelId = null;
+      navFocusCells.length = 0;
+      sceneSwitching = false;
+      if (moveMsgTimer) {
+        clearTimeout(moveMsgTimer);
+        moveMsgTimer = 0;
+      }
+      moveMsgEl = null;
       // ★ C-2：离开地图 ⇒ **卸载侧栏场景**（还原 battleView 的场景引用；**不停星区实例**）
       mountSceneFor(null);
       sbStageEl = null;
@@ -689,6 +902,13 @@ function bindGlobalListeners() {
 function root() {
   bindGlobalListeners();
   mountSceneFor(null); // ★ C-2 防御：重绘前先卸载旧侧栏场景（严格还原 battleView 的场景引用）
+  // ★ 阶段 2：重绘 ⇒ 拖拽中间态、提示定时器、描边引用一并归零（DOM 全量重建，旧引用不再有效）
+  endNavDrag();
+  navFocusCells.length = 0; // ★ 描边引用指向旧 DOM ⇒ 必须清空（`cellRefs` 会随建图重建）
+  if (moveMsgTimer) {
+    clearTimeout(moveMsgTimer);
+    moveMsgTimer = 0;
+  }
   const sf = ensureStarfield(); // 兜底：尚无星域实例时用「默认配置 h1 + 随机种子」建一个（见 starfieldSession.js）
   const body = el('div', { class: 'sf-body' });
   viewportEl = el('div', { class: 'sf-viewport' }, [buildGrid(sf)]);
@@ -702,7 +922,9 @@ function root() {
   const section = el('section', { class: 'screen screen-starfield' }, [
     buildTopbar(),
     body,
-    el('p', { class: 'sf-hint', text: i18n.t('starfield.map.hint') }),
+    // ★ 地图下方的操作说明**已按用户口径整段移除**（原 `starfield.map.hint` 与阶段 2 追加的
+    //   `starfield.move.hint` 两行 `.sf-hint` 段落、其 CSS 规则与两条 i18n 键一并清理；
+    //   顶栏（难度/种子/倒计时/状态）与缩放按钮等其它元素**一字未动**）。
   ]);
 
   // 事件绑定（每次重绘重新绑；DOM 一并重建 ⇒ 无残留监听）
@@ -712,6 +934,10 @@ function root() {
   viewportEl.addEventListener('pointerup', onPointerUp);
   viewportEl.addEventListener('pointerleave', onPointerUp);
   gridEl.addEventListener('click', onGridClick);
+  // ★ 阶段 2：拖拽下达（只用 `drag*` 事件族 ⇒ 与既有 `pointer*` 平移/点击链路**互不干扰**）
+  gridEl.addEventListener('dragover', onGridDragOver);
+  gridEl.addEventListener('dragleave', onGridDragLeave);
+  gridEl.addEventListener('drop', onGridDrop);
   splitter.addEventListener('pointerdown', onSplitterDown);
   splitter.addEventListener('pointermove', onSplitterMove);
   splitter.addEventListener('pointerup', onSplitterUp);

@@ -11,6 +11,20 @@
  * ★ 唯一的「进入战斗」入口＝本文件导出的 `enterBattle(formation)`（内部走 `systems/battle.js startBattle`）：
  *   演练界面「开战」、结算「再战」、将来的关卡/剧情入口**都必须走它**，不留第二条开战路径。
  * 调试：window.__battle 暴露当前战斗对象
+ *
+ * ★★ 阶段 2（单位「星区间移动」的 UI）：单位卡新增「航行引擎」**竖直冷却条**（位于单位图标右侧；
+ *   绿 `--ok`；**能量不足 ⇒ `--warn`**）＋「排队 `⇥#n` / 能量不足」一行；详情面板＝**同款竖条**（同样紧靠
+ *   图标右侧）＋ 一行数值（**仅在移动中/冷却中/能量不足时出现**，默认不显示）。
+ *   · **满格（就绪）⇒ 隐藏但保留占位**（`.nav-cool.done` 用 `visibility`）⇒ 不引起布局跳动；
+ *   · **航行系数归位**：它已是单位 `coefficients.nav` ⇒ 详情「单位系数」区**自动成行**
+ *     （`Object.keys(ship.coefficients)`，无任何 UI 特判），不再单独出现在航行块里；
+ *   · 取值**只读**星域容器口径 `unitNav()`（经 `mountSectorScene(opts.nav)` 注入的 `navHook`；
+ *     **UI 不自算任何判据**）——**无星域容器（既有单星区玩法 `LS.drill()` / 战斗屏）⇒ 竖条恒满格
+ *     （即隐藏但占位）且不可拖拽** ⇒ 既有呈现零变化；★ 星域侧栏与战斗屏**共用本渲染链**，
+ *     故两处都会出现该条（**属预期**）。
+ *   **拖源**＝单位卡（`draggable` 判据＝只读 `unitNav().canCommand`）；**落点高亮 / 落下 / 失败提示 /
+ *   选中单位的路径描边**都在 `ui/starfieldMapView.js`（拖拽只用 `drag*` 事件族 ⇒ 不影响既有点击选中 /
+ *   平移 / 缩放 / 侧栏宽度）；选中态经 `navHook.onSelect` 回报给地图视图（侧栏跟随被选单位）。
  */
 import { el, formatBonusPercent, formatBonusDeltaPercent } from '../core/utils.js';
 import { bus } from '../core/eventBus.js';
@@ -368,6 +382,38 @@ function buildModuleChips(ship) {
   return chips;
 }
 
+/** ★★ **航行引擎竖条**（阶段 2+；单位卡与详情面板**共用同一构造器**）——
+ *  · 形态：**竖直**（填充自下而上），**位于单位图标右侧**（卡片与详情**同一位置语义**）；
+ *  · 颜色：**绿色 `var(--ok)`**（既有变量）；**能量不足 ⇒ `var(--warn)`**（既有变量，同一元素换色，
+ *    不新增配色值）；
+ *  · 高度＝**进度**＝`1 − navRemainTicks / navCdTicks`（两个数都是容器只读口径；分母为 0 ⇒ 满格＝就绪）；
+ *  · ★ **满格（就绪）⇒ 隐藏但保留占位**：加 `.done`（`visibility:hidden`）⇒ 视觉上“满了就不显示”，
+ *    但**不改变布局**（不引起图标/文字的位移跳动）；
+ *  · 只改「高度/类名/title」，**不重建 DOM**（既有体例，与 `bar()`/`miniPool` 同一刷新方式）。 */
+function navBarEl() {
+  const fill = el('span', { class: 'nav-cool-fill' });
+  const track = el('span', { class: 'nav-cool-track' }, [fill]);
+  const rootEl = el('span', { class: 'nav-cool' }, [track]);
+  /** @param {object|null} n 容器只读快照（`unitNav()`；null ⇒ 无星域容器 ⇒ 就绪/满格） */
+  function update(n) {
+    const stalled = !!(n && n.navStalled);
+    const cd = n ? Math.max(0, n.navCdTicks || 0) : 0;
+    const remain = n ? Math.max(0, n.navRemainTicks || 0) : 0;
+    const pct = cd > 0 ? Math.max(0, Math.min(100, (1 - remain / cd) * 100)) : 100;
+    fill.style.height = `${pct.toFixed(1)}%`;
+    rootEl.classList.toggle('stalled', stalled);
+    // ★ 满格且未停滞 ⇒ `.done`（隐藏但占位）；停滞时**必须可见**（要显示“能量不足”的变色）
+    rootEl.classList.toggle('done', !stalled && remain <= 0);
+    const val = stalled
+      ? i18n.t('unit.navStalled')
+      : remain > 0
+        ? i18n.t('unit.navRemain', { s: formatTickSeconds(remain) })
+        : i18n.t('unit.navReady');
+    rootEl.title = `${i18n.t('unit.nav')}：${val}`;
+  }
+  return { el: rootEl, update };
+}
+
 /** 单位实体卡：图标 → 状态条 → 模块图标（+ 下一步提示） */
 function buildShipCard(ship) {
   const tagKey = ship.side === 'ally' ? 'battle.side.ally' : 'battle.side.enemy';
@@ -384,15 +430,41 @@ function buildShipCard(ship) {
   const focusEl = el('div', { class: 'unit-focus', text: '' }); // 主要目标
   const nameTag = el('div', { class: 'unit-name', text: `${baseName(ship)} · ${i18n.t(tagKey)}` });
   const lifeEl = el('div', { class: 'unit-timer', text: '' }); // 临时单位存活剩余（非临时隐藏）
+  // ★★ 阶段 2：航行引擎竖条（图标右侧）＋ 「排队目标 / 能量不足」一行（无内容时整行隐藏）。
+  //    无星域容器（单星区玩法）⇒ 竖条恒按“就绪＝满格”呈现、该行恒隐藏 ⇒ 既有呈现零变化。
+  const navBar = navBarEl();
+  const navQueueEl = el('span', { class: 'unit-nav-queue', text: '' });
+  const navNoteEl = el('span', { class: 'unit-nav-note', text: '' });
+  const navRowEl = el('div', { class: 'unit-nav-row hidden' }, [navQueueEl, navNoteEl]);
 
   const cardEl = el('div', { class: `unit-card ${ship.side}`, onclick: () => selectUnit(ship.id) }, [
-    el('div', { class: 'unit-icon-zone' }, [unitIcon(ship), nameTag]),
+    el('div', { class: 'unit-icon-zone' }, [
+      el('div', { class: 'unit-icon-row' }, [unitIcon(ship), navBar.el]),
+      nameTag,
+    ]),
     el('div', { class: 'unit-bars' }, [hpBar.el, shieldBar.el, energyBar.el, cargoBar.el, oreBar.el]),
     lifeEl,
     el('div', { class: 'unit-modules' }, chips.map((c) => c.el)),
+    navRowEl,
     intentEl,
     focusEl,
   ]);
+  // ★ **拖拽下达移动**（仅星域模式且该单位此刻可被指挥）：拖开始/结束只登记到地图视图（`navHook`）。
+  cardEl.addEventListener('dragstart', (e) => {
+    const n = navHook ? navHook.of(ship.id) : null;
+    if (!n || !n.canCommand) {
+      e.preventDefault(); // 不可指挥 ⇒ 不发起拖拽（与引擎 'owner'/'dead' 同源判据）
+      return;
+    }
+    if (e.dataTransfer) {
+      e.dataTransfer.setData('text/plain', ship.id);
+      e.dataTransfer.effectAllowed = 'move';
+    }
+    if (navHook) navHook.beginDrag(ship.id);
+  });
+  cardEl.addEventListener('dragend', () => {
+    if (navHook) navHook.endDrag();
+  });
 
   function refreshChips(s) {
     for (const c of chips) {
@@ -510,6 +582,26 @@ function buildShipCard(ship) {
       lifeEl.style.display = 'none';
     }
     refreshChips(s);
+    // ★★ 阶段 2：航行引擎（只读容器 `unitNav()`；无星域容器 ⇒ `n === null` ⇒ 竖条满格、行隐藏、不可拖拽）
+    const nv = navHook ? navHook.of(s.id) : null;
+    navBar.update(nv);
+    const queued = !!(nv && nv.moveQueueTargetIndex != null);
+    cardEl.classList.toggle('nav-queued', queued);
+    cardEl.classList.toggle('nav-stalled', !!(nv && nv.navStalled));
+    const canDrag = !!(nv && nv.canCommand) && s.alive;
+    if (cardEl.draggable !== canDrag) cardEl.draggable = canDrag;
+    cardEl.classList.toggle('nav-draggable', canDrag);
+    if (queued) {
+      navQueueEl.textContent = i18n.t('unit.navQueueMark', { n: nv.moveQueueTargetIndex + 1 });
+      navQueueEl.title = i18n.t('unit.navQueued', { n: nv.moveQueueTargetIndex + 1 });
+    } else {
+      navQueueEl.textContent = '';
+      navQueueEl.title = '';
+    }
+    const showNote = !!(nv && nv.navStalled);
+    navNoteEl.textContent = showNote ? i18n.t('unit.navStalled') : '';
+    navNoteEl.title = showNote ? i18n.t('unit.nav') : '';
+    navRowEl.classList.toggle('hidden', !queued && !showNote);
     intentEl.textContent = s.alive
       ? i18n.t('battle.intent', { act: nextActionText(s) })
       : i18n.t('battle.act.dead');
@@ -1250,6 +1342,13 @@ function currentTargetOf(ship) {
   return battle && battle.shipEffectiveTarget ? battle.shipEffectiveTarget(ship) : null;
 }
 
+/** ★ 选中态变更的**对外通知**（阶段 2 侧栏跟随 / 地图路径描边用）：
+ *  星域地图视图经 `mountSectorScene(opts.nav.onSelect)` 注入 ⇒ 每次“打开/切换/收起详情”都回报一次
+ *  当前选中单位 id（无选中 ⇒ `null`）；**未注入 ⇒ 空操作**（单星区玩法/战斗屏行为一字未改）。 */
+function notifySelect() {
+  if (navHook && typeof navHook.onSelect === 'function') navHook.onSelect(selectedId);
+}
+
 function showEmptyDetail() {
   if (!detailEl) return;
   detailEl.classList.add('hidden');
@@ -1257,12 +1356,13 @@ function showEmptyDetail() {
     el('div', { class: 'detail-empty', text: i18n.t('battle.detail.empty') })
   );
   detail = null;
+  notifySelect();
 }
 
 function selectUnit(id) {
   if (selectedId === id) {
     selectedId = null;
-    showEmptyDetail();
+    showEmptyDetail(); // 内部已 `notifySelect()`
     updateCards?.();
     return;
   }
@@ -1270,6 +1370,24 @@ function selectUnit(id) {
   const ship = findUnit(id);
   if (ship) buildDetail(ship);
   updateCards?.();
+  notifySelect();
+}
+
+/** ★ **由外部（星域地图视图）指定当前选中单位**（侧栏跟随移动单位时用；**幂等**）：
+ *  · `id == null` ⇒ 收起详情；`id` 不存在于当前场景 ⇒ 等价于收起（不报错）。
+ *  · 只走既有 `selectUnit` 链路（详情面板/卡片高亮/通知全同源），**不新增第二套选中状态**。 */
+export function selectSceneUnit(id) {
+  if (!sideScene || sideScene.destroyed) return false;
+  if (id == null) {
+    selectedId = null;
+    showEmptyDetail();
+    updateCards?.();
+    return true;
+  }
+  if (!findUnit(id)) return false;
+  selectedId = null; // 先清，保证 `selectUnit(id)` 走“打开”分支（而不是被当成“再点一次 ⇒ 收起”）
+  selectUnit(id);
+  return true;
 }
 
 /** 每次激活的基础效果文本（词条驱动，按船类系数折算后的每次量）
@@ -1943,8 +2061,11 @@ function buildDetail(ship) {
   const type = SHIPS[ship.typeId];
   const modRows = moduleRows(ship);
 
+  // ★★ 阶段 2：航行引擎竖条（与**单位卡同一位置语义**：紧靠单位图标右侧）
+  const dNav = navBarEl();
   const head = el('div', { class: 'detail-head' }, [
     unitIcon(ship),
+    dNav.el,
     el('div', { class: 'detail-head-text' }, [
       el('div', { class: 'detail-name', text: `${baseName(ship)} · ${i18n.t(tagKey)}` }),
       el('div', { class: 'detail-type', text: i18n.t('battle.detail.slots', { n: ship.slots ?? type.slots }) }),
@@ -1963,6 +2084,11 @@ function buildDetail(ship) {
   ]);
 
   const lifeNote = el('div', { class: 'detail-timer', text: '' }); // 临时单位存活剩余（非临时隐藏）
+  // ★★ 阶段 2：航行引擎的**文本行**（竖条已在右上与图标同行）——**默认不显示**：
+  //    仅在“已下达移动 / 冷却中 / 能量不足”时才出现（无星域容器 ⇒ 恒隐藏）。
+  //    ★ 航行系数**不在这里**：它已在「单位系数」区与其它系数同列（`coefficients.nav` 自动成行）。
+  const dNavText = el('div', { class: 'detail-nav-text', text: '' });
+  const navBlock = el('div', { class: 'detail-nav hidden' }, [dNavText]);
 
   // ★ 货舱容量条（货物 / 矿物）：与单位卡**同一套条形体例**（同一个 `bar()` 组件 + `.bar` 结构），
   //   名称/当前值/上限，颜色区分货物与矿物；取值＝引擎唯一口径 `cargoCapPartsOf`/`oreCapPartsOf`。
@@ -1989,7 +2115,7 @@ function buildDetail(ship) {
   const targetBar = el('div', { class: 'detail-target' });
   const targetHint = el('div', { class: 'detail-target-cur', text: '' });
 
-  const topRow = el('div', { class: 'detail-top' }, [head, statLine, cargoBlock, lifeNote]);
+  const topRow = el('div', { class: 'detail-top' }, [head, statLine, cargoBlock, lifeNote, navBlock]);
   const panelEl = el('div', { class: 'detail-inner' }, [
     topRow,
     coeffSec.titleEl,
@@ -2030,6 +2156,22 @@ function buildDetail(ship) {
       lifeNote.textContent = i18n.t('battle.lifeLeft', { n: Math.max(0, Math.ceil(ship.tempLeft / SEC_TICKS)) });
     } else {
       lifeNote.style.display = 'none';
+    }
+    // ★★ 阶段 2：航行引擎（图标右侧竖条 + 一行数值）—— 数值全部来自容器只读口径，UI 不自算判据；
+    //    文本行**仅在移动中/冷却中/能量不足时显示**（航行系数已归位到「单位系数」区）
+    const nv = navHook ? navHook.of(ship.id) : null;
+    dNav.update(nv);
+    const moving = !!(nv && (nv.moveQueueTargetIndex != null || nv.navRemainTicks > 0 || nv.navStalled));
+    navBlock.classList.toggle('hidden', !moving);
+    if (moving) {
+      const parts = [];
+      if (nv.navRemainTicks > 0) {
+        parts.push(i18n.t('unit.navRemain', { s: formatTickSeconds(nv.navRemainTicks) }));
+        if (nv.navCdTicks > 0) parts.push(i18n.t('unit.navCd', { n: nv.navCdTicks }));
+      }
+      if (nv.navStalled) parts.push(i18n.t('unit.navStalled'));
+      if (nv.moveQueueTargetIndex != null) parts.push(i18n.t('unit.navQueued', { n: nv.moveQueueTargetIndex + 1 }));
+      dNavText.textContent = parts.join(' · ');
     }
     for (const r of modRows) {
       if (r.statusEl) r.statusEl.textContent = modStatusText(ship, r.inst);
@@ -2548,6 +2690,13 @@ let sectorZoneNameOverride = null; // ★ C-2：侧栏场景注入的星区显�
  *     而写入仍由容器经**引擎既有唯一接口** `battle.setAllyPolicy` 下发 ⇒ 无第二套策略语义。
  *     单星区玩法（无星域容器）恒为 `null` ⇒ 走既有实例级口径，**零回归**。 */
 let fleetPolicyHook = null;
+/** ★★ **星区间移动的只读适配器**（阶段 2；`{ of(unitId), beginDrag(unitId), endDrag() }`；由**星域地图视图**
+ *  按容器只读口径提供）—— 单位卡的「航行引擎」竖条 / 详情面板数值 / 可拖拽性**全部只读它**：
+ *    · `of(unitId)` ＝ `starfield.unitNav(unitId)` 原样返回（引擎派生：系数/剩余/分母/暂停/排队/可否指挥）；
+ *    · `beginDrag/endDrag` ＝ 把「正在拖拽的单位 id」登记到**地图视图**（拖拽高亮与落下判定都在那边）。
+ *  ⚠ **无星域容器（既有单星区玩法 `LS.drill()` / 战斗屏）恒为 `null`** ⇒ 相关元素一律按“就绪 + 不可拖拽”
+ *    呈现（**不新增行为**、不读写引擎）⇒ 零回归。 */
+let navHook = null;
 
 /** 卸载当前侧栏场景（幂等；供 `leaveBattle()`/`exitToMenu()`/路由守卫与地图视图调用） */
 export function destroySectorScene() {
@@ -2582,6 +2731,7 @@ export function mountSectorScene(container, sectorBattle, opts) {
     overlay,
     sectorZoneNameOverride,
     fleetPolicyHook,
+    navHook,
   };
   // ② 换绑到侧栏场景
   battle = sectorBattle;
@@ -2602,6 +2752,8 @@ export function mountSectorScene(container, sectorBattle, opts) {
   sectorZoneNameOverride = opts && opts.zoneName ? String(opts.zoneName) : null;
   // ★ 星域级「全队主要目标」单一来源适配器（由星域容器提供；无 ⇒ null ⇒ 单星区玩法走既有实例级口径）
   fleetPolicyHook = opts && opts.fleetPolicy ? opts.fleetPolicy : null;
+  // ★ 星区间移动只读适配器（`{ of, beginDrag, endDrag }`；由星域地图视图提供；无 ⇒ null ⇒ 既有呈现）
+  navHook = opts && opts.nav ? opts.nav : null;
   barTints.clear();
   // ③ 复用既有渲染链建舞台（内部按 `battle.starfieldMode` 隐藏战报面板）
   renderRunning();
@@ -2645,6 +2797,7 @@ export function mountSectorScene(container, sectorBattle, opts) {
       overlay = snap.overlay;
       sectorZoneNameOverride = snap.sectorZoneNameOverride;
       fleetPolicyHook = snap.fleetPolicyHook;
+      navHook = snap.navHook;
       barTints.clear();
     },
   };

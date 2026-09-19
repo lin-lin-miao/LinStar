@@ -18,7 +18,7 @@ import { battleView } from './ui/battleView.js';
 import { createRng, hashSeed, randomSeed, rngSelfTest } from './core/rng.js';
 import * as starfieldData from './data/starfieldData.js';
 import { generateStarfield, previewStarfield, starfieldGenSelfCheck } from './data/starfield.js';
-import { createStarfield } from './systems/starfield.js';
+import { createStarfield, starfieldMoveSelfCheck } from './systems/starfield.js';
 import { battleSelfCheck } from './systems/battle.js';
 
 const AUTOSAVE_MS = 10_000; // 每 10 秒自动保存一次
@@ -151,6 +151,65 @@ function attachDebug() {
         return sf ? sf.stop() : { ok: false, reason: 'none' };
       },
       get current() { return getStarfield(); },
+      /** ★★ **单位「星区间移动」（阶段 1 引擎 + 阶段 2 UI）** —— 控制台口径（**唯一写入口** + 只读口径）：
+       *  · `LS.starfield.moveUnitTo(unitId, targetIndex)` ⇒ `{ ok, queued?, cancelled?, cleared?, reason? }`
+       *    （**只记账/排队，不直接搬迁**；搬迁只发生在每 tick 的跨星区阶段；**失败** `reason` ∈
+       *     `'none'|'dead'|'owner'|'far'|'invalid'|'finished'`）；
+       *    ★ **目标＝该单位当前所在星区 ⇒ 取消移动**（用户口径）：返回
+       *      `{ ok:true, cancelled:true, cleared, reason:'cancelled' }` —— 清掉其移动指令
+       *      （**本步立即取消、不再走**；冷却进度保留）；本来就没有指令 ⇒ `cleared:false`（幂等成功、不报错）；
+       *    ★ **可移动性与模块无关**：任何我方常规单位**默认可移动**（`navThruster` 只是加成）；
+       *    ★ **就绪即走**：单位就绪（`navRemainTicks === 0`）时下达 ⇒ **下一 tick 即完成迁移**
+       *      （**不需要先充能满**）；迁移落地后再按下方公式为**下一步**重新计时（**无论是否还有后续指令**，
+       *      充能照常进行）；冷却中下达 ⇒ 排队等待；
+       *  · `LS.starfield.unitNav(unitId)` ⇒ `{ unitId, side, sectorIndex, navCoeff, navReadyUntil,
+       *     navRemainTicks, moveQueueTargetIndex, navPath, navCdTicks, navEnergy, navEnergyPerTick,
+       *     navStalled, canCommand }`（**只读、UI 不自算**；未知单位 ⇒ null）；
+       *    ★ `navCoeff` ＝单位 `coefficients.nav`（与 attack/shield/mining **同族同链**，
+       *      读写显示全同构；模块词条 `nav_coeff_add` 自动并入同一张表）；
+       *    ★ 冷却公式：`cd = max(1, round(navCdTicks ÷ navCoeff × (1 + 时间系数)))`，
+       *      其中 `navCdTicks` ＝**船型配置**的冷却基准（`data/ships/<id>.js`，**默认 200t ＝ 10 秒**，
+       *      逐级可覆写）；
+       *    ★ ★ **始终充能（用户口径）**：**冷却推进与“有无移动指令”无关** —— 每 tick，
+       *      凡**可指挥且在充能中**（剩余 > 0）的单位都会尝试推进 1 tick，**推进即扣** `navEnergyPerTick`；
+       *      · ★ `navEnergyPerTick` ＝**单位配置值**（`data/ships/<id>.js` 顶层 `navEnergyPerTick`，
+       *        【占位预填 2/tick · 待用户调校】，**逐级可覆写**）—— 唯一读口径
+       *        `entities/ship.js navEnergyPerTickOf(ship)`（UI 只读快照字段，**不自算**）;
+       *      · 扣不起 ⇒ **不扣、该 tick 不推进**（到期 tick 顺延 1、剩余不变）且 `navStalled === true`
+       *        ⇒ UI 据此显示“暂停/变色”，**不得自行比较能量**；
+       *      · **充能完成后（剩余 ＝ 0）不再扣能**：就绪态零耗能、保持就绪；**就绪时的移动不再额外扣能**
+       *        （这一步的充能费已在充能期间按 tick 付清）；
+       *    ★ `navCdTicks`（快照里）＝本步**冻结的冷却长度**（阶段 2 进度条**分母**）；
+       *      `navPath` ＝**剩余路径**的星区 index 序列（未排队 ⇒ null；阶段 2 地图描边用）；
+       *      `canCommand` ＝此刻可否被指挥（阶段 2 拖拽可用性的**唯一判据**）；
+       *      `navStalled` ＝**充能中且扣不起**（**不再要求“有指令”**）；
+       *  · `LS.starfield.moveQueue` ⇒ 当前移动指令只读列表（每次读取返回新数组，含 `stalled`）；
+       *  · `LS.starfield.moveSelfCheck()` ⇒ `{pass, checks[]}`（零回归（无单位充能中）/ **始终充能**（含
+       *     “能耗＝单位配置值”）/ 阶梯路径 / 就绪即走与计时 / 公式锚点 / 顺序 / 目标变更与取消 /
+       *     **整体搬迁保状态** / 外部状态清除 / 能量门控 / 异常清理 / **召唤物不随行、迁移不重复召唤、
+       *     迁移后模块行为、不迁移时零回归**）。
+       *  ★ ★ **召唤物口径（用户口径）**：**召唤物不随单位迁移**（留在源星区照常作战/计时）；
+       *     因此**召唤上限按整个星域（跨星区）统计**（容器注入 `summonCountOf`）⇒ 单位迁到新星区后
+       *     **不会重复召唤**；源区那只阵亡/到期后名额自然释放。非星域玩法不注入 ⇒ 引擎走原“本实例计数”。
+       *  ★ 单位 id 取自 `LS.starfield.current.battleOf(星区index).units()`
+       *    （`sectorIndex` 与显示编号的关系：编号 ＝ index + 1）。
+       *  ★ 阶段 2 的 UI 入口：**星域大地图**（`#/starfieldMap`）—— 侧栏单位卡拖到地图格子即下达移动；
+       *    选中单位后侧栏**跟随其跨区移动**并在图上描出其**剩余路径**；
+       *    UI 只调上述唯一写入口，**不含任何自算判据**（详见 `ui/starfieldMapView.js` 文件头）。 */
+      moveUnitTo(unitId, targetIndex) {
+        const sf = getStarfield();
+        return sf ? sf.moveUnitTo(unitId, targetIndex) : { ok: false, reason: 'none', unitId, targetIndex, queued: false };
+      },
+      unitNav(unitId) {
+        const sf = getStarfield();
+        return sf ? sf.unitNav(unitId) : null;
+      },
+      get moveQueue() {
+        const sf = getStarfield();
+        return sf ? sf.moveQueue : [];
+      },
+      /** ★ **阶段 1 自检**：星区间移动（逐格跨区 / 航行冷却 / 排队 / 零回归）的自动化验收 */
+      moveSelfCheck: () => starfieldMoveSelfCheck(),
       /** ★ **星域级「全队主要目标」**（跨所有星区统一的**单一来源**）：
        *  · `LS.starfield.fleetPolicy` ⇒ 读当前值；`LS.starfield.setFleetPolicy('weakest')` ⇒ 改（对**所有**星区立即生效，
        *    走引擎既有唯一接口 `battle.setAllyPolicy` 下发；返回是否被引擎接受）。 */

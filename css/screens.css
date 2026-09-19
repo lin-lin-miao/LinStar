@@ -59,7 +59,8 @@
  *  · **内容不越界**：地图视口 `overflow:hidden`，缩放/平移只作用在 `.sf-canvas` 的 `transform`
  *    （`transform-origin:0 0`），平移夹取在 JS 侧完成（`applyTransform`）。
  *  · **`.hidden` 必须显式声明**（本项目没有全局 `.hidden{display:none}` 规则）。
- *  · 缩放层级（`.sf-zoom-far|mid|near`，由 JS 按倍率切换）决定格上细节的显示：缩小只留标记+类型色。 */
+ *  · 缩放层级（`.sf-zoom-far|mid|near`，由 JS 按倍率切换）：★ **单位图标行任何层级都显示**
+ *    （用户口径“地图中始终显示单位图标”）；**进度条仅 near 显示**（far/mid 隐藏，见下方层级规则）。 */
 .screen-starfield {
   height: 100%;
   min-height: 0;
@@ -91,6 +92,10 @@
 .sf-status[data-state='running'] { color: var(--ok); }
 .sf-status[data-state='finished'] { color: var(--warn); }
 .sf-status[data-state='stopped'] { color: var(--hp); }
+/* ★★ 阶段 2：拖拽下达失败的**短提示**（顶栏内联；无内容时整块隐藏 ⇒ 既有呈现零变化）——
+ *  颜色用既有 `--warn`，**不新增配色值**。 */
+.sf-move-msg { font-size: 12px; color: var(--warn); }
+.sf-move-msg.hidden { display: none; }
 .sf-zoom { display: flex; align-items: center; gap: 6px; }
 .sf-zoom-label {
   min-width: 46px;
@@ -212,6 +217,16 @@ body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
 }
 .sf-cell.is-edge { box-shadow: inset 0 0 0 1px var(--sf-color); }
 .sf-cell.selected { outline: 2px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 12px -2px var(--accent); }
+/* ★★ 阶段 2：拖拽下达移动时的**落点高亮** —— 复用既有视觉（同 `--accent` 描边），
+ *  仅把外描边改为**内描边**（`outline-offset:-2px`）以便与「已选中」格子区分，**不新增配色值**。 */
+.sf-cell.drop-target { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* ★★ 阶段 2：**被选单位**在地图上的浅色描边（两者都用既有 `--accent`，不新增配色值）：
+ *  · `.nav-here` ＝该单位**当前所在格**（用 inset 阴影，避免与 `.drop-target` 抢同一个 outline 属性）；
+ *  · `.nav-path` ＝**剩余路径**逐格（虚线描边＝浅色感；随移动逐格消减、随新指令重算）。
+ *  ★ **优先级**：星区「选中态 `.selected`」始终优先（用 `:not(.selected)` 排除）⇒
+ *    nav 描边**绝不覆盖**既有点击选中视觉（outline 与 box-shadow 都让位）。 */
+.sf-cell.nav-here:not(.selected) { box-shadow: inset 0 0 0 2px var(--accent); }
+.sf-cell.nav-path:not(.selected) { outline: 1px dashed var(--accent); outline-offset: -1px; }
 /* ★ 图例栏（用户口径）：**不换行**（条目按需横向收缩，必要时条目内省略号）；且当可用宽度
  *  < 自然宽 × 2/3 时 **整栏隐藏**（不再继续压缩）——判定与显隐见 `ui/starfieldMapView.js syncLegendVisibility()`。
  *  这里显式声明绝对定位：确保图例是**覆盖层**（显隐不改变 `.sf-viewport` 可用宽度 ⇒ 无布局抖动）。 */
@@ -227,9 +242,15 @@ body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
   cursor: default;
 }
 
-/* ★ 按缩放层级显示不同细节：缩小（far）只留标记+类型色；中档（mid）加存活数；放大（near）再加矿量/货物 */
-.sf-zoom-far .sf-detail { display: none; }
-.sf-zoom-mid .sf-detail-2 { display: none; }
+/* ★ 按缩放层级显示不同细节（**本轮改版**）：
+ *   · `.sf-units`（**存活单位图标行** + `+n` 省略）：★ **任何缩放层级都显示**（用户口径：
+ *     “地图中始终显示单位图标”）—— 缩小只是把整块画布**等比缩放**（`starfieldMapView.applyTransform`
+ *     的 `transform: scale`）⇒ 图标随格子等比变小，**不换行、不溢出、不挤压格子布局**
+ *     （图标行自身 `flex-wrap:nowrap` + `overflow:hidden`，且 `.sf-cell` 尺寸固定 ⇒ 不参与重排）。
+ *   · `.sf-bars`（矿物/货物进度条）：**沿用既有规则不变** ⇒ **仅 `near` 显示**（`far`/`mid` 隐藏）。
+ *   ⚠ 已删除原先“`.sf-zoom-far .sf-detail { display:none }`”整块隐藏规则 —— 它会把单位图标行一并藏掉；
+ *     现改为**只按行类名**（`.sf-bars`）分层级控制，图标行不受层级影响。 */
+.sf-zoom-far .sf-bars, .sf-zoom-mid .sf-bars { display: none; }
 
 /* ---- 图例（浮在地图左下，只列本星域实际出现的类型） ---- */
 .sf-legend {
@@ -288,7 +309,9 @@ body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
 }
 .starfield-sidebar-stage.hidden { display: none; } /* ★ 显式声明（无全局 .hidden 规则） */
 
-.sf-hint { flex: 0 0 auto; margin: 0; font-size: 11px; color: var(--text-dim); }
+/* ★ 地图下方的操作说明（`.sf-hint` 段落）已按用户口径**整段移除** ⇒ 本规则一并删除
+ *  （与 `starfield.map.hint` / `starfield.move.hint` 两条键同时清理，避免留下死样式）。
+ *  `.sf-body { flex: 1 1 auto }` ⇒ 提示行移除后地图**自动占满**原有高度，布局无空洞。 */
 
 /* ===== ★ C-3：星域配置界面（`.screen-starcfg`；表单体例沿用既有编队界面：字段行 + 输入 + 提示 + 红框） ===== */
 .screen-starcfg { gap: 12px; overflow: auto; align-items: stretch; }

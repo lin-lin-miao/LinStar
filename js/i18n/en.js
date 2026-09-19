@@ -50,7 +50,7 @@ export default {
   'starfield.map.back': 'Back to Configuration',
   'starfield.map.meta': 'Difficulty {id} · Seed {seed} · Radius {r}',
   'starfield.map.remaining': '{s}s left',
-  'starfield.map.hint': 'Scroll to zoom · drag to pan (unlimited: pull any edge sector to the center or the far side) · click a sector for details (click it again to close) · use Reset view to go back',
+  // ★ The below-the-map operation hint (formerly `starfield.map.hint`) was removed entirely ⇒ key deleted.
   'starfield.map.legend': 'Legend',
   'starfield.map.legend.void': 'No sector (empty cell)',
   'starfield.map.void': 'No sector: ({q}, {r})',
@@ -216,6 +216,17 @@ export default {
   'starfield.sidebar.phase': 'Status',
   'starfield.sidebar.none': 'None',
   'starfield.sidebar.stageTodo': 'The full battle scene will be mounted here in step C-2.',
+  /* ★★ Inter-sector movement (stage-2 UI): drag a sidebar unit card onto a map cell to issue the move —
+   * every failure `reason` maps 1:1 to the engine's single write entry `moveUnitTo` (UI never invents rules).
+   * ★ Dropping onto the unit's own sector CANCELS the move (a success, not a failure) ⇒ `cancelled` notice. */
+  'starfield.move.failed': 'Cannot move: {reason}',
+  'starfield.move.cancelled': 'Move cancelled',
+  'starfield.move.none': 'No such unit',
+  'starfield.move.dead': 'That unit is destroyed',
+  'starfield.move.owner': 'That unit is not under your command',
+  'starfield.move.far': 'Blocked by the layout — unreachable',
+  'starfield.move.invalid': 'No such sector',
+  'starfield.move.finished': 'The starfield has ended — no more orders',
   /* Starfield configuration placeholder: entry into the map (C-1) */
   'starfield.config.enterMap': 'Enter Starfield (placeholder)',
   'starfield.config.mapHint': 'For now (C-1) you can open the read-only Starfield Map; if no starfield exists yet it is created with default config H1 + a random seed (proper configuration arrives in C-3).',
@@ -277,6 +288,7 @@ export default {
   'module.loadingBeam': 'Loading Beam', // Transport · active, targetless (tag cargo_loader + word cargo_load: loads sector cargo into the hold)
   'module.cargoTransfer': 'Cargo Transfer', // Transport · active, single ally target (tag cargo_transfer: hands over a whole loaded cargo)
   'module.cargoRepair': 'Cargo Repair', // Transport · active, single ally target incl. self (tag cargo_repair: spends a whole loaded cargo for hp_per_ton)
+  'module.navThruster': 'Nav Thruster', // Transport · passive booster (own navigation coefficient nav_coeff_add → inter-sector travel engine cooldown)
   'module.oreHold': 'Ore Hold',
   'module.miningLaser': 'Mining Laser',
   'module.oreCompressor': 'Ore Compressor', // Mining · passive booster (own mining coefficient)
@@ -317,6 +329,8 @@ export default {
   'battle.coeff.transport': 'Transport coeff.',
   'battle.coeff.mining': 'Mining coeff.',
   'battle.coeff.drone': 'Drone coeff.',
+  // ★ Nav coefficient (`coefficients.nav`): same row style as the category coefficients above.
+  'battle.coeff.nav': 'Nav coeff.',
   // ★ Unit-coefficient bar (detail page): **values only, no explanatory text**.
   //   `timeCoeff` = time coefficient (negative = accelerate / positive = slow down;
   //   timer demand = base × (1 + coeff), rounded).
@@ -497,6 +511,18 @@ export default {
   'battle.act.dead': 'Destroyed',
   'battle.intent': 'Next: {act}',
   'battle.lifeLeft': '{n}s left',
+  /* ★★ Navigation engine (unit inter-sector movement; stage-2 UI) — card bar + detail panel + queue mark.
+   * ★ Every value/criterion comes from the container read-only `unitNav()` (remaining/stalled/queue).
+   * ★ The nav coefficient is NOT here: it lives in the Unit Coefficients block (`battle.coeff.nav`). */
+  'unit.nav': 'Nav engine',
+  'unit.navReady': 'Ready',
+  'unit.navRemain': '{s}s left',
+  'unit.navStalled': 'No energy',
+  'unit.navQueued': 'Queued for #{n}',
+  'unit.navQueueMark': '⇥#{n}',
+  'unit.navCd': 'Step cooldown {n}t',
+  /* ★ The followed (selected) unit vanished while moving ⇒ collapse the detail with a short notice. */
+  'starfield.follow.lost': 'The selected unit is no longer in the starfield',
   'battle.detail.empty': 'Click a unit in the scene for details',
   'battle.detail.slots': '{n} module slots',
   'battle.detail.modules': 'Modules',

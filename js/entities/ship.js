@@ -42,6 +42,16 @@
  *   `isStealthed(ship)`：**潜行**（`type` 标签 `stealth`，来源表 `ship.stealthMods`）——被标记单位
  *   **不能成为主要攻击目标**，但**仍受溅射**、**仍受既已锁定的目标约束**（详见下方 isStealthed 注释）。
  *
+ * ★ 星区间移动用的**航行系数**（＝单位 `coefficients.nav`，与 attack/shield/mining **同族同链**）：
+ *   `navCoeffOf(ship)` ＝ **既有 `coeff(ship, 'nav')`** ＝ `(coefficients.nav 基准 + Σ加性) × Π乘性` ——
+ *   船型基础值写在 `data/ships/<id>.js` 的 `coefficients.nav`（缺省 1），模块词条 `nav_coeff_add`
+ *   经既有 `_coeff_add` 后缀规则并入同一张 `coeffMods`（唯一读口径，见下方「航行系数」代码块）。
+ *   另有两个容器专用字段：`ship.navReadyUntil`（航行冷却的**绝对到期 tick**，基准＝容器 `runTicks`；
+ *   **「始终充能」口径**：可指挥单位在充能中每 tick 由容器扣**该单位配置的** `navEnergyPerTick`
+ *   （唯一读口径 `navEnergyPerTickOf`），充能完成后零耗能）
+ *   与 `ship.navCdTicks`（本步冻结的冷却长度，只读展示用分母；配置基准在 `ship.baseNavCdTicks`）。
+ *   三者**都不参与任何战斗数值结算** ⇒ 既有玩法与 `coeff()`/`damageTakeMul()`/`timeScaled()` 无关。
+ *
  * ★ 船型【等级系统】（与模块等级模型完全同构，唯一口径＝`data/ships/index.js resolveShipAtLevel`）：
  *   · 船型定义（`data/ships/<id>.js`）顶层字段＝**Lv1 基准值**，另有 `maxLevel` + `levels[]` **逐级绝对表**；
  *     某级未填的条目**回退上一级**（递归向上，最终以 Lv1 兜底）；可覆写**任意条目**
@@ -421,7 +431,52 @@ export function syncStaticCoeffs(ship) {
     }
   }
   if (coeff(ship, 'shield') !== before) recalcDerived(ship); // 护盾池容量随护盾系数变化（其它类别无需重算，见函数注释）
+  // ★ **航行系数**（`coefficients.nav`，词条 `nav_coeff_add`）走**完全相同的一条链** ⇒ 无需任何额外落地：
+  //   `syncStaticCoeffs` 上面的 `_coeff_add` 后缀规则已把 `nav_coeff_add` 写进同一张 `coeffMods`
+  //   （类别＝`nav`），读口径就是既有 `coeff(ship, 'nav')`（见 `navCoeffOf`）。
   return ship;
+}
+
+/* ---------- ★ 星区间移动的**航行系数**（`coefficients.nav` · 与类别系数同族同链）----------
+ * ★ 用户口径（「星区间移动」）：航行系数**并入单位 `coefficients` 集合**，与 attack/shield/mining 等
+ *   **完全同构**：船型基础值写在 `data/ships/<id>.js` 的 `coefficients.nav`（默认 1、逐级可覆写），
+ *   模块词条 `nav_coeff_add` 由既有 **`_coeff_add` 后缀规则**自动并入同一张 `coeffMods`
+ *   ⇒ 有效值 ＝ **既有汇总算式** `(基准 + Σ加性) × Π乘性`（`coeff()`），**不再有“纯加性特例”**。
+ * ★ 作用面**只有一处**：星域容器按
+ *   `cd = max(1, round(navCdTicks ÷ navCoeff × (1 + 单位时间系数)))` 记账**航行引擎冷却**
+ *   （`systems/starfield.js`）——**不参与任何战斗数值结算**（不改伤害/护盾/血量/能量/既有类别系数）。
+ * ★ 读口径＝`navCoeffOf(ship)`（唯一；UI 与容器都只读它）。**无冻结副本**：`coeff()` 按需即时求和，
+ *   与其它类别系数**同一时机、同一口径**（运行期加性/乘性修饰即刻反映）。 */
+/** 该单位当前的**航行系数**（唯一读口径；缺省 1）——与其它类别系数**同一条链**（`coeff()`）。 */
+export function navCoeffOf(ship) {
+  if (!ship) return 1;
+  return coeff(ship, 'nav');
+}
+
+/* ---------- ★ 星区间移动的**冷却基准时长**（船型配置 `navCdTicks`，默认 200t ＝ 10 秒）----------
+ * · 配置字段：`data/ships/<id>.js` 的**顶层** `navCdTicks`（Lv1 基准，**可逐级覆写**，与 `slots` 同体例）；
+ * · 实例字段：`ship.baseNavCdTicks`（该等级的配置基准，建单位时解析一次）；
+ * · 读口径＝下面的 `navCdTicksOf(ship)`（**唯一**；默认值 `NAV_CD_DEFAULT_TICKS` 只此一处定义）。 */
+export const NAV_CD_DEFAULT_TICKS = 200;
+/** 该单位的**航行引擎冷却基准**（缺省 200t）：非法/缺失 ⇒ 用默认值（绝不产生 NaN/Infinity）。 */
+export function navCdTicksOf(ship) {
+  const v = ship && ship.baseNavCdTicks;
+  return Number.isFinite(v) && v > 0 ? v : NAV_CD_DEFAULT_TICKS;
+}
+
+/* ---------- ★ 星区间移动的**充能能耗**（船型配置 `navEnergyPerTick`，默认 2/tick）----------
+ * · 配置字段：`data/ships/<id>.js` 的**顶层** `navEnergyPerTick`（Lv1 基准，**可逐级覆写**）；
+ * · 实例字段：`ship.baseNavEnergyPerTick`（该等级的配置值，建单位时解析一次、随等级解析更新）；
+ * · 读口径＝下面的 `navEnergyPerTickOf(ship)`（**唯一**；默认值 `NAV_ENERGY_DEFAULT_PER_TICK` 只此一处定义）
+ *   —— 星域容器（跨星区阶段的扣能、`unitNav().navEnergyPerTick/navStalled`）与 UI 都只读它，**不得自算**。 */
+export const NAV_ENERGY_DEFAULT_PER_TICK = 2;
+/** 该单位**处于充能中时每 tick 的能量代价**（**唯一读口径**；缺省 2）：
+ *  · 「始终充能」口径：充能中每 tick 扣本值，**扣得起 ⇒ 扣并推进冷却 1 tick；扣不起 ⇒ 不扣、不推进**；
+ *    **充满（就绪）后零耗能**；
+ *  · 非法/缺失值 ⇒ 回落 `NAV_ENERGY_DEFAULT_PER_TICK`（绝不产生 NaN/负数/Infinity；`0` 合法＝免费充能）。 */
+export function navEnergyPerTickOf(ship) {
+  const v = ship && ship.baseNavEnergyPerTick;
+  return Number.isFinite(v) && v >= 0 ? v : NAV_ENERGY_DEFAULT_PER_TICK;
 }
 
 /** ★ 自身【常驻静态加成】的**统一落地入口**（唯一口径）：
@@ -663,6 +718,13 @@ function buildTypeCfg(typeId, level, overrides) {
 export function createShip(typeId, side = 'ally', overrides = null, level = 1) {
   const lv = Math.max(1, level | 0);
   const type = buildTypeCfg(typeId, lv, overrides);
+  // ★ 船型**航行引擎冷却基准**（`data/ships/*.js` 的 `navCdTicks`，缺省 200；可随 `levels[]` 逐级覆写）
+  const navCdBase = Number.isFinite(type.navCdTicks) && type.navCdTicks > 0 ? type.navCdTicks : NAV_CD_DEFAULT_TICKS;
+  // ★ 船型**充能能耗**（`data/ships/*.js` 的 `navEnergyPerTick`，缺省 2；可随 `levels[]` 逐级覆写）
+  const navEnergyBase =
+    Number.isFinite(type.navEnergyPerTick) && type.navEnergyPerTick >= 0
+      ? type.navEnergyPerTick
+      : NAV_ENERGY_DEFAULT_PER_TICK;
   const ship = {
     id: uid('ship'),
     side,
@@ -707,6 +769,27 @@ export function createShip(typeId, side = 'ally', overrides = null, level = 1) {
     // ★ 货舱容量基准（本体，**不受系数影响**；唯一口径 `cargoCapacityOf`/`oreCapacityOf`，按需读取不缓存）
     baseCargoCap: Math.max(0, type.base.cargoCap || 0),
     baseOreCap: Math.max(0, type.base.oreCap || 0),
+    // ★ **航行引擎冷却基准时长**（单位「星区间移动」；只被星域容器使用，战斗数值链不读）：
+    //   · `baseNavCdTicks` ＝ 该等级解析结果里的**配置值**（`data/ships/<id>.js` 顶层 `navCdTicks`，缺省 200）；
+    //   · 只读口径＝`navCdTicksOf(ship)`（UI 与容器都只读它，不得自算）；本字段只在结构变化时更新。
+    baseNavCdTicks: navCdBase,
+    // ★ **充能每 tick 的能量代价**（单位「星区间移动」；只被星域容器与只读口径使用，战斗数值链不读）：
+    //   · `baseNavEnergyPerTick` ＝ 该等级解析结果里的**配置值**（`data/ships/<id>.js` 顶层
+    //     `navEnergyPerTick`【占位 2】）；
+    //   · 只读口径＝`navEnergyPerTickOf(ship)`（容器与 UI 都只读它，**不得自算**）；本字段只在结构变化时更新。
+    baseNavEnergyPerTick: navEnergyBase,
+    // ★ **星区间移动的航行冷却「绝对到期 tick」**（基准＝星域容器 `runTicks`；模型同战斗实例的
+    //   `sectorCdUntil`）：`≤ 当前 tick` ＝ 就绪。**唯一写入口＝星域容器**的多阶段（见 `systems/starfield.js`）：
+    //   ① 就绪时下达 ⇒ 立即到期、下一 tick 的跨星区阶段即执行；
+    //   ② 迁移落地后按 `navCdTicks` 重新计时 ⇒ **无论是否还有后续指令都继续充能**（「始终充能」口径）；
+    //   ③ **充能中**每 tick 由容器扣 `navEnergyPerTickOf(ship)`（**单位配置值**；扣不起 ⇒ 到期 tick 顺延 1、
+    //      剩余不变），**充满后零耗能**；
+    //   单位死亡/被销毁 ⇒ 由容器清回 0。⚠ 既有单星区玩法（`LS.drill()`）恒为 0、从不读写 ⇒ 零回归。
+    navReadyUntil: 0,
+    // ★ **本条（当前这一步）冻结的航行冷却长度**（与 `navReadyUntil` **同写同源**、同一处写入口）：
+    //   只为**只读展示**（UI 进度条的分母：`进度 ＝ 1 − navRemainTicks / navCdTicks`，就绪＝满格）。
+    //   ⚠ **不是**引擎判据（引擎只读 `navReadyUntil`）；未充能过/就绪 ⇒ 0。
+    navCdTicks: 0,
     targetId: null, // 玩家指定的主要攻击目标（unit id）；null=自动(最近)
     alive: true,
   };
@@ -757,6 +840,14 @@ export function applyShipLevel(ship, level) {
   // 货舱容量基准随等级解析一并更新（唯一口径 `cargoCapacityOf`/`oreCapacityOf` 按需读取）
   ship.baseCargoCap = Math.max(0, type.base.cargoCap || 0);
   ship.baseOreCap = Math.max(0, type.base.oreCap || 0);
+  // ★ 航行引擎冷却基准随等级解析一并更新（唯一读口径 `navCdTicksOf(ship)`；本字段只在结构变化时更新，
+  //   不逐 tick；航行系数本身走 `coefficients.nav` ⇒ 上面 `syncSelfStatics` 已按新等级解析结果刷新）
+  ship.baseNavCdTicks = Number.isFinite(type.navCdTicks) && type.navCdTicks > 0 ? type.navCdTicks : NAV_CD_DEFAULT_TICKS;
+  // ★ 充能能耗随等级解析一并更新（唯一读口径 `navEnergyPerTickOf(ship)`；只在结构变化时更新，不逐 tick）
+  ship.baseNavEnergyPerTick =
+    Number.isFinite(type.navEnergyPerTick) && type.navEnergyPerTick >= 0
+      ? type.navEnergyPerTick
+      : NAV_ENERGY_DEFAULT_PER_TICK;
   syncSelfStatics(ship); // hpMax/energyCap/energyRegenPerSec：基准 + Σ自身常驻（非累加，只钳制）
   recalcDerived(ship);   // 护盾池按新基准重算
   return ship;
