@@ -229,8 +229,10 @@ function renderUnitsRow(row, units) {
 function buildTopbar() {
   const back = el('button', {
     class: 'btn small',
-    text: i18n.t('starfield.map.back'),
-    onclick: () => router.show('starfield'), // 返回「星域配置」占位页（C-4 将换成正式配置界面）
+    text: i18n.t('menu.back'),
+    // ★ M3a 修订：星域配置界面**不再有 UI 入口**（仅测试控制台可调出）⇒
+    //   此处由"返回星域配置"改为**直接返回主菜单**，地图屏仍保留唯一出口（不留死路）。
+    onclick: () => router.show('menu'),
   });
   metaEl = el('div', { class: 'sf-meta' });
   remainEl = el('div', { class: 'sf-remain' });

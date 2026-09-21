@@ -13,6 +13,15 @@
 export default {
   id: 'drone',               // 唯一标识（通用无人机）
   nameKey: 'ship.drone',     // 名称词条 key（i18n -> 无人机 / Drone；召唤单位会覆写为所属召唤模块名）
+  /* ★ M3 基地侧字段【占位预填 · 待用户调校】——M3a 只铺字段，读取逻辑属 M3b（船坞）。
+   * ★ 本模板是**召唤用单位模板**（`picker: false`）⇒ `buildable: false`（玩家不可建造）、
+   *   `upgradeCost` 留空（Lv1 模板无升级），字段只为**体例完整**、不会被消费。 */
+  buildable: false,
+  buildCost: { energy: 0, ore: 0, alloy: 0, rare: 0 },
+  upgradeCost: [],
+  slotGrowth: { every: 2, add: 1, max: 2 },
+  /* ★ `unlockByLevel` 逐级**后续特性 / 特殊条件**的解锁条件（用户口径：**不由货物决定**）——M3b 为空数组＝无条件；非空 ⇒ 视为"条件尚未实装"、引擎保守拒绝建造。 */
+  unlockByLevel: [], // 【占位预填 · 待用户调校】
   role: 'combat',            // ★ 单位定位：召唤单位默认＝战斗单位（由召唤模块的 attrs 可覆写）
   picker: false,             // ★ 不进入编队可选列表（与 data/modules.js 的 `picker:false` 同一体例：
                              //   本模板仅供召唤模块经 effects.summon.type 使用，不是玩家可建造单位）

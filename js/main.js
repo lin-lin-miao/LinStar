@@ -13,6 +13,7 @@ import { hud } from './ui/hud.js';
 import { menuView } from './ui/menuView.js';
 import { starfieldConfigView } from './ui/starfieldConfigView.js';
 import { starfieldMapView } from './ui/starfieldMapView.js';
+import { baseView } from './ui/baseView.js';
 import { getStarfield, setStarfield, ensureStarfield } from './ui/starfieldSession.js';
 import { battleView } from './ui/battleView.js';
 import { createRng, hashSeed, randomSeed, rngSelfTest } from './core/rng.js';
@@ -20,6 +21,7 @@ import * as starfieldData from './data/starfieldData.js';
 import { generateStarfield, previewStarfield, starfieldGenSelfCheck } from './data/starfield.js';
 import { createStarfield, starfieldMoveSelfCheck } from './systems/starfield.js';
 import { battleSelfCheck } from './systems/battle.js';
+import * as baseSystem from './systems/base.js';
 
 const AUTOSAVE_MS = 10_000; // 每 10 秒自动保存一次
 
@@ -32,11 +34,16 @@ function boot() {
   // 2. 路由与视图
   router.mount(document.getElementById('app-screen'));
   router.register('menu', menuView);
-  // ★ S0-1：「星域配置界面」（本轮为**占位页**，C-3 正式实装）＝原「编队配置」的**入口位置**
+  // ★ S0-1：「星域配置界面」（占位页，C-3 正式实装）
+  //   ★★ M3a 修订（用户口径）：**主菜单只保留「主基地」一个入口** ⇒
+  //      本路由**不再有 UI 入口**（仅测试用控制台 `LS.goto('starfield')` 可进入）。
   router.register('starfield', starfieldConfigView);
   // ★ C-1：星域大地图（只读视图 + 缩放平移 + 点击选中；完整战斗侧栏＝C-2）
+  //   入口＝星域配置界面（同为测试路径）或控制台 `LS.goto('starfieldMap')`；屏内"返回"回主菜单。
   router.register('starfieldMap', starfieldMapView);
   router.register('battle', battleView);
+  // ★ M3a：主基地屏（左列表 + 右面板 + 顶部资源栏；业务面板属 M3b~M3e，本轮为骨架）
+  router.register('base', baseView);
 
   // 3. 顶栏
   hud.mount(document.getElementById('app-header'));
@@ -77,6 +84,13 @@ function boot() {
 }
 
 /* ===== window.LS 调试控制台（M0.8） ===== */
+
+/** ★ 主基地调试：改动资源后，若当前就在基地屏则**立即重绘**（否则只在下次进入时体现） */
+function repaintBase(result) {
+  if (router.current === 'base') router.repaint();
+  return result;
+}
+
 function attachDebug() {
   window.LS = {
     version: '0.5-m1.9',
@@ -119,6 +133,89 @@ function attachDebug() {
       get current() { return window.__battle || null; },
       // ★ **B-1 自检**：`battle.js` 可实例化 / 实例间零共享（两实例并行 step、战报隔离、全灭不结束、空编队…）
       selfCheck: () => battleSelfCheck(),
+    },
+    // ★★ **主基地**（M3a：基地状态 + 五资源账户；业务面板属 M3b ~ M3e，本轮只有骨架）。
+    //   用法：`LS.base.snapshot()`   ⇒ 基地只读快照（资源 / 建筑等级 / 左列表项）
+    //        / `LS.base.state`      ⇒ 基地**状态本体**（唯一来源；调试可读，正常只经下面的 debug 改动）
+    //        / `LS.base.list()`     ⇒ 只读清单摘要（控制台核对）
+    //        / `LS.base.selfCheck()`⇒ `{pass, checks[]}`（注册表 / 校验与扣减 / 零硬编码 / i18n 成对 …）
+    //        / `LS.base.debug.gain({ energy: 100 })`  ⇒ 加资源（返回 `{ ok, gained, overflow }`；
+    //                                                    **按上限截断**，超出部分进 `overflow`）
+    //        / `LS.base.debug.spend({ energy: 100 })` ⇒ 扣资源（不足 ⇒ `{ ok:false, reason:{resource,need,have} }`，
+    //                                                    **状态零改动**）
+    //        / `LS.base.debug.caps()`                 ⇒ 资源上限只读快照（来源＝配置：初始上限 + 建筑 effect.resourceCap）
+    //        / `LS.base.debug.remaining('energy')`    ⇒ 该资源还能加多少
+    //        / `LS.base.debug.reset()`                ⇒ 重置基地（回到 `data/baseConfig.js` 的初始状态）
+    //        / `LS.base.debug.buildings()`            ⇒ 建筑只读清单
+    //   ★ 在基地屏上执行 debug 改动会**自动重绘**该屏（不是在基地屏则只改状态）。
+    //   ★ 数值一律来自配置文件：控制台**不需要**、也**不提供**任何数值调整入口。
+    //   ★ 界面文案里**不出现**任何控制台/命令说明（调试入口只在本文件）。
+    //   ★★ **舰队（M3b）**：舰队＝"抽象配置条目 + 数量"（不是逐艘实例）。
+    //        / `LS.base.fleet.stats()`        ⇒ `{ capacity, total, out, remaining, scrapRefundRatio }`
+    //        / `LS.base.fleet.configs()`      ⇒ 逐条配置只读视图（造价 / 拆解预览 / 槽位 / 能力标记）
+    //        / `LS.base.fleet.preview({shipId:'combat', level:1, modules:[{moduleId:'cannon'}]})`
+    //                                         ⇒ 干跑校验 + 造价（**不改状态**；界面表单同口径）
+    //        / `LS.base.fleet.create({name, shipId, level, modules})` ⇒ 新建（同配置**合并**、重名自动 `#N`）
+    //        / `LS.base.fleet.clone(id, { level: 2 })`                ⇒ 编辑＝**另存为新配置**（原条目保留）
+    //        / `LS.base.fleet.rename(id, '名字')` / `.remove(id)`      ⇒ 重命名 / 删除（**仅** 0 艘且无在外）
+    //        / `LS.base.fleet.move(id, -1|+1)` ⇒ 上移 / 下移；`.reorder(id, 下标)` ⇒ 拖动到最终下标
+    //          （顺序＝**状态数组顺序**、天然持久；越界/非法 ⇒ 零改动 + 原因 `badOrder`/`edgeMove`）
+    //        / `LS.base.fleet.modulePicker()` ⇒ 模块选择弹窗的数据源（分类表 + 可装配模块清单，只读）
+    //        / `LS.base.fleet.moduleCost(id, 等级)` ⇒ 该模块该等级的装配 / 拆下费用（与表格造价同源）
+    //        / `LS.base.fleet.slotOp(模块数组, { action, index, moduleId, level, slots })` ⇒ 槽位增删改的**纯函数**
+    //        / `LS.base.fleet.build(id, 1)` / `.scrap(id, 1)`          ⇒ 建造（扣资源）/ 拆解（按船坞比例返还）
+    //        / `LS.base.fleet.costOf(id)` / `.refundOf(id, n)`         ⇒ 单艘造价 / 拆解返还**预览**（只读）
+    //        / `LS.base.fleet.setOut(id, n)`  ⇒ 登记"在外"数量（M3d 出征预留；出征**不从数量里扣**）
+    //   ★ 改变状态的那几个会**自动重绘**基地屏（体例同 `debug.gain`）。
+    base: {
+      get state() { return baseSystem.baseState; },
+      snapshot: () => baseSystem.snapshot(),
+      list: () => baseSystem.listBaseData(),
+      selfCheck: () => baseSystem.baseSelfCheck(),
+      /** ★ 舰队（M3b）：只读 API + 建造 / 拆解 / 配置管理（改动状态者 ⇒ 自动重绘基地屏） */
+      fleet: {
+        stats: () => baseSystem.fleetStats(),
+        configs: () => baseSystem.listFleetConfigs(),
+        capacity: () => baseSystem.fleetCapacityOf(),
+        total: () => baseSystem.fleetTotal(),
+        out: () => baseSystem.fleetOut(),
+        remaining: () => baseSystem.fleetRemainingCap(),
+        preview: (spec) => baseSystem.previewFleetSpec(spec),
+        costOf: (id) => baseSystem.buildCostOf(id),
+        canBuild: (id, n) => baseSystem.canBuild(id, n),
+        refundOf: (id, n) => baseSystem.scrapRefundOf(id, n),
+        build: (id, n = 1) => repaintBase(baseSystem.build(id, n)),
+        scrap: (id, n = 1) => repaintBase(baseSystem.scrap(id, n)),
+        create: (spec) => repaintBase(baseSystem.createFleetConfig(spec)),
+        clone: (id, patch) => repaintBase(baseSystem.cloneFleetConfig(id, patch)),
+        rename: (id, name) => repaintBase(baseSystem.renameFleetConfig(id, name)),
+        remove: (id) => repaintBase(baseSystem.deleteFleetConfig(id)),
+        setOut: (id, n) => repaintBase(baseSystem.setFleetOut(id, n)),
+        /** ★ 排序（M3b 迭代 2 · B-3）：上移/下移（`delta` ∈ {−1,+1}）与拖动到**最终下标**；
+         *  顺序**持久化在状态数组顺序里** ⇒ 快照按该顺序输出；被拒（越界/非法）时**零改动**。 */
+        move: (id, delta) => repaintBase(baseSystem.moveFleetConfig(id, delta)),
+        reorder: (id, toIndex) => repaintBase(baseSystem.reorderFleetConfig(id, toIndex)),
+        /** ★ 模块选择弹窗的数据源（分类 + 可装配模块清单；只读，界面零自算） */
+        modulePicker: () => baseSystem.modulePickerData(),
+        /** ★ 某模块**某等级**的费用（二级弹窗显示用；`installCost` 与表格模块造价**同源**） */
+        moduleCost: (moduleId, level) => baseSystem.moduleCostAt(moduleId, level),
+        /** ★ 模块槽位编辑（草稿级**纯函数**）：`{ action:'set'|'add'|'remove', index, moduleId, level, slots }`
+         *  ⇒ `{ok:true, action, index, modules}`（**新数组**，输入零改动）/ `{ok:false, reason}` */
+        slotOp: (modules, op) => baseSystem.applyModuleSlot(modules, op),
+      },
+      debug: {
+        gain: (gains) => repaintBase(baseSystem.gain(gains)),
+        spend: (cost) => repaintBase(baseSystem.spend(cost)),
+        canAfford: (cost) => baseSystem.canAfford(cost),
+        reasonOf: (cost) => baseSystem.reasonOf(cost),
+        reset: () => repaintBase(baseSystem.resetBaseState()),
+        buildings: () => baseSystem.snapshot().buildings,
+        /** ★ 资源**上限**只读口径（M3a 修订：上限＝配置派生；`gain` 会按上限截断） */
+        caps: () => baseSystem.capsOf(),
+        remaining: (key) => baseSystem.remainingCapOf(key),
+        /** 升级入口的**空实现**（M3a 只返回"未开放 / 未实现"，绝不改动状态；实装属 M3c） */
+        upgrade: (id) => baseSystem.upgradeBuilding(id),
+      },
     },
     // ★ **星域容器**（步骤 B-2：多星区独立战斗实例 + 固定顺序 tick + 星域持续时间 + 跨区阶段占位 + 结算入口预留）。
     //   用法：`LS.starfield.create('h1', 'demo')` ⇒ 创建星域（创建即各区进入 running，但**不订阅全局 ticker**）
@@ -225,15 +322,16 @@ function attachDebug() {
     // ★ **编队配置界面**（原主菜单入口已移除，改为本控制台指令；界面与开战流程零改动）。
     //   用法：`LS.drill()` ⇒ 打开「演练编队配置」屏（有对局则先经既有「离开」路径回到编队屏）。
     drill: () => battleView.enterDrill(),
-    // ★ **界面入口命名空间**（C-1）：打开星域大地图（无星域实例时用默认配置 `h1` + 随机种子兜底创建，
-    //   口径见 `ui/starfieldSession.js`；C-3 起由「星域配置界面」正式提供难度/种子）。
+    // ★ **测试用界面入口命名空间**（原 UI 入口已按用户口径全部收敛到「主基地」⇒ 只剩控制台可调）。
+    //   ★ 打开星域大地图（无星域实例时用默认配置 `h1` + 随机种子兜底创建，
+    //     口径见 `ui/starfieldSession.js`；C-3 起由「星域配置界面」正式提供难度/种子）。
     ui: {
       openStarfieldMap: () => {
         ensureStarfield();
         router.show('starfieldMap');
         return true;
       },
-      /** ★ C-3：打开「星域配置界面」（正式主入口；路由 `'starfield'`） */
+      /** ★ C-3：打开「星域配置界面」（路由 `'starfield'`）——**M3a 修订后仅测试用**（UI 无入口） */
       openStarfieldConfig: () => {
         router.show('starfield');
         return true;

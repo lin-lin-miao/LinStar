@@ -20,14 +20,12 @@ export default {
   /* Main menu */
   'menu.title': 'LinStar',
   'menu.subtitle': 'A space idle / turn-based web game',
-  'menu.start': 'Start Game',
   'menu.back': 'Back to Menu', // Generic "back to menu" for non-battle screens (e.g. the starfield config placeholder)
   'menu.hint': 'Save: use Export / Import in the top bar',
 
   /* Starfield Configuration screen (step S0-1 = placeholder page; implemented in step C-3) */
   'starfield.config.title': 'Starfield Configuration',
   'starfield.config.todo': 'Coming soon: pick difficulty/play mode, enter a random seed (random by default), configure the starfield radius and per-type sector counts, edit NPC lists, preview, and export/import the config.',
-  'starfield.config.drillHint': 'Dev/testing: the drill formation screen no longer has a UI entry — open it with the console command LS.drill().',
 
   /* Starfield data layer (steps A-2/A-3/A-4): sector type / NPC list / starfield (difficulty) names
    * Key convention (enforced by `data/starfieldData.js selfCheck()`) = `sectorType.<id>` / `npcList.<id>` / `starfield.<id>` */
@@ -251,6 +249,14 @@ export default {
   'ship.slagMissile': 'Slag Missile',
 
   /* Modules */
+  /* ★ Module **category** names (used by the module picker's category filter);
+     key form `module.cat.<category>`, category keys come from `data/modules.js` `CATEGORY_ORDER`. */
+  'module.cat.attack': 'Attack',
+  'module.cat.shield': 'Shield',
+  'module.cat.function': 'Function',
+  'module.cat.transport': 'Transport',
+  'module.cat.mining': 'Mining',
+  'module.cat.drone': 'Drone',
   'module.cannon': 'Cannon',
   'module.concussionCannon': 'Concussion Cannon',
   'module.heavyCannon': 'Heavy Cannon',
@@ -692,4 +698,155 @@ export default {
   //   (no module segment).
   'battle.log.cargoUnload': '{owner}: unloaded {cargo} to the sector',
   'battle.result.close': 'Dismiss',
+
+  // ================= ★ M3a: Main base (base screen / resources / buildings) =================
+  // · Resource keys follow `res.<key>` / `res.<key>.desc` and mirror `data/resources.js`
+  //   (base self-check ⑥ verifies every locale has both).
+  // · No numbers in entries: names and usage text only.
+  'res.energy': 'Energy Credits',
+  'res.energy.desc': 'The baseline cost of everything: building, refitting, upgrading, research and deployment.',
+  'res.ore': 'Ore',
+  'res.ore.desc': 'Raw material: a secondary cost for high-tier hulls and parts; hauled back by mining in a starfield.',
+  'res.alloy': 'Alloy',
+  'res.alloy.desc': 'Construction material: the main cost of hulls and buildings.',
+  'res.rare': 'Rare Earth',
+  'res.rare.desc': 'Scarce construction material: consumed by high-level builds and upgrades (placeholder: from level 3).',
+  'res.science': 'Science Points',
+  'res.science.desc': 'Tech unlocking: the research station can speed up or replace part of a research cost (no output in M3, debug only).',
+  // · Building keys follow `building.<id>` and mirror `data/baseBuildings/<id>.js`.
+  'building.stargate': 'Stargate',
+  'building.commandCenter': 'Command Center',
+  'building.researchStation': 'Research Station',
+  'building.shipyard': 'Shipyard',
+  'building.planet': 'Planet',
+  // · ★ Panel subtitle keys follow `building.<id>.meta` — one per building, all distinct
+  //   (fixes the first M3a pass, where every panel showed the same level/max text; base self-check ⑥ verifies this)
+  'building.stargate.meta': 'Starfield gateway: deployment and return',
+  'building.commandCenter.meta': 'Fleet command and deployment limits',
+  'building.researchStation.meta': 'Blueprint unlocking and research progress',
+  'building.shipyard.meta': 'Build ships, fit modules, command the fleet',
+  'building.planet.meta': 'Industry and resource output (later stage)',
+  // · ★ Shipyard panel zones (the fleet merged into the shipyard; zones live in `data/baseBuildings/shipyard.js`)
+  'building.shipyard.zoneBuild': 'Construction',
+  'building.shipyard.zoneFleet': 'Fleet configs',
+  // · Main menu entry
+  'menu.base': 'Main Base',
+  // · Base screen text (staged placeholders; M3b~M3e replace each panel with the real thing)
+  'base.title': 'Main Base',
+  'base.subtitle': 'Build · Deploy · Research — the fleet\u2019s home front',
+  'base.resBar': 'Base Resources',
+  'base.buildings': 'Buildings',
+  'base.level': 'Level {n}',
+  'base.maxLevel': 'Max {n}',
+  'base.panelTodo': 'This panel arrives in {stage}; this step only provides the skeleton placeholder.',
+  'base.panelLocked': 'Not available at this stage',
+  'base.planetNote': 'Planet industry (construction and output) comes later; the resource types and their uses are listed below.',
+  'base.resUsageTitle': 'Resource Types and Uses',
+  'base.fleetNote': 'The fleet is the set of idle ships docked at the base (finished ships join it); fleet and deployment actions come in later steps.',
+  // ================= ★ M3b: Shipyard — fleet configs / build / scrap =================
+  // · Model: the fleet is "abstract config entries + counts" (not per-ship instances); build ⇒ count +1;
+  //   scrap ⇒ count -1 with a refund at the shipyard ratio.
+  // · "deployed" is the count currently out on a mission (deployment does not subtract from the count);
+  //   deployment and return arrive in M3c.
+  // · ★ Text only — no numbers here; costs / refunds / capacity all come from the `systems/base.js` snapshot.
+  // · ★ Reason texts `base.reason.<code>` — the code list lives in `FLEET_REASON_CODES` (`systems/base.js`)
+  //   and self-check ⑥ verifies every locale has every code.
+  'base.fleet.configs': 'Fleet Configs',
+  'base.fleet.empty': 'No config yet',
+  'base.fleet.saved': 'Created "{name}"',
+  'base.fleet.merged': 'Merged into "{name}"',
+  'base.fleet.create': 'New config',
+  'base.fleet.createTitle': 'New config',
+  'base.fleet.editTitle': 'Edit config (saved as a new one)',
+  'base.fleet.edit': 'Edit',
+  'base.fleet.delete': 'Delete',
+  'base.fleet.saveAsNew': 'Save as new config',
+  'base.fleet.cancel': 'Cancel',
+  'base.fleet.name': 'Name',
+  'base.fleet.nameHint': 'Empty \u21d2 uses the unit name',
+  'base.fleet.defaultName': '{ship}',
+  'base.fleet.ship': 'Hull',
+  'base.fleet.level': 'Level',
+  'base.fleet.modules': 'Modules',
+  'base.fleet.addModule': 'Add',
+  'base.fleet.clearModules': 'Clear',
+  'base.fleet.removeModule': 'Remove',
+  'base.fleet.noModules': 'No modules',
+  'base.fleet.slots': 'Slots {used} / {slots}',
+  'base.fleet.cost': 'Cost per ship',
+  'base.fleet.refundPerUnit': 'Scrap refund / ship',
+  'base.fleet.free': 'free',
+  'base.fleet.none': 'none',
+  'base.fleet.counts': '{count} ships | {out} deployed',
+  // ★ Fleet table column phrases (the header row is gone: row info now wraps as self-describing fields;
+  //   these phrases serve as hover hints, and "cost / refund" also carry a visible mini label).
+  //   Order: 1 name, 2 icon, 3 type, 4 level, 5 modules, 6 cost, 7 refund, 8 count.
+  'base.fleet.colName': 'Name',
+  'base.fleet.colType': 'Unit type',
+  'base.fleet.colLevel': 'Level',
+  'base.fleet.colModules': 'Modules',
+  'base.fleet.colCost': 'Cost / ship',
+  'base.fleet.colRefund': 'Refund / ship',
+  'base.fleet.colCount': 'Count',
+  'base.fleet.moduleLevel': '{name} level',
+  // ★ M3b iteration 2/3: module picker (second-level dialog) + clickable chips / slots + cost and actions
+  'base.fleet.pickTitle': 'Choose module',
+  'base.fleet.pickAll': 'All',
+  'base.fleet.pickConfirm': 'Confirm',
+  'base.fleet.pickEmpty': 'No installable module in this category',
+  'base.fleet.pickEdit': 'Click: swap / relevel / remove this module',
+  'base.fleet.pickAdd': 'Click an empty slot to add a new module',
+  'base.fleet.pickRemove': 'Remove',
+  'base.fleet.pickAddBtn': 'Add new',
+  'base.fleet.pickConfirmHint': 'Replace this slot with the selection',
+  'base.fleet.pickAddHint': 'Append the selection as a new slot (duplicates allowed)',
+  'base.fleet.pickRemoveHint': 'Delete this slot',
+  'base.fleet.pickCost': 'Install',
+  'base.fleet.pickRemoveCost': 'Detach',
+  'base.fleet.modLevelHint': 'Module level',
+  'base.fleet.orderUp': 'Move up',
+  'base.fleet.orderDown': 'Move down',
+  'base.fleet.orderDrag': 'Drag to reorder (this area is the handle)',
+  'base.fleet.shipLevel': '{ship} \u00b7 Lv{n}',
+  'base.fleet.moduleOf': '{name} Lv{level}',
+  'base.fleet.capacity': 'Fleet capacity',
+  'base.fleet.used': 'Built',
+  'base.fleet.outCount': 'Deployed',
+  'base.fleet.remaining': 'Free',
+  'base.fleet.buildOne': 'Build +1',
+  'base.fleet.scrapOne': 'Scrap +1',
+  'base.fleet.buildHint': 'Build one ship',
+  'base.fleet.scrapHint': 'Scrap one ship',
+  'base.fleet.deleteHint': 'Delete config',
+  'base.fleet.editHint': 'Save as a new config',
+  // · ★ Reason texts `base.reason.<code>` — short phrases shown ONLY in the hover `title`
+  //   (no inline warning text); the code list lives in `FLEET_REASON_CODES` (`systems/base.js`)
+  //   and self-check ⑥ verifies every locale has every code.
+  'base.reason.badSpec': 'Invalid config data',
+  'base.reason.unknownShip': 'Unknown hull',
+  'base.reason.notBuildable': 'Hull not buildable',
+  'base.reason.unlockNotImplemented': 'Unlock not implemented',
+  'base.reason.badLevel': 'Level out of range',
+  'base.reason.slotOverflow': 'Slots full',
+  'base.reason.unknownModule': 'Unknown module',
+  'base.reason.moduleNotPickable': 'Module not installable',
+  'base.reason.badModuleLevel': 'Module level too high',
+  'base.reason.blueprintMissing': 'Blueprints short',
+  'base.reason.badCount': 'Invalid amount',
+  'base.reason.badCost': 'Invalid cost data',
+  'base.reason.capacityFull': 'Fleet capacity full',
+  'base.reason.notAffordable': 'Not enough {resource}',
+  'base.reason.unknown': 'Config not found',
+  'base.reason.notEmpty': '{count} ships remain ({out} deployed)',
+  'base.reason.notEnoughIdle': 'Not enough idle ({idle} idle)',
+  'base.reason.badName': 'Name required',
+  'base.reason.badOut': 'Invalid deployed count',
+  'base.reason.badOrder': 'Invalid reorder argument',
+  'base.reason.edgeMove': 'Already at the edge',
+  'base.reason.badAction': 'Invalid slot action',
+  'base.reason.noTarget': 'No matching module entry',
+  'base.reason.slotsFull': 'All module slots are full ({total}/{slots})',
+  // · ★ One **UI-local** reason code (not an engine code, so not in `FLEET_REASON_CODES`):
+  //   it only explains a disabled picker button when no module can be chosen — everything disabled still says why.
+  'base.reason.noModuleLeft': 'No module to add',
 };

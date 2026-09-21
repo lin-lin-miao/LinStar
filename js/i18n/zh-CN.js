@@ -20,14 +20,12 @@ export default {
   /* 主菜单 */
   'menu.title': 'LinStar',
   'menu.subtitle': '太空背景 · 增量 · 回合制网页游戏',
-  'menu.start': '开始游戏',
   'menu.back': '返回主菜单', // 通用「返回主菜单」（星域配置占位页等非战斗屏使用；与 battle.menu.back 同文案、分命名空间）
   'menu.hint': '存档：右上角可导出 / 导入',
 
   /* 星域配置界面（步骤 S0-1＝占位页；正式实装见开发步骤 C-3） */
   'starfield.config.title': '星域配置',
   'starfield.config.todo': '待开发：后续将在此选择难度/玩法、输入随机种子（默认随机）、配置星域半径与各类型星区数量、编辑 NPC 列表，并预览、导出/导入配置。',
-  'starfield.config.drillHint': '开发测试：原「编队配置（单星区模拟）」已移除界面入口，改用控制台指令 LS.drill() 打开。',
 
   /* 星域数据层（步骤 A-2/A-3/A-4）：星区类型名 / NPC 列表名 / 星域（难度）名
    * ★ 命名体例（由 `data/starfieldData.js selfCheck()` 核对）＝ `sectorType.<id>` / `npcList.<id>` / `starfield.<id>` */
@@ -251,6 +249,15 @@ export default {
   'ship.slagMissile': '矿渣导弹',
 
   /* 模块 */
+  /* ★ 模块**类别**名（模块选择弹窗的分类筛选用；key 体例 `module.cat.<category>`，
+     类别 key 来源＝`data/modules.js` 的 `CATEGORY_ORDER`（**两处同一来源**）；
+     自检 ㉒ 逐类别核对本组词条存在。 */
+  'module.cat.attack': '攻击',
+  'module.cat.shield': '护盾',
+  'module.cat.function': '功能',
+  'module.cat.transport': '运输',
+  'module.cat.mining': '采矿',
+  'module.cat.drone': '无人机',
   'module.cannon': '火炮',
   'module.concussionCannon': '震荡炮',
   'module.heavyCannon': '大型火炮',
@@ -683,4 +690,151 @@ export default {
   //   因该件已不在货舱而不再成句（幂等）；`cargo`＝货物显示名、owner 着色（无 module 段）。
   'battle.log.cargoUnload': '{owner}：把 {cargo} 卸载回星区',
   'battle.result.close': '收起',
+
+  // ================= ★ M3a：主基地（基地屏 / 资源 / 建筑） =================
+  // · 资源词条体例 `res.<key>` / `res.<key>.desc` —— 与 `data/resources.js` 的 nameKey/descKey
+  //   一一对应（`systems/base.js` 的基地自检 ⑥ 会逐语言核对成对存在）。
+  // · 数值一律不写进词条：本区只放名称与用途说明。
+  'res.energy': '能量币',
+  'res.energy.desc': '一切活动的基础消耗：建造、改装、升级、研究、出征均消耗。',
+  'res.ore': '矿物',
+  'res.ore.desc': '原料：建造高阶船只与部件的副消耗；由星域采矿入库带回。',
+  'res.alloy': '合金',
+  'res.alloy.desc': '建造材料：船体与建造的主材料。',
+  'res.rare': '稀土',
+  'res.rare.desc': '稀有建造材料：高等级建造与升级的消耗（占位：等级 3 起）。',
+  'res.science': '科研点',
+  'res.science.desc': '解锁科技：研究站可加速或替代部分研究消耗（M3 无产出，仅调试发放）。',
+  // · 建筑词条体例 `building.<id>` —— 与 `data/baseBuildings/<id>.js` 的 nameKey 一一对应
+  'building.stargate': '星门',
+  'building.commandCenter': '指挥中心',
+  'building.researchStation': '研究站',
+  'building.shipyard': '船坞',
+  'building.planet': '星球',
+  // · ★ 建筑**面板副标题**体例 `building.<id>.meta` —— **每个建筑一句、互不相同**
+  //   （修复"M3a 首版所有面板都显示同一句等级/上限"；`systems/base.js` 自检 ⑥ 逐语言核对）
+  'building.stargate.meta': '星域通道：出征与返回',
+  'building.commandCenter.meta': '舰队指挥与出战上限',
+  'building.researchStation.meta': '蓝图解锁与科研推进',
+  'building.shipyard.meta': '建造船只、装配模块、统辖舰队',
+  'building.planet.meta': '产业建造与资源产出（后续阶段）',
+  // · ★ 船坞**面板分区**（舰队已并入船坞；分区结构写在 `data/baseBuildings/shipyard.js` 的 `zones`）
+  'building.shipyard.zoneBuild': '建造',
+  'building.shipyard.zoneFleet': '舰队配置',
+  // · 主菜单入口
+  'menu.base': '主基地',
+  // · 基地屏文案（阶段占位：M3b~M3e 逐步把各面板替换为实装内容）
+  'base.title': '主基地',
+  'base.subtitle': '建造 · 出征 · 研究 —— 舰队的后方',
+  'base.resBar': '基地资源',
+  'base.buildings': '建筑',
+  'base.level': '等级 {n}',
+  'base.maxLevel': '上限 {n}',
+  'base.panelTodo': '本面板将在 {stage} 实装；当前步骤仅提供骨架占位。',
+  'base.panelLocked': '本阶段未开放',
+  'base.planetNote': '星球产业（产业建造与资源产出）属后续阶段；下方列出本阶段的资源种类与用途。',
+  'base.resUsageTitle': '资源种类与用途',
+  'base.fleetNote': '舰队＝基地内待命船只的集合（建造完成的船只入列）；舰队与出征相关的操作属后续步骤。',
+  // ================= ★ M3b：船坞 —— 舰队配置 / 建造 / 拆解 =================
+  // · 口径：**舰队＝"抽象配置条目 + 数量"**（不是逐艘实例）；建造 ⇒ 数量 +1；拆解 ⇒ 数量 −1 并按比例返还。
+  // · 「在外」＝出征中的数量（出征不从数量里扣）；出征与返回属 M3c。
+  // · ★ 本区**只有名称与措辞**，不含任何数值；造价 / 返还 / 容量等数值一律由 `systems/base.js` 快照提供。
+  // · ★ 原因码文案 `base.reason.<code>` —— code 清单见 `systems/base.js` 的 `FLEET_REASON_CODES`，
+  //   自检 ⑥ 会逐语言核对"每个 code 都有词条"。
+  'base.fleet.configs': '舰队配置',
+  'base.fleet.empty': '暂无配置',
+  'base.fleet.saved': '已新建「{name}」',
+  'base.fleet.merged': '已合并到「{name}」',
+  'base.fleet.create': '新建配置',
+  'base.fleet.createTitle': '新建配置',
+  'base.fleet.editTitle': '编辑配置（另存为新配置）',
+  'base.fleet.edit': '编辑',
+  'base.fleet.delete': '删除',
+  'base.fleet.saveAsNew': '保存为新配置',
+  'base.fleet.cancel': '取消',
+  'base.fleet.name': '名称',
+  'base.fleet.nameHint': '留空 ⇒ 用单位名称',
+  'base.fleet.defaultName': '{ship}',
+  'base.fleet.ship': '船型',
+  'base.fleet.level': '等级',
+  'base.fleet.modules': '模块',
+  'base.fleet.addModule': '添加',
+  'base.fleet.clearModules': '清空',
+  'base.fleet.removeModule': '移除',
+  'base.fleet.noModules': '无模块',
+  'base.fleet.slots': '槽位 {used} / {slots}',
+  'base.fleet.cost': '单艘造价',
+  'base.fleet.refundPerUnit': '拆解返还 / 艘',
+  'base.fleet.free': '免费',
+  'base.fleet.none': '无',
+  'base.fleet.counts': '{count} 艘 | {out} 在外',
+  /* ★ 舰队表格列头（**表头已下线**：行内信息改为自动换行的"字段"体例 ⇒ 列头短语改作各字段的悬浮说明，
+   *   其中"造价 / 返还"两枚字段另有**可见小标签**，避免两串图标分不清是哪个）：
+   *   ①名称 ②图标 ③类型 ④等级 ⑤模块 ⑥造价 ⑦返还 ⑧数量 */
+  'base.fleet.colName': '配置名称',
+  'base.fleet.colType': '单位类型',
+  'base.fleet.colLevel': '等级',
+  'base.fleet.colModules': '模块',
+  'base.fleet.colCost': '造价 / 艘',
+  'base.fleet.colRefund': '返还 / 艘',
+  'base.fleet.colCount': '数量',
+  'base.fleet.moduleLevel': '{name}等级',
+  // ★ M3b 迭代 2：模块「选择弹窗」（二级弹窗）；迭代 3 增补造价与增删动作
+  'base.fleet.pickTitle': '选择模块',
+  'base.fleet.pickAll': '全部',
+  'base.fleet.pickConfirm': '确认',
+  'base.fleet.pickEmpty': '该分类暂无可装配模块',
+  'base.fleet.pickEdit': '点击此模块：更换 / 改等级 / 移除',
+  'base.fleet.pickAdd': '点击空槽位新增模块',
+  'base.fleet.pickRemove': '移除',
+  'base.fleet.pickAddBtn': '新增',
+  'base.fleet.pickConfirmHint': '用当前选择替换该槽位',
+  'base.fleet.pickAddHint': '把当前选择追加为新槽位（可重复）',
+  'base.fleet.pickRemoveHint': '删除该槽位',
+  'base.fleet.pickCost': '装配',
+  'base.fleet.pickRemoveCost': '拆下',
+  'base.fleet.modLevelHint': '模块等级',
+  'base.fleet.orderUp': '上移',
+  'base.fleet.orderDown': '下移',
+  'base.fleet.orderDrag': '拖动排序（本区域即把手）',
+  'base.fleet.shipLevel': '{ship} · Lv{n}',
+  'base.fleet.moduleOf': '{name} Lv{level}',
+  'base.fleet.capacity': '舰队容量',
+  'base.fleet.used': '已建',
+  'base.fleet.outCount': '在外',
+  'base.fleet.remaining': '余量',
+  'base.fleet.buildOne': '建造 +1',
+  'base.fleet.scrapOne': '拆解 +1',
+  'base.fleet.buildHint': '建造 1 艘',
+  'base.fleet.scrapHint': '拆解 1 艘',
+  'base.fleet.deleteHint': '删除配置',
+  'base.fleet.editHint': '另存为新配置',
+  'base.reason.badSpec': '配置数据无效',
+  'base.reason.unknownShip': '未知船型',
+  'base.reason.notBuildable': '该船型不可建造',
+  'base.reason.unlockNotImplemented': '解锁条件未实装',
+  'base.reason.badLevel': '等级超出范围',
+  'base.reason.slotOverflow': '槽位已满',
+  'base.reason.unknownModule': '未知模块',
+  'base.reason.moduleNotPickable': '该模块不可装配',
+  'base.reason.badModuleLevel': '模块等级超上限',
+  'base.reason.blueprintMissing': '蓝图不足',
+  'base.reason.badCount': '数量无效',
+  'base.reason.badCost': '造价数据无效',
+  'base.reason.capacityFull': '舰队容量已满',
+  'base.reason.notAffordable': '{resource}不足',
+  'base.reason.unknown': '配置不存在',
+  'base.reason.notEmpty': '尚有 {count} 艘（在外 {out}）',
+  'base.reason.notEnoughIdle': '可拆解不足（未出征 {idle} 艘）',
+  'base.reason.badName': '名称不能为空',
+  'base.reason.badOut': '在外数量无效',
+  'base.reason.badOrder': '排序参数无效',
+  'base.reason.edgeMove': '已到边界（无需移动）',
+  'base.reason.badAction': '操作类型无效',
+  'base.reason.noTarget': '没有对应的模块条目',
+  'base.reason.slotsFull': '模块槽位已满（{total}/{slots}）',
+  // · ★ **界面本地**原因码（不是引擎码，故不进 `FLEET_REASON_CODES`）：
+  //   仅用于弹窗"添加模块"按钮的禁用说明 —— 保证"**禁用必有原因**"这条口径无例外。
+  //   口径（用户要求）：原因**一律短语**、**只进悬浮 `title`**，行内不再另铺文字。
+  'base.reason.noModuleLeft': '无可装配模块',
 };

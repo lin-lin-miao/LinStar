@@ -5,6 +5,19 @@
 export default {
   id: 'mining',             // 唯一标识（采矿船）
   nameKey: 'ship.mining',   // 名称词条 key（i18n -> 采矿船 / Mining Ship）
+  /* ★ M3 基地侧字段【占位预填 · 待用户调校】——M3a 只铺字段，读取逻辑属 M3b（船坞）。
+   * · `levels[]` 仍是【战斗数值】的唯一逐级表（解析口径 resolveShipAtLevel）；
+   *   下列基地侧字段是**基地数值**：`upgradeCost` 自带逐级表（数组项 { level, cost }，
+   *   未列出的等级沿用上一项；逐级解析属 M3b）；
+   * · `buildable`  可否在船坞建造；`buildCost` 建造消耗；
+   * · `slotGrowth` 槽位成长规则（基础槽位＝既有 `slots`：每 `every` 级 +`add`、最多 +`max`）；
+   * · 缺省即视为「无消耗」；资源键见 data/resources.js（缺失键视为 0）。 */
+  buildable: true,
+  buildCost: { energy: 0, ore: 0, alloy: 0, rare: 0 },
+  upgradeCost: [{ level: 2, cost: { energy: 0, ore: 0, alloy: 0, rare: 0 } }],
+  slotGrowth: { every: 2, add: 1, max: 2 },
+  /* ★ `unlockByLevel` 逐级**后续特性 / 特殊条件**的解锁条件（用户口径：**不由货物决定**）——M3b 为空数组＝无条件；非空 ⇒ 视为"条件尚未实装"、引擎保守拒绝建造。 */
+  unlockByLevel: [], // 【占位预填 · 待用户调校】
   role: 'logistics',        // ★ 单位定位：采矿船默认＝后勤单位（编队条目的 `role` 可覆盖；本条目可逐级覆写）
   slots: 3,                 // Lv1 可装模块数
   /* ★ **航行引擎冷却的基准时长**（星区间移动；【占位预填 · 待用户调校】）：口径见 `data/ships/combat.js`

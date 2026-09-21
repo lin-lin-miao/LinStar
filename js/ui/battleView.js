@@ -31,6 +31,7 @@ import { bus } from '../core/eventBus.js';
 import { i18n } from '../i18n/index.js';
 import { SHIPS } from '../data/ships.js';
 import { MODULES } from '../data/modules.js';
+import { moduleGlyphEl } from './moduleGlyph.js';
 import { startBattle, TARGET_POLICIES } from '../systems/battle.js';
 import {
   modulePoolCapOf,
@@ -78,35 +79,8 @@ function moduleName(id) {
   const t = i18n.t(m.nameKey);
   return t && !t.startsWith('??') ? t : (m.name || id); // 名称降级占位：i18n 缺失时用模块 name/id
 }
-/** 模块"脸"节点：有 SVG 图标(cfg.icon)用 <img>，否则降级显示名称首字。
- *  ★ **缺图回退**：写了 `icon` 但素材缺失/路径失效时，`<img>` 触发 `error` → **就地替换**为
- *    与“无 `icon`”**完全同一条渲染分支**的「名称首字」节点（同一元素形态：无 class 的 `<span>`、
- *    同取 `moduleName` 首字）⇒ 与无图时的呈现**逐字一致**，不新造视觉、不新增类名。
- *  ★ 与召唤单位的 `unitIcon`（同样是 `<img>` + `error` 回退 ▲）**同一写法体例**：`addEventListener('error', …)`
- *    内换掉自身内容。正常路径**零变化**：有图且加载成功时节点/类名/行为与改动前完全一致（`.module-icon-img` 不变）。 */
-function moduleGlyphEl(cfg) {
-  // 「名称首字」降级节点（唯一渲染分支：无 `icon` 与 `icon` 加载失败**共用**此函数）
-  const firstCharEl = () => {
-    const name = moduleName(cfg.id);
-    return el('span', { text: name ? Array.from(name)[0] : '?' });
-  };
-  if (cfg.icon) {
-    const img = el('img', { class: 'module-icon-img', src: cfg.icon, alt: '' });
-    img.draggable = false;
-    // 加载失败 → 用「名称首字」节点**原位替换**该 <img>：
-    //   · `replaceWith` 是“换掉自己”，故**不会重复插入**、也不会累积子节点；
-    //   · 替换后该 <img> 已脱离文档，其 `error` 不会再触发（且 `parentNode` 守卫兜住极端时序）
-    //     ⇒ **不残留破图占位**；
-    //   · 元素尚未挂到文档时 `replaceWith` 按规范为**空操作**（不抛错）—— 实践中 `error` 事件总在
-    //     当前任务之后派发，而各调用方都在同一同步块内把筹码挂进 DOM，故回退恒能生效。
-    img.addEventListener('error', () => {
-      if (!img.parentNode) return; // 已脱离文档（已被替换/移除）→ 不再处理
-      img.replaceWith(firstCharEl());
-    });
-    return img;
-  }
-  return firstCharEl();
-}
+/** 模块"脸"节点（**已抽到 `ui/moduleGlyph.js` 作为唯一口径**，基地舰队表格与本屏共用同一实现；
+ *  此处仅保留调用点，节点形态 / 类名 / `error` 回退路径**未改**）。 */
 /* 注：船型名称/槽位/编队渲染等**编队配置界面专用**的工具函数已随界面一并移入 `ui/setupView.js`（不在此重复实现）。 */
 
 let battle = null;

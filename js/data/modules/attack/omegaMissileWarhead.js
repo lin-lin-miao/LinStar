@@ -18,6 +18,16 @@
  */
 export default {
   id: 'omegaMissileWarhead',
+  /* ★ M3 基地侧字段【占位预填 · 待用户调校】——本模块为**内部弹药**（picker:false，玩家不可装配）
+   *   ⇒ 基地侧的安装 / 拆除 / 升级 / 蓝图 / 科研点字段只作**体例完整**保留，实际不会被消费。
+   * · `levels[]` 仍是【战斗数值】的唯一逐级表（由 entities/module.js 解析 effects/target）；
+   *   下列基地侧字段自带**独立逐级表**（数组项 { level, ... }，未列出该等级则沿用上一项）；
+   * · 缺省即视为「无消耗 / 无门槛」；资源键见 data/resources.js（缺失键视为 0）。 */
+  installCost: { energy: 0, ore: 0, alloy: 0, rare: 0 },
+  removeCost: { energy: 0, ore: 0, alloy: 0, rare: 0 },
+  upgradeCost: [{ level: 2, cost: { energy: 0, ore: 0, alloy: 0, rare: 0 } }],
+  blueprint: [{ level: 1, count: 0 }],
+  scienceCost: [{ level: 2, cost: { science: 0 } }],
   nameKey: 'module.omegaMissileWarhead', // i18n -> 欧米茄导弹爆炸（内部，通常只作为欧米茄导弹的携带模组出现）
   name: '欧米茄导弹爆炸',
   icon: 'assets/img/爆炸.svg',

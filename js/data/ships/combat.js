@@ -23,6 +23,39 @@
 export default {
   id: 'combat',             // 唯一标识（战斗舰）
   nameKey: 'ship.combat',   // 名称词条 key（i18n -> 战斗舰 / Combat Ship）
+  /* ★ M3 基地侧字段【占位预填 · 待用户调校】——M3a 只铺字段，读取逻辑属 M3b（船坞）。
+   * · `levels[]` 仍是【战斗数值】的唯一逐级表（解析口径 resolveShipAtLevel）；
+   *   下列基地侧字段是**基地数值**：`upgradeCost` 自带逐级表（数组项 { level, cost }，
+   *   未列出的等级沿用上一项；逐级解析属 M3b）；
+   * · `buildable`  可否在船坞建造（召唤模板 / NPC 专用为 false）；
+   * · `buildCost`  建造消耗；`slotGrowth` 槽位成长规则（基础槽位＝既有 `slots`：
+   *   每 `every` 级 +`add`、最多 +`max`；规则只描述数据，实装属 M3b）；
+   * · 缺省即视为「无消耗」；资源键见 data/resources.js（缺失键视为 0）。 */
+  buildable: true,
+  /* ★ M3b 真实费用（【占位预填 · 待用户调校】；结构由 tools/patch-m3b-costs.mjs 生成 —— 只调数值即可） */
+  buildCost: { energy: 600, ore: 120, alloy: 240, rare: 0 },
+  /* ★ M3b 真实费用 —— 逐级**升级消耗**（Lv2..Lv16；未列出的等级**沿用上一项**；
+     引擎口径：建 LvN 的造价 ＝ buildCost ＋ Σ(level ≤ N 的升级条目)） */
+  upgradeCost: [
+    { level: 2, cost: { energy: 330, ore: 66, alloy: 132, rare: 0 } },
+    { level: 3, cost: { energy: 469, ore: 94, alloy: 188, rare: 0 } },
+    { level: 4, cost: { energy: 665, ore: 133, alloy: 266, rare: 0 } },
+    { level: 5, cost: { energy: 945, ore: 189, alloy: 378, rare: 4 } },
+    { level: 6, cost: { energy: 1342, ore: 268, alloy: 537, rare: 6 } },
+    { level: 7, cost: { energy: 1905, ore: 381, alloy: 762, rare: 8 } },
+    { level: 8, cost: { energy: 2705, ore: 541, alloy: 1082, rare: 12 } },
+    { level: 9, cost: { energy: 3842, ore: 768, alloy: 1537, rare: 18 } },
+    { level: 10, cost: { energy: 5455, ore: 1091, alloy: 2182, rare: 26 } },
+    { level: 11, cost: { energy: 7747, ore: 1549, alloy: 3099, rare: 37 } },
+    { level: 12, cost: { energy: 11000, ore: 2200, alloy: 4400, rare: 54 } },
+    { level: 13, cost: { energy: 15620, ore: 3124, alloy: 6248, rare: 78 } },
+    { level: 14, cost: { energy: 22181, ore: 4436, alloy: 8872, rare: 113 } },
+    { level: 15, cost: { energy: 31497, ore: 6299, alloy: 12599, rare: 164 } },
+    { level: 16, cost: { energy: 44725, ore: 8945, alloy: 17890, rare: 238 } },
+  ],
+  slotGrowth: { every: 2, add: 1, max: 2 },
+  /* ★ `unlockByLevel` 逐级**后续特性 / 特殊条件**的解锁条件（用户口径：**不由货物决定**）——M3b 为空数组＝无条件；非空 ⇒ 视为"条件尚未实装"、引擎保守拒绝建造。 */
+  unlockByLevel: [], // 【占位预填 · 待用户调校】
   role: 'combat',           // ★ 单位定位：'combat'=战斗单位 / 'logistics'=后勤单位 —— 决定战斗界面把该单位
                             //   显示在【战斗单位栏】还是【后勤单位栏】；编队条目的 `role` 可覆盖本值，
                             //   且本条目**与其它条目一样可逐级覆写**（见文件头等级说明）。

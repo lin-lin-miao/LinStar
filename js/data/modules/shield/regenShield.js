@@ -8,6 +8,16 @@
  */
 export default {
   id: 'regenShield',
+  /* ★ M3 基地侧字段【占位预填 · 待用户调校】——M3a 只铺字段，读取逻辑属 M3b（船坞）/ M3e（研究站）。
+   * · `levels[]` 仍是【战斗数值】的唯一逐级表（由 entities/module.js 解析 effects/target）；
+   *   下列基地侧字段自带**独立逐级表**（数组项 { level, ... }，未列出该等级则沿用上一项）；
+   * · 缺省即视为「无消耗 / 无门槛」：installCost / removeCost / upgradeCost / scienceCost 缺失＝免费，
+   *   blueprint 缺失＝无需蓝图；资源键见 data/resources.js（缺失键视为 0）。 */
+  installCost: { energy: 0, ore: 0, alloy: 0, rare: 0 },
+  removeCost: { energy: 0, ore: 0, alloy: 0, rare: 0 },
+  upgradeCost: [{ level: 2, cost: { energy: 0, ore: 0, alloy: 0, rare: 0 } }],
+  blueprint: [{ level: 1, count: 0 }],
+  scienceCost: [{ level: 2, cost: { science: 0 } }],
   nameKey: 'module.regenShield', // i18n -> 再生护盾 / Regenerative Shield
   name: '再生护盾',
   icon: 'assets/img/再生护盾.svg',

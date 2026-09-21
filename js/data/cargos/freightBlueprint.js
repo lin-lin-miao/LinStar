@@ -10,6 +10,19 @@
 export default {
   id: 'freightBlueprint',
   nameKey: 'cargo.freightBlueprint', // i18n -> 货运蓝图 / Freight Blueprint
+  /* ★ M3 基地侧字段【占位预填 · 待用户调校】——M3a 只铺字段，读取逻辑属 M3e（研究站）。
+   * · `researchTicks`（研究耗时）与 `researchCost`（能量币；一次研究一个货物 ⇒ **无件数**）**逐级可覆写**：
+   *   写进 `levels[]` 对应项即可（等级解析 resolveCargoAtLevel 会深合并整条覆盖项，
+   *   未填字段自动沿用上一级）；
+   * · `blueprintOutput` 蓝图产出规则：产出数量 ＝ 货物等级基础表 + 加成；
+   *   `baseByLevel` 逐级基础数量表（数组项 { level, count }，未列出沿用上一项）；
+   *   `bonus` 加成【占位预填 · 待用户调校】（M3 先按 0 加成 ⇒ 产出＝基础数量）：
+   *   产出数量 ＝ `baseByLevel[等级].count` 经 `bonus` 加成后的结果（加成口径与实装属 M3e）；
+   *   `targetModuleId` 为 null ⇒ 目标模块由「货物类型 ⇒ 模块」映射决定（映射表属 M3e）；
+   * · 缺省即视为「无消耗 / 无产出」；资源键见 data/resources.js（缺失键视为 0）。 */
+  researchTicks: 0,
+  researchCost: { energy: 0 },
+  blueprintOutput: { baseByLevel: [{ level: 1, count: 0 }], bonus: 0, targetModuleId: null },
   name: '货运蓝图',
   type: 'freightBlueprint',
   colorKey: '--cat-transport',       // ★ 类型色来源（CSS 变量名，不硬编码色值）

@@ -429,3 +429,443 @@ body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
 .cfg-errors { display: flex; flex-direction: column; gap: 2px; font-size: 11px; line-height: 1.5; color: var(--hp); }
 .cfg-ok { font-size: 11px; color: var(--ok); }
 .cfg-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ================= ★ M3a 主基地屏（屏 `base`） =================
+ * 约定（与 `.sf-*` / `.cfg-*` 同体例）：
+ *  · **不新增任何配色**：资源代表色一律走数据层给的 CSS 变量名（`data/resources.js colorKey`，
+ *    如 `--energy`）——由 JS 写到元素上的 `--base-res-color`，本文件只用 `var(--base-res-color)` 引用；
+ *    其余颜色一律复用既有变量（`--panel / --panel-2 / --bg-deep / --border / --accent / --ok / --warn / --hp / --text / --text-dim`）。
+ *  · 布局：顶部资源栏（flex 1 行）+ 主体（左列表固定宽 + 右面板自适应）。
+ *  · `#app-screen` 自带 `overflow:auto` ⇒ 本屏 `min-height:100%` 即可，不额外设置滚动容器。 */
+.screen-base {
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+
+/* ---- 顶部资源栏 ---- */
+.base-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.base-head { display: flex; flex-direction: column; gap: 1px; }
+.base-title { margin: 0; font-size: 18px; letter-spacing: 2px; color: var(--accent); }
+.base-sub { margin: 0; font-size: 11px; color: var(--text-dim); }
+.base-res {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.base-res-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.base-res-marker { color: var(--base-res-color, var(--text-dim)); }
+.base-res-name { color: var(--text-dim); }
+.base-res-value { color: var(--text); font-variant-numeric: tabular-nums; }
+/* ★ 资源**已达上限**的轻微标识：只用既有 `--warn`（**不新增配色**）
+ *  · 悬浮 `title` ＝ 「当前 / 上限」（`ui/baseView.js` 写入，本文件不管文案）。 */
+.base-res-item.is-full,
+.base-res-item.is-full .base-res-marker,
+.base-res-item.is-full .base-res-name,
+.base-res-item.is-full .base-res-value { color: var(--warn); }
+
+/* ---- 主体：左列表 + 右面板 ---- */
+.base-body { flex: 1 1 auto; display: flex; gap: 12px; align-items: stretch; min-height: 320px; }
+.base-side {
+  flex: 0 0 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.base-side-title { font-size: 12px; color: var(--text-dim); }
+.base-list { display: flex; flex-direction: column; gap: 4px; }
+.base-item {
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.base-item:hover { border-color: var(--accent); }
+.base-item.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: rgba(110, 203, 245, 0.08);
+}
+.base-item-name { font-size: 14px; }
+.base-item-meta { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.base-item-sep { margin: 0 4px; opacity: 0.6; }
+
+/* ---- 右侧面板（当前左列表项） ---- */
+.base-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+/* ★ 面板头：标题 ＋ 副标题 ＋「等级 / 上限」**同一行**（等级/上限靠右，**不单独占行**）
+ *  · `nowrap` ⇒ 正常宽度**恒为一行**；
+ *  · 窄屏兜底：标题 / 副标题**先省略**（`min-width: 0` ＋ `text-overflow: ellipsis`，
+ *    完整文本由 `title` 属性悬浮提示，见 `ui/baseView.js`）；
+ *  · 等级 / 上限 `flex: 0 0 auto` ＋ `nowrap` ⇒ 永不被挤成两行。 */
+.base-panel-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: nowrap; }
+.base-panel-title {
+  margin: 0; font-size: 16px; color: var(--accent);
+  flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* ★ 面板副标题：**每个建筑一句**（`building.<id>.meta`）⇒ 这里是正文样式，不再用等宽数字 */
+.base-panel-meta {
+  font-size: 12px; color: var(--text-dim);
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 等级 / 上限：**与标题同行、靠右**（数字等宽对齐；自身不换行、不占独立行） */
+.base-panel-levels {
+  flex: 0 0 auto; margin-left: auto;
+  display: flex; align-items: baseline;
+  font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* ★ 面板分区（船坞：建造 / 舰队 · 出征状态；结构来自配置 `zones`） */
+.base-zone { display: flex; flex-direction: column; gap: 6px; }
+.base-zone-title { font-size: 13px; color: var(--accent); }
+.base-todo {
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--warn);
+}
+.base-locked {
+  align-self: flex-start;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--hp);
+}
+.base-note { margin: 0; font-size: 12px; line-height: 1.7; color: var(--text-dim); }
+/* ★ 收尾修正：**可隐藏的提示行**（如保存后的「已新建 X」/「已合并到 X」）——**隐藏时必须保留占位**，
+ *   否则提示出现 / 消失会让它下方的舰队列表上下跳动。
+ *   · **占位口径＝显示态的高度**：`.base-note` 是 `font-size:12px + line-height:1.7` ⇒ 单行行高 ＝ 1.7em
+ *     ⇒ 这里用同一 `min-height:1.7em`；同时**强制单行**（`nowrap` + 省略号，全文仍可悬浮查看）
+ *     ⇒ 无论有没有文字，**高度恒定、永不换行顶高**，上下内容纵向位置不动；
+ *   · 隐藏方式＝`visibility: hidden`（**不是** `display:none`，也**不是**条件不渲染）⇒ 仍占位；
+ *     与 `battle.css` 的 `.nav-cool.done` 同一手法；与 `.hidden`（本项目语义＝`display:none`）**刻意区分**。 */
+.base-fleet-notice {
+  min-height: 1.7em; /* ＝ .base-note 的 line-height（12px × 1.7）⇒ 空态与显示态同高 */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.base-fleet-notice.is-empty { visibility: hidden; } /* ★ 无内容 ⇒ 不可见但**保留占位** */
+
+/* ---- 资源种类与用途（星球面板；顺序读资源注册表） ---- */
+.base-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.base-usage-title { font-size: 12px; color: var(--accent); }
+.base-usage-row { display: grid; grid-template-columns: 18px 78px 1fr; align-items: baseline; gap: 6px; font-size: 12px; }
+.base-usage-desc { color: var(--text-dim); line-height: 1.6; }
+
+/* ---- ★ M3b 迭代 2/3/4/5：船坞（**单张合并卡片列表** + 主弹窗 + **二级「选择模块」弹窗**） ----
+ * 配色**全部复用既有变量**（--panel / --panel-2 / --bg-deep / --border / --accent / --warn / --hp / --text / --text-dim），
+ * **不新增任何色值**（遮罩优先用 `color-mix` 从 `--bg-deep` 派生，回退到 battle.css 已在用的 `rgba(0,0,0,0.55)`）。
+ * 模块筹码**直接复用 `battle.css` 既有的 `.module-chip` / `.module-lv` / `.module-slot-empty`**
+ * （⇒ 与战斗单位卡**同一类名与同一层级**，不另创一套风格）；禁用态沿用 `base.css` 的 `.btn:disabled`。
+ *
+ * ★★ 布局（用户口径 · 迭代 3/4/5）：**每条配置 ＝ 一张自适应卡片**
+ *   · **最左元素 ＝ 拖动把手**（`.base-fleet-handle`：**竖向三件套**，自上而下 ＝ ↑ / ⠿ / ↓；
+ *     `draggable` 就在它身上）；
+ *   · 右侧 `.base-fleet-body` ＝ **信息列**（名称 / 图标 / 类型 / 等级 / 模块 ＋ **造价 / 返还 / 数量**）
+ *     ＋ **操作行**（左组＝编辑·删除，右组＝建造·拆解**靠右**）；
+ *   · 信息列与操作行**都 `flex-wrap`** ⇒ 窄屏与长内容**自然换行、不溢出**；
+ *     因此**不再有固定列宽、`min-width` 与横向滚动**（表头一行随之下线：列短语改作各字段的悬浮说明，
+ *     "造价 / 返还"另有**可见小标签**以便区分）；
+ *   · ★ 迭代 4：**造价 / 返还 / 数量 作为整体右对齐**（`.base-fleet-info-right`，`margin-left:auto`）。 */
+.base-fleet-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.base-fleet-table { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* 一行卡片：① 最左把手列（固定宽）② 右侧内容列（可压缩、内部换行） */
+.base-fleet-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  min-width: 0;
+}
+/* ★ 拖动把手：**`.base-fleet-row` 内最左元素**（迭代 5：**竖向三件套**，自上而下 ＝ ↑ / ⠿ / ↓；
+ *   居中排列，可见、可抓、hover 有反馈 —— 只用既有变量 `--border` / `--panel` / `--accent`） */
+.base-fleet-handle {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 1px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: grab;
+  user-select: none;
+  white-space: nowrap;
+}
+.base-fleet-handle:hover { border-color: var(--border); background: var(--panel); }
+.base-fleet-handle:active { cursor: grabbing; }
+.base-handle-grip { font-size: 12px; line-height: 1; color: var(--text-dim); }
+.base-fleet-handle:hover .base-handle-grip { color: var(--accent); }
+.base-fleet-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* 信息列：**允许换行**（字段之间 4px 行距 / 12px 列距），长内容不撑破卡片 */
+.base-fleet-info { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+/* ★ 迭代 4：造价 / 返还 / 数量 —— **整体右对齐**：`margin-left:auto` 把这一整段推到行的右侧；
+ *   段内 `flex-wrap` + `justify-content:flex-end` ⇒ 段内可再折行且**折行后仍右对齐**；
+ *   整段被挤到下一行时（父容器 `flex-wrap`）`margin-left:auto` 在**该行**依然生效 ⇒ **换行不破坏右对齐**。 */
+.base-fleet-info-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 12px;
+  margin-left: auto;
+  min-width: 0;
+}
+.base-order-btn {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  width: 22px;
+  height: 15px;
+  padding: 0;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.base-order-btn:hover:not(:disabled) { border-color: var(--accent); }
+.base-order-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* 拖动中的行 / 落点行（只改透明度与边框色，**不新增色值**） */
+.base-fleet-row.is-dragging { opacity: 0.5; }
+.base-fleet-row.is-drop { border-color: var(--accent); }
+/* 单位图标（`ui/unitIcon.js` 的 `.unit-icon-wrap`）：只在本屏作用域内定尺寸，**不改战斗屏** */
+.base-fleet-icon .unit-icon-wrap,
+.base-fleet-icon .unit-icon-img { width: 22px; height: 22px; min-width: 22px; min-height: 22px; }
+.base-fleet-icon .unit-icon-wrap.fallback { font-size: 15px; }
+/* ★ 字段：**长内容换行**（`overflow-wrap` 而非省略号）——用户口径"长内容必须自然换行且不溢出" */
+.base-fleet-name {
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.base-fleet-type { font-size: 12px; color: var(--accent); min-width: 0; overflow-wrap: anywhere; }
+.base-fleet-level { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.base-fleet-chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
+/* ★ 造价 / 返还：小标签 ＋ **只显示资源图标 + 数量**（用户口径 B-1；图标＝注册表 `marker`，配色＝`colorKey`） */
+.base-fleet-flabel { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.base-fleet-cost, .base-fleet-refund {
+  display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 4px 6px;
+  min-width: 0;
+}
+.base-cost-item { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; }
+.base-cost-item .base-res-marker { font-size: 12px; }
+.base-cost-num { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+.base-cost-empty { font-size: 11px; color: var(--text-dim); }
+.base-fleet-count { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* ★ 操作行：**两组成对**——左组＝编辑 / 删除（常规排布），右组＝建造 / 拆解（**靠右**）；
+ *   两组都可换行（窄屏时右组自动落到下一行并保持右对齐，不溢出） */
+.base-fleet-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.base-ops-left, .base-ops-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.base-ops-right { margin-left: auto; }
+/* ★ 承载 `title` 的包装层：**禁用按钮在浏览器里不弹悬浮提示**，包一层后悬浮同样有效
+ *   （禁用原因**只在 title 里**，行内不再铺黄字 —— 见用户口径"减少冗余文字说明"） */
+.base-act-wrap { display: inline-flex; }
+.base-fleet-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.base-fleet-stat {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+.base-fleet-stat-label { color: var(--text-dim); }
+.base-fleet-stat-value { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ---- 弹窗表单（配置的新建 / 编辑＝另存为新配置） ----
+ * 复用：外层浮层**沿用战斗屏 `.battle-overlay` 的体例**，内层盒子**直接用既有的 `.settle-panel`**
+ * （`css/battle.css` 的结算浮层容器：圆角 / 边框 / 渐变底 / 阴影），本文件只加布局修饰 `.base-dialog`。 */
+/* ★ 弹窗挂载点：`display: contents` ⇒ **不产生盒子**（不占位、不加 flex gap、不影响既有布局），
+ *   里面只有一个 `position: fixed` 的浮层 ⇒ 对屏幕布局**零影响**。 */
+.base-dialog-host { display: contents; }
+.base-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);                                  /* 回退：battle.css 已在用的遮罩色 */
+  background: color-mix(in srgb, var(--bg-deep) 72%, transparent);  /* 支持 color-mix ⇒ 从既有变量派生 */
+}
+.base-dialog {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  width: min(680px, 92vw); /* 宽度上限沿用被复用的 `.settle-panel`（max-width: 680px） */
+  max-width: 100%;
+  max-height: 86vh;
+  overflow: auto;
+  padding: 12px 14px;
+}
+.base-dialog-title { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--accent); }
+.base-dialog-title .unit-icon-wrap,
+.base-dialog-title .unit-icon-img { width: 24px; height: 24px; min-width: 24px; min-height: 24px; }
+.base-form-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.base-form-label { font-size: 12px; color: var(--text-dim); }
+.base-form-input {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.base-form-input:focus { outline: none; border-color: var(--accent); }
+.base-form-select { min-width: 110px; }
+.base-dialog-name { min-width: 180px; flex: 1 1 180px; }
+.base-form-hint { font-size: 11px; color: var(--text-dim); }
+.base-form-stat { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+/* 造价预览：**只显示资源图标 + 数量**（与表格同一写法） */
+.base-form-cost { display: inline-flex; align-items: center; gap: 6px; }
+.base-form-cost-label { color: var(--text-dim); }
+.base-form-warn { font-size: 12px; color: var(--warn); }
+.base-mod-list { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* ★★ 弹窗里的模块图标**放大**（用户口径 A-2：可点区域明确）——只在本屏作用域内改尺寸，
+ *    战斗屏 / 表格的 `.module-chip` 尺寸**不受影响**；颜色仍走 battle.css 的分类色（**不新增色值**）。 */
+.base-dialog .module-chip {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font-size: 16px; /* 无图标素材时的"名称首字"降级也清晰可点 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.base-dialog .module-chip img.module-icon-img { width: 24px; height: 24px; }
+.base-dialog .module-chip .module-lv { font-size: 9px; padding: 0 2px; }
+.base-dialog .module-slot-empty { width: 34px; height: 34px; border-radius: 6px; }
+/* 已装模块：整块可点 ＝ **打开二级弹窗**（更换 / 改等级 / 移除）——★ 迭代 3：`×` 按钮已移除，
+ *   增 / 删**全部**在二级弹窗内完成 ⇒ 本列只有筹码与空槽位占位 */
+.base-mod-open { font: inherit; cursor: pointer; }
+.base-mod-open:hover { border-color: var(--accent); }
+.base-mod-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 空槽位也是可点入口（点击 ⇒ 同一二级弹窗，走**添加**动作；本列不出现"添加"字样的按钮） */
+.base-mod-slot { font: inherit; padding: 0; background: transparent; cursor: pointer; }
+.base-mod-slot:hover { border-color: var(--accent); }
+.base-dialog-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* ★ 二级弹窗底部：**顺序固定**（迭代 4）＝【确认】【新增】【移除】【取消】—— 单组左起排布，
+ *   无左右分组（原先"移除居左"的自动外边距规则已随之删除） */
+
+/* ---- ★★ 二级弹窗：单模块选择（A-1） ----
+ * **复用同一套浮层与盒子**（`.base-dialog-overlay` + `.settle-panel.base-dialog`），只加下面这几个布局类；
+ * 层级**高于主弹窗**（主弹窗 overlay z-index 30 ⇒ 二级 40）。 */
+.base-pick-overlay { z-index: 40; }
+.base-pick {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: min(560px, 92vw);
+  max-width: 100%;
+  max-height: 80vh;
+}
+.base-pick-sub { margin-left: auto; font-size: 12px; color: var(--text-dim); }
+.base-pick-cats { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.base-pick-cat {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.base-pick-cat:hover { color: var(--text); border-color: var(--accent); }
+.base-pick-cat.selected { color: var(--text); border-color: var(--accent); }
+.base-pick-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  overflow: auto;
+  max-height: 46vh;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+/* ★ 独立列表项：**图标 + 名称**（图标＝`ui/moduleGlyph.js` 既有渲染，尺寸更大 ⇒ 可点区域明确） */
+.base-pick-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.base-pick-item:hover { border-color: var(--accent); }
+.base-pick-item.selected { border-color: var(--accent); }
+.base-pick-item .module-chip { width: 30px; height: 30px; padding: 0; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
+.base-pick-item .module-chip img.module-icon-img { width: 22px; height: 22px; }
+.base-pick-item .module-slot-empty { width: 30px; height: 30px; }
+.base-pick-name { white-space: nowrap; }
+.base-pick-level { min-width: 84px; }
+/* ★ 造价行（迭代 3 · 用户口径 1）：装配（`installCost`）与拆下（`removeCost`）——**只图标 + 数量**，
+ *   与表格造价同一呈现（小标签 + 图标 + 数字）；数值全部来自引擎 `moduleCostAt()` */
+.base-pick-costs { gap: 6px 16px; }
+.base-pick-cost { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+/* 窄屏：二级弹窗与主弹窗同宽、列表纵向滚动（不溢出） */
+@media (max-width: 640px) {
+  .base-pick { width: 100%; }
+}

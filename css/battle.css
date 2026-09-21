@@ -711,12 +711,14 @@
 .command-alliance-fill.is-blast {
   background: linear-gradient(90deg, #f59e0b, #fb923c); /* 防爆护盾条：橙色 */
 }
-/* ★ 货舱总量行（货物 / 矿物）：与共享护盾条同一行体例，仅填充色区分（颜色取自 --cargo/--ore 同族） */
+/* ★ 货舱总量行（货物 / 矿物）：与共享护盾条同一行体例，仅填充色区分（颜色取自 --cargo/--ore 同族）
+ * ★★ M3b 迭代 2（用户口径）：**矿物资源色由绿改紫**（`--ore` 已成为紫色资源语义色）
+ *    ⇒ 本条的渐变起点同步改为同族深紫（否则会出现"绿→紫"的断层）；**只改颜色，布局与数值一字未动**。 */
 .command-alliance-fill.is-cargo {
-  background: linear-gradient(90deg, #d97706, var(--cargo)); /* 货物：橙 */
+  background: linear-gradient(90deg, #d97706, var(--cargo)); /* 货物：橙（不变） */
 }
 .command-alliance-fill.is-ore {
-  background: linear-gradient(90deg, #22a55c, var(--ore)); /* 矿物：绿 */
+  background: linear-gradient(90deg, #7a3fbf, var(--ore)); /* 矿物：紫（随资源语义色） */
 }
 /* 货舱总量行的文字配色与填充同色（同盟/防爆两行沿用既有蓝色，不变） */
 .command-alliance-row.is-cargo .command-alliance-label,
