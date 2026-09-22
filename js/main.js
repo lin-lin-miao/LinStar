@@ -22,6 +22,7 @@ import { generateStarfield, previewStarfield, starfieldGenSelfCheck } from './da
 import { createStarfield, starfieldMoveSelfCheck } from './systems/starfield.js';
 import { battleSelfCheck } from './systems/battle.js';
 import * as baseSystem from './systems/base.js';
+import * as expedition from './systems/expedition.js'; // ★ M3d：出征 / 返回闭环的唯一编排层
 
 const AUTOSAVE_MS = 10_000; // 每 10 秒自动保存一次
 
@@ -166,6 +167,15 @@ function attachDebug() {
     //        / `LS.base.fleet.build(id, 1)` / `.scrap(id, 1)`          ⇒ 建造（扣资源）/ 拆解（按船坞比例返还）
     //        / `LS.base.fleet.costOf(id)` / `.refundOf(id, n)`         ⇒ 单艘造价 / 拆解返还**预览**（只读）
     //        / `LS.base.fleet.setOut(id, n)`  ⇒ 登记"在外"数量（M3d 出征预留；出征**不从数量里扣**）
+    //          ★★ M3c ⇒ **M3d 迭代 3 语义修订**：**出战上限不再拦截**，它只是一条「**费率分界**」——
+    //          `Σ out ＋ 本次新增` 可以超过上限（登记照常成功，回执给出 `remaining`（可为负）与 `over`）；
+    //          **减少 `out`（含归零）不受限**（撤回永远允许 ⇒ 名额只会被释放）；
+    //          ★ "超出只加价"的**收费**口径在 `LS.expedition` 侧（`dispatchPriceOf`），**登记层不收费**
+    //        / `LS.base.fleet.canDeploy(id, n)` ⇒ 与 `setOut` **同一口径**的干跑校验（不改状态；
+    //          只可能因入参类问题（`badOut`/`noIdle`/`unknown`）否决，**不因上限否决**）
+    //        / `LS.base.fleet.maxFleet()` / `.deployUsed()` / `.deployRemaining()`
+    //          ⇒ **出战名额三件套**（上限＝指挥中心该等级 `effect.maxFleet`；均为只读；
+    //          ★ 迭代 3：`deployRemaining` 仍是 `max(0, 上限 − 已用)`，现在只作**显示**用）
     //   ★ 改变状态的那几个会**自动重绘**基地屏（体例同 `debug.gain`）。
     base: {
       get state() { return baseSystem.baseState; },
@@ -191,6 +201,12 @@ function attachDebug() {
         rename: (id, name) => repaintBase(baseSystem.renameFleetConfig(id, name)),
         remove: (id) => repaintBase(baseSystem.deleteFleetConfig(id)),
         setOut: (id, n) => repaintBase(baseSystem.setFleetOut(id, n)),
+        /** ★ 出战名额（M3c）：上限 / 已用 / 余量（只读；读指挥中心该等级配置效果，UI 零自算） */
+        maxFleet: () => baseSystem.maxFleetOf(),
+        deployUsed: () => baseSystem.deployUsed(),
+        deployRemaining: () => baseSystem.deployRemaining(),
+        /** ★ 与 `setOut` **同口径**的干跑校验（不改状态；`n` ＝ 目标在外数） */
+        canDeploy: (id, n) => baseSystem.canDeploy(id, n),
         /** ★ 排序（M3b 迭代 2 · B-3）：上移/下移（`delta` ∈ {−1,+1}）与拖动到**最终下标**；
          *  顺序**持久化在状态数组顺序里** ⇒ 快照按该顺序输出；被拒（越界/非法）时**零改动**。 */
         move: (id, delta) => repaintBase(baseSystem.moveFleetConfig(id, delta)),
@@ -213,8 +229,10 @@ function attachDebug() {
         /** ★ 资源**上限**只读口径（M3a 修订：上限＝配置派生；`gain` 会按上限截断） */
         caps: () => baseSystem.capsOf(),
         remaining: (key) => baseSystem.remainingCapOf(key),
-        /** 升级入口的**空实现**（M3a 只返回"未开放 / 未实现"，绝不改动状态；实装属 M3c） */
-        upgrade: (id) => baseSystem.upgradeBuilding(id),
+        /** ★ 建筑升级（M3c：**指挥中心已实装** —— 校验资源 ⇒ 扣资源 ⇒ 等级立即 +1、效果立即生效；
+         *  失败 ⇒ 零改动 + 原因码：`maxLevel` / `notAffordable` / `notImplemented` / `locked` / `unknown`。
+         *  ★ 会扣资源 ⇒ 自动重绘基地屏。其余建筑仍返回"未实现"） */
+        upgrade: (id) => repaintBase(baseSystem.upgradeBuilding(id)),
       },
     },
     // ★ **星域容器**（步骤 B-2：多星区独立战斗实例 + 固定顺序 tick + 星域持续时间 + 跨区阶段占位 + 结算入口预留）。
@@ -388,6 +406,60 @@ function attachDebug() {
       generate: (configOrId, seed) => generateStarfield(configOrId, seed),
       preview: (configOrId, seed) => previewStarfield(configOrId, seed),
       selfCheck: () => starfieldGenSelfCheck(),
+    },
+    // ★ **出征 / 返回闭环**（M3d）—— 基地与星域之间**唯一的业务编排层**（`systems/expedition.js`）。
+    //   界面（星门面板 / 星域地图侧栏）用的就是这一套；控制台同样只调它，**不绕过、不自算**。
+    //   用法：
+    //     · `LS.expedition.fronts()` ⇒ 战区（难度档）只读清单（名称、描述、半径、持续时间、单船费用
+    //       `deployCost`、`activateUnits` 与 `activateCost`＝激活费、★ 迭代 3 的超出加价费率 `overQuota`、付得起？）
+    //     · `LS.expedition.totals([{id:'c1',n:2}])` ⇒ 装配纯汇总（出战上限 / 已在外 / 本次派遣 / 余量）
+    //     · `LS.expedition.preview(specs, { starfieldId:'h1' })` ⇒ 干跑
+    //       （**不改状态**；失败码见 `FLEET_REASON_CODES`：`emptyDeploy`/`tooMany`/`noIdle`/`notAffordable`/`fieldBusy`…
+    //       ★ 迭代 3：`deployLimit` **不再是任何动作的拒绝原因**（出战上限＝**费率分界**，超出只加价）
+    //       ⇒ 现在**永远**不会从这条路径返回）
+    //     · `LS.expedition.launch(specs, { starfieldId:'h1', seed:'demo' })` ⇒ **激活星域**落地
+    //       （扣**激活费 ＋ 随行单位的派遣费**（合并成一个总价）＋ 各配置 `out` 增加（零单位则不加）
+    //        ＋ 用 `seed` 建星域；**失败 ⇒ 基地零改动**）
+    //     · `LS.expedition.returnCheck(unitId)` / `LS.expedition.returnUnit(unitId)` ⇒ 主动返回（判据 / 落地；
+    //       ★ 迭代 2 判据＝**星门类型**：任一星门类型星区都可返回，不在星门类型 ⇒ `notAtGate`）
+    //     · `LS.expedition.settle({ mode:'sync' })` / `.settle({ mode:'end' })` ⇒ 例行 / 结束结算
+    //       （**返回与损毁的唯一结算入口**；返回 ⇒ `out-1`，未返回 ⇒ `count` 与 `out` 同减；矿物入基地、
+    //        货物入研究站库；★ 星域结束时仍在**星门类型**星区存活者自动返回）
+    //   ★ M3d 迭代 2（用户口径七项）追加：
+    //     · `LS.expedition.activate(specs, { starfieldId, seed })` ⇒ **激活星域**（创建该档星域；
+    //       **允许零单位**（空星域先存在，之后再派遣）；费用＝**激活费 ＋ 随行单位的派遣费**
+    //       （读配置 `data/starfields/<id>.js` 的 `activateUnits` / `deployCost` / `overQuota`）；
+    //       **激活本身不占出战名额**）
+    //     · `LS.expedition.launch(...)` ⇒ **兼容别名**（同上；语义已随迭代 2 变为"激活"）
+    //     · `LS.expedition.unitCost(id)` / `.activateCost(id)` ⇒ 只读费用口径（单船费用 / 激活费）
+    //     · `LS.expedition.view({ frontId, specs })` ⇒ 星门面板唯一数据源（★ 迭代 4：**唯一主按钮口径**
+    //       `primary`：`{ mode:'activate'|'dispatch', labelKey（i18n 词条键）, ok, reason, cost }`
+    //       —— 原来的 `activate` / `dispatch` 两个并列判据**已合并进 `primary`**）；
+    //       另有 `unitCost`/`activateUnits`/`activateCost`/`cost`（★ 迭代 3：**合并求和后的一个总价**）
+    //       /`price`（`normal`/`over`/`remaining`/`rate`；★ 迭代 4：**界面不再显示分界说明行**，
+    //       但引擎数据照旧保留，供自检与后续 M4 使用）；`mode:'activate'|'dispatch'`；
+    //       ★ `cardLimit` **已删除**（上限不再限制可选艘数）；契约里**没有星域编号**、也**没有任何提示文字键**）
+    //     · `LS.expedition.selfCheck()` ⇒ `{pass, checks[]}`（M3d 共 **25 项**：原有 18 项 ＋ 迭代 2 的 6 项
+    //       ＋ 迭代 3 的 1 项「出战上限＝费率分界」＋ 迭代 4 的契约改写，见各 `add(...)` 的名字）
+    expedition: {
+      fronts: () => expedition.listBattlefronts(),
+      cycleTier: (frontId, step) => expedition.cycleFrontId(frontId, step),
+      totals: (specs) => expedition.expeditionTotals(specs),
+      preview: (specs, opts) => expedition.previewExpedition(specs, opts || {}),
+      view: (opts) => expedition.stargateView(getStarfield(), opts || {}),
+      activate: (specs, opts) => expedition.activateExpedition(specs, opts || {}),
+      launch: (specs, opts) => expedition.launchExpedition(specs, opts || {}), // ★ 兼容别名（＝activate）
+      unitCost: (id) => expedition.deployCostOf(id),
+      activateCost: (id) => expedition.activateCostOf(id),
+      dispatch: (specs, opts) => expedition.dispatchExpedition(getStarfield(), specs, opts || {}),
+      giveUpCheck: () => expedition.giveUpCheckIn(baseSystem.baseState, getStarfield()),
+      giveUp: () => expedition.giveUpExpedition(getStarfield()),
+      alive: () => expedition.aliveDeployedOf(getStarfield()),
+      returnCheck: (unitId) => expedition.returnCheck(getStarfield(), unitId),
+      returnUnit: (unitId) => expedition.settleExpedition(getStarfield(), { mode: 'unit', unitId }),
+      settle: (opts) => expedition.settleExpedition(getStarfield(), opts || { mode: 'end' }),
+      tick: () => expedition.tickExpedition(getStarfield()),
+      selfCheck: () => expedition.selfCheck(),
     },
   };
 }

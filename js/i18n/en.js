@@ -41,12 +41,16 @@ export default {
   'starfield.h1': 'H1',
   'starfield.h2': 'H2',
   'starfield.h3': 'H3',
+  // ★ M3d: tier descriptions (the stargate panel reads `descKey` from `data/starfields/*.js`; numbers stay in config)
+  'starfield.h1.desc': 'Entry: light patrols, good for probing and mining',
+  'starfield.h2.desc': 'Mid: mineral sectors are patrolled, longer front',
+  'starfield.h3.desc': 'High: heavy garrisons, highest risk and reward',
 
   /* Starfield Map (step C-1: read-only view + zoom/pan + click-to-select; full battle sidebar = C-2).
    * Sector type names are NOT duplicated here — they use the existing `sectorType.<id>` keys. */
   'starfield.map.title': 'Starfield Map',
   'starfield.map.back': 'Back to Configuration',
-  'starfield.map.meta': 'Difficulty {id} · Seed {seed} · Radius {r}',
+  'starfield.map.meta': 'Difficulty {id} · Code {seed} · Radius {r}',
   'starfield.map.remaining': '{s}s left',
   // ★ The below-the-map operation hint (formerly `starfield.map.hint`) was removed entirely ⇒ key deleted.
   'starfield.map.legend': 'Legend',
@@ -191,6 +195,8 @@ export default {
   'starfield.map.status.finished': 'Time is up',
   'starfield.map.status.settled': 'Settled',
   'starfield.map.status.stopped': 'Stopped',
+  // ★ M3d iteration: status word during the end show (whitening ring by ring; gameplay frozen)
+  'starfield.map.status.collapsing': 'Collapsing',
   /* Per-**sector** phase text: value = the container's read-only `sectors[].phase` (mapped as-is, never inferred) */
   'starfield.phase.idle': 'Idle',
   'starfield.phase.running': 'Running',
@@ -216,13 +222,16 @@ export default {
   'starfield.sidebar.stageTodo': 'The full battle scene will be mounted here in step C-2.',
   /* ★★ Inter-sector movement (stage-2 UI): drag a sidebar unit card onto a map cell to issue the move —
    * every failure `reason` maps 1:1 to the engine's single write entry `moveUnitTo` (UI never invents rules).
-   * ★ Dropping onto the unit's own sector CANCELS the move (a success, not a failure) ⇒ `cancelled` notice. */
-  'starfield.move.failed': 'Cannot move: {reason}',
-  'starfield.move.cancelled': 'Move cancelled',
+   * ★ Dropping onto the unit's own sector CANCELS the move (a success, not a failure).
+   * ★ M3d iteration 2: `starfield.move.failed` ("Cannot move: {reason}") and `starfield.move.cancelled`
+   *   ("Move cancelled") were removed — the starfield map renders no prompt text at all; these `reason`
+   *   phrases remain only for debugging / button titles.
+   * ★ M3d iteration 3: `'far'` now means NO PATH on the map (4-directionally unreachable ⇒ rejected;
+   *   when any path exists the engine always routes around instead of rejecting). */
   'starfield.move.none': 'No such unit',
   'starfield.move.dead': 'That unit is destroyed',
   'starfield.move.owner': 'That unit is not under your command',
-  'starfield.move.far': 'Blocked by the layout — unreachable',
+  'starfield.move.far': 'No path on the map: unreachable in all four directions',
   'starfield.move.invalid': 'No such sector',
   'starfield.move.finished': 'The starfield has ended — no more orders',
   /* Starfield configuration placeholder: entry into the map (C-1) */
@@ -527,8 +536,8 @@ export default {
   'unit.navQueued': 'Queued for #{n}',
   'unit.navQueueMark': '⇥#{n}',
   'unit.navCd': 'Step cooldown {n}t',
-  /* ★ The followed (selected) unit vanished while moving ⇒ collapse the detail with a short notice. */
-  'starfield.follow.lost': 'The selected unit is no longer in the starfield',
+  /* ★ The followed (selected) unit vanished while moving ⇒ collapse the detail (★ M3d iteration 2:
+   *   no notice anymore — `starfield.follow.lost` was removed; the map renders no prompt text). */
   'battle.detail.empty': 'Click a unit in the scene for details',
   'battle.detail.slots': '{n} module slots',
   'battle.detail.modules': 'Modules',
@@ -846,7 +855,88 @@ export default {
   'base.reason.badAction': 'Invalid slot action',
   'base.reason.noTarget': 'No matching module entry',
   'base.reason.slotsFull': 'All module slots are full ({total}/{slots})',
+  // · ★ M3c: this code originally capped deployment by the command center's maxFleet. ★★ Since M3d iteration 3
+  //   the cap no longer blocks anything (it is only the *rate boundary*), so this code is never thrown;
+  //   the entry stays because `FLEET_REASON_CODES` keeps `deployLimit` as a UI phrase (self-check ⑥ requires
+  //   both locales to have it). The wording is boundary-style now, not "rejected".
+  'base.reason.deployLimit': 'Deployment slots full (used {used} / limit {limit}, need {need}) — the excess is surcharged',
+  // · ★ M3c: nothing idle left in this config (prerequisite reason of the `deployable` view).
+  'base.reason.noIdle': 'No unit available to deploy ({idle} idle / {out} deployed)',
+  // · ★ M3c: building upgrade failure codes (same style as the fleet codes above; used for disabled upgrade buttons).
+  'base.reason.notBuilding': 'List item is not a building',
+  'base.reason.locked': 'Not unlocked in this stage',
+  'base.reason.notImplemented': 'Building not implemented yet',
+  'base.reason.maxLevel': 'Already at max level (Lv{level} / Lv{maxLevel})',
   // · ★ One **UI-local** reason code (not an engine code, so not in `FLEET_REASON_CODES`):
   //   it only explains a disabled picker button when no module can be chosen — everything disabled still says why.
   'base.reason.noModuleLeft': 'No module to add',
+  // ================= ★ M3d: deployment / return loop =================
+  // · Costs, slots, ore and cargo all come from the engine; this section only holds wording.
+  // · New failure codes (same style as `FLEET_REASON_CODES`; self-check ⑥ verifies both locales):
+  'base.reason.emptyDeploy': 'No units selected to send',
+  'base.reason.tooMany': 'More than the idle count ({idle} idle)',
+  'base.reason.badSeed': 'Invalid starfield code',
+  // · ★ M3d iteration: with a starfield of the SAME tier already open you may keep dispatching (no longer this
+  //   code); it now means "another tier's starfield is running" (return or give it up first).
+  'base.reason.fieldBusy': "Another tier's starfield is already running (return or give it up first)",
+  'base.reason.fieldOver': 'Starfield already ended',
+  'base.reason.notDeployed': 'This unit was not deployed from the base',
+  'base.reason.unitDead': 'Unit destroyed',
+  'base.reason.notAtGate': 'Not in the stargate sector',
+  // · ★ M3d iteration: giving up is refused while deployed units are still alive in the starfield.
+  'base.reason.unitsAlive': 'Deployed units are still alive in the starfield ({alive})',
+  // · ★ M3d iteration: only one battlefront tier exists ⇒ the arrows have nowhere to go.
+  'base.reason.oneTier': 'Only one battlefront tier: nothing to switch to',
+  // · ★ UI-local reason code (same as `noModuleLeft`: not in `FLEET_REASON_CODES`): Resume is disabled with no starfield.
+  'base.reason.noField': 'No starfield right now',
+  // · Stargate panel (zone name → `zones[].nameKey` in `data/baseBuildings/stargate.js`)
+  'building.stargate.zoneField': 'Expedition',
+  'base.stargate.frontTitle': 'Battlefronts (tiers)',
+  'base.stargate.radius': 'Radius',
+  'base.stargate.duration': 'Duration',
+  // M3d iteration 3: the `cost` / `activateCost` label keys were removed — cost is shown ONLY inside the buttons.
+  'base.stargate.free': 'Free',
+  'base.stargate.tierPrev': 'Previous tier',
+  'base.stargate.tierNext': 'Next tier',
+  'base.stargate.remaining': 'Starfield time left {left}',
+  'base.stargate.remainingHint': 'This starfield is still running (leaving the map suspends it: time stops advancing)',
+  // M3d iteration 3: `assign` / `noIdleUnit` / `emptyFleet` were removed — no explanatory text inside this panel.
+  'base.stargate.limit': 'Deploy limit',
+  'base.stargate.outCount': 'Deployed',
+  'base.stargate.dispatch': 'This wave',
+  'base.stargate.spare': 'Remaining',
+  'base.stargate.cardPick': '{name} #{k}: click to pick this ship',
+  'base.stargate.cardOff': '{name} #{k}: picked, click again to unpick',
+  // ★ M3d iteration 2: the old `base.stargate.send` / `base.stargate.sendHint` ("Deploy") keys were removed —
+  //   ★ iteration 4: the primary action is ONE button whose text switches by mode (see the two pairs below).
+  // M3d iteration 3: `costNow` / `dispatched` / `giveUpDone` / `noField` / `running` (status line) were removed —
+  //   the panel has no status line any more; cost lives only inside the button (`costTotal`).
+  'base.stargate.activateGo': 'Activate starfield',
+  'base.stargate.activateHint': 'Create the starfield for this tier (zero units allowed: an empty starfield exists first, then send ships with "Send"); the number inside the button is the activation fee plus the send fee of the accompanying ships',
+  'base.stargate.dispatchGo': 'Send',
+  'base.stargate.dispatchHint': 'Reinforce the running starfield with the picked units (no new starfield, no reset); the number inside the button is the normal-rate part plus the surcharge for ships beyond the normal slots',
+  'base.stargate.giveUp': 'Give up',
+  'base.stargate.giveUpHint': 'End this starfield immediately (only when no deployed unit is still alive)',
+  'base.stargate.resume': 'Resume',
+  'base.stargate.resumeHint': 'Go back to the running starfield map (leaving suspends it, slots unchanged)',
+  // M3d iteration 3 addition: the cost row's `title` (the ONLY cost display is the merged number inside the button)
+  'base.stargate.costTotal': 'Total charged by this click (activation fee and surcharge are merged into one number)',
+  // ★★ M3d iteration 4: `base.stargate.rateBound` / `overBound` (the orange boundary line inside the button) were
+  //   REMOVED by the user's call — the panel no longer shows "N at normal rate · M over the limit". The engine's
+  //   `view.price` data is kept as-is (self-check + future M4).
+  // M3d iteration 3: `base.stargate.note` (the explanatory paragraph under the stargate zone) was removed together
+  //   with the `zones[].noteKey` entry in `data/baseBuildings/stargate.js` (this panel has no `.base-note`).
+  // · Starfield map sidebar: "Return to base" (visible only for base-deployed units sitting in a stargate-TYPE sector)
+  'starfield.return.title': 'Return to base',
+  'starfield.return.hint': 'Send this unit back to base (repaired on return + booked; stargate-type sector only)',
+  'starfield.return.reason.none': 'No unit selected',
+  'starfield.return.reason.notDeployed': 'This unit was not deployed from the base',
+  'starfield.return.reason.unitDead': 'Unit destroyed',
+  'starfield.return.reason.notAtGate': 'Not in a stargate-type sector',
+  'starfield.return.reason.fieldOver': 'Starfield already ended',
+  // ★ M3d iteration 2: ALL floating notice text was taken down — the keys below were REMOVED (the starfield map
+  //   renders no prompt text at all; settlement/return/loss accounting is still recorded and written to the log):
+  //   `starfield.return.done` / `.drop` / `.end` (return settlement) / `.lost` (loss booking) /
+  //   `starfield.collapse.start` (show opening) / `starfield.move.failed` / `.cancelled` / `starfield.follow.lost`.
+  //   ★ `starfield.return.reason.*` is KEPT: those are the disabled-button `title` phrases (not floating text).
 };

@@ -88,6 +88,16 @@ import { i18n } from '../i18n/index.js';
 import { router } from './router.js';
 import { unitIcon } from './unitIcon.js';
 import { moduleGlyphEl } from './moduleGlyph.js';
+import { randomSeed } from '../core/rng.js'; // ★ M3d：星域编号是**界面唯一随机源**（不提供输入框）
+import { formatTickSeconds, ticker } from '../core/tick.js'; // ★ 秒数走唯一换算（UI 不自算）；★ 迭代 2：放任星域需恢复变速器
+import { getStarfield, setStarfield } from './starfieldSession.js'; // ★ M3d：当前星域的唯一持有者（只取/放）
+import {
+  cycleFrontId, // ★ M3d 迭代：档位箭头的**循环切换**（唯一口径；界面不自己取模）
+  stargateView, // ★ M3d 迭代：星门面板的**唯一数据源**（档位/剩余时间/统计/按钮可用性；界面零自算）
+  activateExpedition, // ★ M3d 迭代 2：**激活星域**（创建该档星域；**允许零单位**，费用＝激活费）
+  dispatchExpedition, // ★ M3d 迭代：**多次派遣**（增量注入既有星域；不新建、不重置；费用＝n × 单船费用）
+  giveUpExpedition, // ★ M3d 迭代：**放弃星域**（立刻结束；仍有存活派遣单位 ⇒ 拒绝）
+} from '../systems/expedition.js';
 import {
   snapshot,
   previewFleetSpec,
@@ -768,12 +778,291 @@ function pickerNodes(ctx) {
   return overlay;
 }
 
+/** ★ 统计块（**可在原地更新数值**的版本；类名沿用既有 `.base-fleet-stat*`）
+ *  —— M3d 装配表要"只改变化项"，所以需要拿到数值节点（`statChip` 建完就拿不到了）。 */
+function chipNode(label) {
+  const valueEl = el('span', { class: 'base-fleet-stat-value' });
+  const node = el('span', { class: 'base-fleet-stat', title: label }, [
+    el('span', { class: 'base-fleet-stat-label', text: label }),
+    valueEl,
+  ]);
+  return { node, valueEl };
+}
+
+/** ★★ **M3d 迭代：星门面板**（档位箭头 / 剩余时间 + 单位卡片装配 + 主按钮 / 放弃星域 / 返回星域）
+ *  口径（用户已定，逐条对应下方实现）：
+ *   · **档位＝左右箭头**（`<<` 档位 `>>`；数据仍读星域档位注册表，**循环**切换由引擎
+ *     `cycleFrontId()` 给值，界面不自己取模）；**仅一档 ⇒ 两个箭头灰 + 原因**（`oneTier`）；
+ *   · **已有星域 ⇒ 箭头区换成「星域剩余时间」**（走既有 tick→秒换算 `formatTickSeconds`），
+ *     **同一时间只允许一个星域** ⇒ 已开星域时引擎把档位**锁定为进行中的那一档**；
+ *   · **星门面板不显示星域编号**：编号只在星域（地图/侧栏）显示 —— 面板**没有任何编号节点/复制按钮**；
+ *   · **装配＝单位卡片**：★ 每张卡片＝该配置的 **1 艘**（3 艘空闲 ⇒ 3 张卡）；点击**选中/再点取消**；
+ *     卡片内容复用船坞同一渲染口径（`unitIcon(c.iconShip)` + 名称/类型/`Lv` + `moduleChipsRow` 摘要）；
+ *     ★★ M3d 迭代 3：**出战上限不再限制可选艘数**（上限＝**费率分界** ⇒ 超出只是加价）⇒ 卡片**只看空闲数**；
+ *   · ★★ **迭代 2：主按钮承载两个独立动作**（各自干跑/落地、失败两侧零改动）；
+ *     ★★ **迭代 4：两者合并到同一个按钮上**（不再并存）—— 界面**只读 `view.primary`**：
+ *     · `primary.mode === 'activate'` ⇒ 「**激活星域**」`activateExpedition`：创建该档星域；★ **可零单位激活**；
+ *     · `primary.mode === 'dispatch'` ⇒ 「**派遣**」`dispatchExpedition`：向既有星域**增量注入** n 艘（不新建、不重置）；
+ *     · 文本＝`i18n.t(primary.labelKey)`、可用性/原因＝`primary.ok` / `primary.reason`（界面不比较两套判据）；
+ *   · ★★ **迭代 3 费用只出现在按钮内**（用户口径，逐条落实）：
+ *     · **唯一主按钮单独成列**（`.base-sf-primary`，独占一行、不与卡片区或其它操作混排）＋
+ *       下方「放弃星域」「返回星域」（`.base-sf-ops`）；`.btn` 体系 + `base-sf-big` 放大修饰类，**不新增任何配色**；
+ *     · **费用只在按钮内**且**合并求和、只给一个数**（`primary.cost`；界面**不做乘法、不做加法**）——
+ *       即使按钮因"资源不足/装配非法"而灰，**价格照样显示**（用户一眼看到差多少）；
+ *     · **别处一律不显示费用** ⇒ 档位行**不再显示**「单船费用 / 激活费」标签，状态行也不显示"本次费用"；
+ *     · ★★ **迭代 4：取消橙字分界说明行**（原 `.base-sf-big-bound` 节点与 `rateBound`/`overBound` 词条已删）——
+ *       引擎的 `view.price`（`normal`/`over`/`rate`）**照旧保留**（自检与后续 M4 仍要用），界面只是不再显示；
+ *   · ★★ **迭代 3 面板内不出现任何说明性文字节点**（已删除 `.base-sf-assign-title` 装配标题与
+ *     `.base-sf-notice` 状态行；本面板内的 `.base-note` 空态短语也**全部删除**）——
+ *     原因**只保留在按钮 `title`**（禁用按钮包一层 `.base-act-wrap` 才能悬浮出提示）；
+ *   · **档位标签只读引擎事实**：半径 / 持续时间（★ 不再显示费用标签）；
+ *   · **放弃星域**：仍有存活的派遣单位 ⇒ 灰 + `unitsAlive`；★ 放弃成功 ⇒ 调 `ticker.restore()`（变速器出口之一）；
+ *   · **数据全部读引擎**（`stargateView` 一个数据源 + `cycleFrontId` 切档）⇒ 界面**不自算任何数值**（含费用乘法）；
+ *   · **禁用必有原因**（`.base-act-wrap` 的 `title`）；**只改变化项**（本地 `paint()`，不重建面板）；
+ *   · ★★ **空态一律可渲染**（曾因"单个节点当 children"崩溃 ⇒ 见 `core/utils.js el()` 的放宽）：
+ *     没有舰队配置 / 有配置但空闲 0 / 没有档位 / 没有星域 / 没有模块 —— 各分支都只走"空数组或空按钮 +
+ *     `title` 原因"，且 `el()` 现已容忍 `Array | Node | string | null | undefined | false`。 */
+function stargatePanel(ctx) {
+  const draft = ctx.sf; // `{ frontId, sel:{配置id:已选艘数} }`（跨面板重建保留）
+  if (!draft.sel || typeof draft.sel !== 'object') draft.sel = {};
+  const snap = snapshot();
+  const configs = snap.fleet.configs || [];
+  // ★ 草稿自愈：已选艘数必须是 `[0, 该配置空闲数]` 的整数（面板重建后空闲数可能变小 ⇒ 夹取到合法范围）
+  for (const c of configs) {
+    const s = draft.sel[c.id];
+    if (!Number.isInteger(s) || s < 0) draft.sel[c.id] = 0;
+    else if (s > c.idle) draft.sel[c.id] = c.idle;
+  }
+
+  /** 选中→装配册（`[{id,n}]`；**只含 > 0 的条目**，与引擎归一化口径一致） */
+  const specsOf = () =>
+    configs
+      .map((c) => ({ id: c.id, n: Number.isInteger(draft.sel[c.id]) ? draft.sel[c.id] : 0 }))
+      .filter((it) => it.n > 0);
+
+  /* ---------- 档位箭头区（可用档位清单来自引擎；仅一档 ⇒ 灰） ---------- */
+  const prevBtn = el('button', { class: 'base-sf-arrow', type: 'button', text: '<<' });
+  const nextBtn = el('button', { class: 'base-sf-arrow', type: 'button', text: '>>' });
+  const tierNameEl = el('span', { class: 'base-sf-tier-name' });
+  const tierDescEl = el('span', { class: 'base-sf-front-desc' });
+  const tierChipsEl = el('span', { class: 'base-sf-front-chips' });
+  const remainEl = el('span', { class: 'base-sf-remain' }); // 已开星域 ⇒ 显示「剩余时间」
+  const prevWrap = el('span', { class: 'base-act-wrap' }, [prevBtn]);
+  const nextWrap = el('span', { class: 'base-act-wrap' }, [nextBtn]);
+  /** 箭头 + 档位名（**未开星域**时显示；已开 ⇒ 整块隐藏、改显剩余时间） */
+  const tierLineEl = el('div', { class: 'base-sf-nav' }, [prevWrap, tierNameEl, nextWrap]);
+  const navWrap = el('div', { class: 'base-sf-nav-wrap' }, [tierLineEl, remainEl, tierDescEl]);
+
+  /** 切档（**唯一的位移口径**＝引擎 `cycleFrontId`）；已开星域时按钮本就灰 ⇒ 这里只是二次防线 */
+  const stepTier = (k) => {
+    draft.frontId = cycleFrontId(draft.frontId, k);
+    paint();
+  };
+  prevBtn.addEventListener('click', () => stepTier(-1));
+  nextBtn.addEventListener('click', () => stepTier(1));
+
+  /* ---------- 单位卡片区（★ 每张卡片＝该配置的 1 艘） ---------- */
+  const cardsByCfg = new Map(); // 配置 id -> [{ node, index }]
+  const cardsBox = el('div', { class: 'base-sf-cards' });
+  for (const c of configs) {
+    const n = c.idle > 0 ? c.idle : 0; // 空闲 n 艘 ⇒ n 张卡片（引擎只读口径 `idle = count − out`）
+    const cards = [];
+    for (let i = 0; i < n; i += 1) {
+      const card = el('button', { class: 'base-sf-card', type: 'button' });
+      card.append(
+        el('span', { class: 'base-sf-card-ico', title: textOf(c.typeNameKey, c.shipId) }, [unitIcon(c.iconShip)]),
+        el('span', { class: 'base-sf-card-main' }, [
+          el('span', { class: 'base-sf-card-name', text: c.name, title: c.name }),
+          el('span', { class: 'base-sf-card-sub' }, [
+            el('span', { class: 'base-sf-type', text: textOf(c.typeNameKey, c.shipId) }),
+            el('span', { class: 'base-sf-lv', text: `Lv${c.level}` }),
+            el('span', { class: 'base-sf-card-idx', text: `#${i + 1}` }),
+          ]),
+        ]),
+        // ★ 与船坞**同一渲染口径**的模块筹码摘要（`moduleChipsRow` 是两处唯一构造器）
+        // ★★ 缺陷修复：`moduleChipsRow()` 返回的是**单个 `<span>` 节点**（不是数组！船坞处是把它
+        //    当作**数组元素**用的，见 `fleetTable` 的 `info` 列）——直接当 `el()` 的第三参（children）
+        //    传进去会让 `appendChildren` 去 `for…of` 一个 Node ⇒ `TypeError: children is not iterable`。
+        //    ⇒ 这里**必须包成数组**（`el()` 现已容忍单节点，但仍按"显式数组"写法，避免歧义）。
+        el('span', { class: 'base-sf-card-mods' }, [moduleChipsRow(c.moduleChips)])
+      );
+      card.addEventListener('click', () => {
+        const cur = Number.isInteger(draft.sel[c.id]) ? draft.sel[c.id] : 0;
+        draft.sel[c.id] = i < cur ? i : cur + 1; // ★ 点已选 ⇒ 取消这一张（后续回到未选）；点未选 ⇒ 选中到它
+        paint();
+      });
+      cardsBox.append(card);
+      cards.push({ node: card, index: i });
+    }
+    cardsByCfg.set(c.id, cards);
+  }
+  // ★★ 迭代 3：本面板内**不再有任何说明性文字节点**（空态也如此）——
+  //    "没有舰队配置 / 没有空闲单位"这类情况只体现在主按钮的 `title` 与可用性上
+  //    （★ 注意：零单位激活是**合法**的 ⇒ 没有配置/没有空闲时，「激活星域」**照样可点**、照样显示激活费）。
+
+  /* ---------- 统计块（数值全部来自引擎） ---------- */
+  const chipLimit = chipNode(i18n.t('base.stargate.limit'));
+  const chipOut = chipNode(i18n.t('base.stargate.outCount'));
+  const chipSend = chipNode(i18n.t('base.stargate.dispatch'));
+  const chipSpare = chipNode(i18n.t('base.stargate.spare'));
+
+  /* ---------- ★★ 迭代 4：**唯一主按钮**（激活星域 ⇄ 派遣 同体一个按钮）+ 放弃 / 返回 ----------
+   * ★ 结构：按钮内**两行** —— 标签行（`base-sf-big-label`）＋ **费用行**（`base-sf-big-cost`，唯一显示费用处）；
+   *   · 文本与费用**全部读引擎**：`view.primary.labelKey`（i18n 键）/ `view.primary.cost`（合并求和的一个数）；
+   *   · 未激活 ⇒ 按钮＝「激活星域」；**激活成功后同一按钮变「派遣」**（`primary.mode` 切换）；
+   *   · ★ 迭代 4：**取消橙字分界说明行**（原 `.base-sf-big-bound` 已删；引擎的 `price` 数据照旧保留）。 */
+  const bigBtn = (labelKey, isPrimary) => {
+    const cls = isPrimary ? 'btn primary base-sf-big' : 'btn base-sf-big';
+    const labelEl = el('span', { class: 'base-sf-big-label', text: i18n.t(labelKey) });
+    const costEl = el('span', { class: 'base-sf-big-cost' });
+    const btn = el('button', { class: cls, type: 'button' }, [labelEl, costEl]);
+    return { btn, labelEl, costEl, wrap: el('span', { class: 'base-act-wrap base-sf-bigwrap' }, [btn]) };
+  };
+  // ★ 主按钮带 `.btn.primary`（**沿用 `css/base.css` 既有配色** ⇒ 零新增配色值），与下方两个动作按钮区分
+  const primaryB = bigBtn('base.stargate.activateGo', true);
+  const giveB = bigBtn('base.stargate.giveUp');
+  const resumeB = bigBtn('base.stargate.resume');
+
+  /* ★★ 迭代 2：**「激活星域」与「派遣」是两个独立动作**（各自干跑/落地、失败两侧零改动）；
+   *   ★ 迭代 4：两者**合并到同一个按钮**上，由 `view.primary.mode` 决定点下去走哪条路 ——
+   *     可用性与原因**只读 `view.primary`**（界面不自己拼判据、不比较两套判据）。 */
+  primaryB.btn.addEventListener('click', () => {
+    const cur = getStarfield();
+    const view = stargateView(cur, { frontId: draft.frontId, specs: specsOf() });
+    if (!view.primary.ok) return; // 禁用态本不该收到点击；真被点到也**不弹文字**
+    if (view.primary.mode === 'dispatch') {
+      // ★ **多次派遣**：增量注入既有星域（不新建、不重置既有状态）；费用＝引擎算好的合并总价
+      const r = dispatchExpedition(cur, specsOf());
+      if (!r.ok) return;
+      clearSel();
+      ctx.refresh(); // ★ 派遣成功 ⇒ 重建右面板（空闲数/已在外都变了）
+      return;
+    }
+    // ★ **激活星域**（可零单位）：编号＝`randomSeed()`（**界面唯一随机源**；不提供输入）
+    const seed = randomSeed();
+    const r = activateExpedition(specsOf(), { starfieldId: draft.frontId, seed, current: cur });
+    if (!r.ok) return;
+    setStarfield(r.starfield); // ★ 激活成功 ⇒ 当前星域＝刚建的这个（唯一持有者写入）
+    clearSel();
+    router.show('starfieldMap'); // ★ 直接进入星域地图（离开地图即**挂起**）
+  });
+  giveB.btn.addEventListener('click', () => {
+    const cur = getStarfield();
+    const r = giveUpExpedition(cur);
+    if (!r.ok) return;
+    setStarfield(null); // ★ 放弃 ⇒ **立刻结束并关闭星域**（回到"可再激活星域"状态）
+    // ★★ M3d 迭代 2：**变速器出口之一** ⇒ 放弃星域（回到基地）时把全局 tick 变速器恢复常态（唯一入口）
+    ticker.restore();
+    clearSel();
+    ctx.refresh();
+  });
+  resumeB.btn.addEventListener('click', () => router.show('starfieldMap'));
+
+  /** 清空本次选择（成功动作之后；不动档位） */
+  function clearSel() {
+    for (const c of configs) draft.sel[c.id] = 0;
+  }
+
+  /** ★ **只改变化项**的本地重绘（不重建面板 ⇒ 卡片选中态与档位不丢、不闪） */
+  function paint() {
+    const cur = getStarfield();
+    // ★ 面板数据**全部来自引擎**（唯一数据源；界面只渲染）
+    const view = stargateView(cur, { frontId: draft.frontId, specs: specsOf() });
+    draft.frontId = view.tier ? view.tier.id : draft.frontId; // 引擎校正后的档位（未知档落到首档）
+    const bf = view.tier;
+    const live = view.mode === 'dispatch';
+    // ① 档位区：未开星域 ⇒ 箭头 + 档位名/描述/标签；已开 ⇒ 隐藏箭头，改显「星域剩余时间」
+    tierLineEl.classList.toggle('hidden', live);
+    remainEl.classList.toggle('hidden', !live);
+    if (live && view.field) {
+      remainEl.textContent = i18n.t('base.stargate.remaining', { left: formatTickSeconds(view.field.remainingTicks) });
+      remainEl.title = i18n.t('base.stargate.remainingHint');
+    }
+    prevBtn.disabled = !view.tierNav.canPrev; // ★ property（不是 attribute）
+    nextBtn.disabled = !view.tierNav.canNext;
+    prevWrap.title = view.tierNav.canPrev ? i18n.t('base.stargate.tierPrev') : `${i18n.t('base.stargate.tierPrev')} —— ${reasonText(view.tierNav.reason)}`;
+    nextWrap.title = view.tierNav.canNext ? i18n.t('base.stargate.tierNext') : `${i18n.t('base.stargate.tierNext')} —— ${reasonText(view.tierNav.reason)}`;
+    if (bf) {
+      tierNameEl.textContent = nameOf({ nameKey: bf.nameKey, id: bf.id });
+      tierDescEl.textContent = textOf(bf.descKey, '');
+      // ★★ 迭代 3：档位行**只显示"是什么"**（半径 / 持续时间）——
+      //    **任何费用都不在这里显示**（费用只在下面的按钮内、且合并成一个数）。
+      tierChipsEl.replaceChildren(
+        el('span', { class: 'base-sf-tag', text: `${i18n.t('base.stargate.radius')} ${bf.radius}` }),
+        el('span', { class: 'base-sf-tag', text: `${i18n.t('base.stargate.duration')} ${formatTickSeconds(bf.durationTicks)}` })
+      );
+      tierNameEl.title = bf.affordable ? i18n.t('base.stargate.frontTitle') : `${i18n.t('base.stargate.frontTitle')} —— ${reasonText(bf.reason)}`;
+      tierNameEl.classList.toggle('is-short', !bf.affordable);
+    }
+    // ② 统计块（全部来自引擎汇总；★ 都是**艘数**，不含任何费用）
+    chipLimit.valueEl.textContent = String(view.totals.limit);
+    chipOut.valueEl.textContent = String(view.totals.used);
+    chipSend.valueEl.textContent = String(view.totals.total);
+    chipSpare.valueEl.textContent = String(view.totals.remaining);
+    // ③ 卡片：**只看本配置空闲数**（★ 迭代 3：出战上限不再限制可选艘数 ⇒ 卡片不再被禁用）
+    for (const c of configs) {
+      const sel = Number.isInteger(draft.sel[c.id]) ? draft.sel[c.id] : 0;
+      const cards = cardsByCfg.get(c.id) || [];
+      for (const card of cards) {
+        const on = card.index < sel;
+        card.node.classList.toggle('is-sel', on);
+        card.node.disabled = false;
+        card.node.title = on
+          ? i18n.t('base.stargate.cardOff', { name: c.name, k: card.index + 1 })
+          : i18n.t('base.stargate.cardPick', { name: c.name, k: card.index + 1 });
+      }
+    }
+    /* ④ **唯一主按钮**（激活星域 ⇄ 派遣）＋ 放弃 / 返回：
+     *   · 文本与费用**全读引擎**（`primary.labelKey` / `primary.cost`）——界面不做乘法、不做加法；
+     *   · ★★ 迭代 4：**已删除橙字分界说明行**（不再有 `.base-sf-big-bound` / `rateBound` / `overBound`）。 */
+    const pm = view.primary;
+    primaryB.labelEl.textContent = i18n.t(pm.labelKey);
+    primaryB.btn.disabled = !pm.ok;
+    const hintKey = pm.mode === 'dispatch' ? 'base.stargate.dispatchHint' : 'base.stargate.activateHint';
+    primaryB.wrap.title = pm.ok ? i18n.t(hintKey) : `${i18n.t(hintKey)} —— ${reasonText(pm.reason)}`;
+    // ★ 费用行：**一个合并后的数**（激活＝激活费＋随行派遣费；派遣＝费率分界合计）
+    primaryB.costEl.replaceChildren(...costIcons(pm.cost, 'base.stargate.free'));
+    primaryB.costEl.title = i18n.t('base.stargate.costTotal');
+    // ⑤ 放弃星域：仍有存活派遣单位 ⇒ 灰 + `unitsAlive`
+    giveB.btn.disabled = !view.giveUp.ok;
+    giveB.wrap.title = view.giveUp.ok ? i18n.t('base.stargate.giveUpHint') : `${i18n.t('base.stargate.giveUpHint')} —— ${reasonText(view.giveUp.reason)}`;
+    giveB.costEl.replaceChildren(); // 放弃星域**没有费用**（撤销动作）
+    // ⑥ 返回星域：有**进行中**的星域才可用（与 ① 的 `live` 同源）
+    resumeB.btn.disabled = !live;
+    resumeB.wrap.title = live
+      ? i18n.t('base.stargate.resumeHint')
+      : `${i18n.t('base.stargate.resumeHint')} —— ${reasonText(cur ? { code: 'fieldOver' } : { code: 'noField' })}`;
+    resumeB.costEl.replaceChildren(); // 返回星域**没有费用**
+  }
+
+  const box = el('div', { class: 'base-sf' }, [
+    el('div', { class: 'base-sf-head' }, [
+      el('div', { class: 'base-sf-fronts-title', text: i18n.t('base.stargate.frontTitle') }),
+    ]),
+    navWrap,
+    tierChipsEl,
+    // ★ 迭代 3：**没有**装配标题文字（`.base-sf-assign-title` 已删）；统计块只剩艘数
+    el('div', { class: 'base-sf-chips' }, [chipLimit.node, chipOut.node, chipSend.node, chipSpare.node]),
+    cardsBox,
+    /* ★★ 迭代 4：主按钮**单独成列**（不与卡片区、也不与放弃/返回混排）——
+     *   `.base-sf-primary` 独占一行、按钮在列内**拉伸占满**；`.base-sf-ops` 只放放弃 / 返回两个动作。 */
+    el('div', { class: 'base-sf-primary' }, [primaryB.wrap]),
+    // ★ 迭代 3：**没有**状态行/说明文字（`.base-sf-notice` 已删）
+    el('div', { class: 'base-sf-ops' }, [giveB.wrap, resumeB.wrap]),
+  ]);
+  // ★ 档位描述行（与档位名同一行下方；只渲染一次，内容由 `paint()` 填）
+  paint();
+  return box;
+}
+
 /** ★ 分区块：**按配置的 `zones[].key` 分派**（不硬编码建筑 id）
  *  · M3b 迭代后船坞只有**一个**分区 `fleet` ⇒ 渲染**唯一一张合并列表**（每条配置一张自适应卡片）；
+ *  · M3d 星门分区 `stargate` ⇒ 战区 + 编号 + 出征装配（见 `stargatePanel`）；
  *  · 其它 key ⇒ 保持 M3a 占位（"将在 {stage} 实装"）。 */
 function zoneBlock(zone, ctx) {
   const nodes = [el('div', { class: 'base-zone-title', text: textOf(zone.nameKey, zone.key) })];
   if (zone.key === 'fleet') nodes.push(...fleetTable(ctx));
+  else if (zone.key === 'stargate') nodes.push(stargatePanel(ctx));
   else nodes.push(el('div', { class: 'base-todo', text: i18n.t('base.panelTodo', { stage: zone.stage }) }));
   if (zone.noteKey) nodes.push(el('p', { class: 'base-note', text: textOf(zone.noteKey, '') }));
   return el('div', { class: 'base-zone' }, nodes);
@@ -1124,6 +1413,12 @@ function root() {
     refocus,
     dropTo,
     commitForm: () => commitForm(ctx),
+    /** ★ M3d 星门面板的**草稿**（跨右面板重建保留；切走再切回不丢）：
+     *  · `frontId` ＝ 选中的档位（箭头切换；已开星域时由引擎锁定为该星域的档）；
+     *  · `sel` ＝ **逐配置已选艘数**（单位卡片模式：选中的卡片＝该配置的前 `sel` 张）。
+     *  ★★ M3d 迭代 3：**`notice` 字段已删除** —— 该面板不再有状态行/说明文字，
+     *     "为什么点不了"只出现在按钮的 `title`（禁用按钮包 `.base-act-wrap` 才能悬浮出提示）。 */
+    sf: { frontId: '', sel: {} },
   };
 
   /** 切换左列表项：只改选中态 + 重建右面板（**不重建整屏**） */

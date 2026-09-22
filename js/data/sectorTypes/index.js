@@ -37,6 +37,14 @@ export const SECTOR_TYPES = {
 /** 类型 id 列表（默认展示顺序；UI 遍历用） */
 export const SECTOR_TYPE_IDS = Object.keys(SECTOR_TYPES);
 
+/** ★★ **星门星区的类型 id**（**从配置文件读**、不散落硬编码字符串）：
+ *  · 取 `data/sectorTypes/stargate.js` 定义里的 `id` 字段（该文件即"星门类型"的唯一配置来源）；
+ *  · 用途＝**「返回基地」的类型判据**（`systems/expedition.js returnCheck` / 地图侧栏按钮显隐）：
+ *    单位**位于任一该类型星区** ⇒ 可返回；**不再按下标（`playerEntryIndex`）判定**
+ *    （星域里可能有多个星门星区，见 `data/starfields/h3.js` 的 `stargate.count {min:2,max:4}`）；
+ *  · 注册表缺 `stargate` 条目（极端配置）⇒ `null`，调用方按"无星门类型"兜底（拒绝返回 `notAtGate`）。 */
+export const STARGATE_TYPE_ID = (SECTOR_TYPES.stargate && SECTOR_TYPES.stargate.id) || null;
+
 /** 按 id 取星区类型定义（未知 → null） */
 export function getSectorType(id) {
   return SECTOR_TYPES[id] || null;

@@ -28,7 +28,7 @@ export default {
   kind: 'building',
   order: 4,
   stage: 'M3b',
-  maxLevel: 5,
+  maxLevel: 16,
   /** ★ 面板分区（**仅结构**）：M3b 迭代后**只剩一个分区** —— 配置管理 + 建造 + 拆解**合并为同一张表** */
   zones: [
     { key: 'fleet', nameKey: 'building.shipyard.zoneFleet', stage: 'M3b' },
@@ -39,5 +39,19 @@ export default {
     { level: 3, cost: { energy: 1100, ore: 100, alloy: 420, rare: 10, science: 0 }, effect: { fleetCapacity: 12, scrapRefundRatio: 0.6 } },
     { level: 4, cost: { energy: 1900, ore: 200, alloy: 750, rare: 25, science: 0 }, effect: { fleetCapacity: 16, scrapRefundRatio: 0.65 } },
     { level: 5, cost: { energy: 3100, ore: 340, alloy: 1150, rare: 50, science: 0 }, effect: { fleetCapacity: 20, scrapRefundRatio: 0.7 } },
+    // ★ M3d 补齐 Lv6..Lv16（**原有 Lv1..Lv5 一字未改**）：本表必须逐级完整（自检 ② `levels.length === maxLevel`），
+    //   原文件只有 5 级而 `maxLevel: 16` ⇒ **② 本来就是红的**（M3a 遗留的骨架缺口，与 M3d 逻辑无关）。
+    //   补法＝沿用本文件自身已有增长：能量/矿石/合金/稀有 ×1.6 取整、容量 +4、返还比例 +0.02（≤ 1）。
+    { level: 6, cost: { energy: 4960, ore: 544, alloy: 1840, rare: 80, science: 0 }, effect: { fleetCapacity: 24, scrapRefundRatio: 0.72 } },
+    { level: 7, cost: { energy: 7936, ore: 870, alloy: 2944, rare: 128, science: 0 }, effect: { fleetCapacity: 28, scrapRefundRatio: 0.74 } },
+    { level: 8, cost: { energy: 12698, ore: 1392, alloy: 4710, rare: 205, science: 0 }, effect: { fleetCapacity: 32, scrapRefundRatio: 0.76 } },
+    { level: 9, cost: { energy: 20317, ore: 2227, alloy: 7536, rare: 328, science: 0 }, effect: { fleetCapacity: 36, scrapRefundRatio: 0.78 } },
+    { level: 10, cost: { energy: 32507, ore: 3563, alloy: 12058, rare: 525, science: 0 }, effect: { fleetCapacity: 40, scrapRefundRatio: 0.8 } },
+    { level: 11, cost: { energy: 52011, ore: 5701, alloy: 19293, rare: 840, science: 0 }, effect: { fleetCapacity: 44, scrapRefundRatio: 0.82 } },
+    { level: 12, cost: { energy: 83218, ore: 9122, alloy: 30869, rare: 1344, science: 0 }, effect: { fleetCapacity: 48, scrapRefundRatio: 0.84 } },
+    { level: 13, cost: { energy: 133149, ore: 14595, alloy: 49390, rare: 2150, science: 0 }, effect: { fleetCapacity: 52, scrapRefundRatio: 0.86 } },
+    { level: 14, cost: { energy: 213038, ore: 23352, alloy: 79024, rare: 3440, science: 0 }, effect: { fleetCapacity: 56, scrapRefundRatio: 0.88 } },
+    { level: 15, cost: { energy: 340861, ore: 37363, alloy: 126438, rare: 5504, science: 0 }, effect: { fleetCapacity: 60, scrapRefundRatio: 0.9 } },
+    { level: 16, cost: { energy: 545378, ore: 59781, alloy: 202301, rare: 8806, science: 0 }, effect: { fleetCapacity: 64, scrapRefundRatio: 0.92 } },
   ],
 };

@@ -8,8 +8,22 @@ export default {
   id: 'h3',
   nameKey: 'starfield.h3', // i18n -> H3 / H3
   radius: 4, // 【占位预填】
-  durationTicks: 7200, // 【占位预填】20tps ⇒ 6 分钟
+  durationTicks: 12000, // 【占位预填】20tps ⇒ 6 分钟
   seed: null, // null＝由界面随机/手输
+
+  // ★ M3d 迭代 2：**单船费用**（每派出一艘收一次：派遣 n 艘 ⇒ 扣 n ×；损毁不返还；逐档递增）【占位预填 · 待用户调校】
+  deployCost: { energy: 1500, ore: 800, alloy: 600, rare: 60 },
+  // ★ M3d 迭代 2：**激活星域的激活费倍数**（激活一次性扣 `activateUnits × deployCost` —— **固定部分**；
+  //   ★ 迭代 3：随行单位另按同一费率函数收派遣费，界面**合并成一个总价**显示；
+  //   允许零单位激活；不占出战名额）
+  activateUnits: 2, // 【占位预填】
+  // ★ M3d 迭代 3：**超出「出战上限（费率分界）」部分的加价费率**（上限不再拦截、只加价）
+  //   （口径/公式/取整见 `h1.js` 同名段与 `systems/expedition.js` 的 `dispatchPriceOf`）【占位预填 · 待用户调校】
+  overQuota: { exponent: 1.5, offset: 1 }, // 超出部分总价 ＝ 单船费 × (m + 1) ^ 1.5
+  // ★ M3d：难度描述词条键（面板只读它；文案在 i18n）
+  descKey: 'starfield.h3.desc',
+  // ★ M3d：结束演出（变白）**每环 tick 数**（中心恒星起、按到中心距离环逐环变白）【占位预填 · 待用户调校】
+  collapseRingTicks: 20,
 
   sectorTypes: {
     star: { enabled: true, count: { min: 1, max: 1 } }, // 中心恒星固定 1 个

@@ -92,10 +92,8 @@
 .sf-status[data-state='running'] { color: var(--ok); }
 .sf-status[data-state='finished'] { color: var(--warn); }
 .sf-status[data-state='stopped'] { color: var(--hp); }
-/* ★★ 阶段 2：拖拽下达失败的**短提示**（顶栏内联；无内容时整块隐藏 ⇒ 既有呈现零变化）——
- *  颜色用既有 `--warn`，**不新增配色值**。 */
-.sf-move-msg { font-size: 12px; color: var(--warn); }
-.sf-move-msg.hidden { display: none; }
+/* ★★ 阶段 2 的顶栏「短提示」`.sf-move-msg` 规则**已按 M3d 迭代 2 用户口径整段删除**：
+ *   星域地图内**不显示任何浮动提示文字**（含"无法移动"、单位/物品结算等橙字）⇒ 元素与规则一并移除。 */
 .sf-zoom { display: flex; align-items: center; gap: 6px; }
 .sf-zoom-label {
   min-width: 46px;
@@ -869,3 +867,123 @@ body.sf-col-resize, body.sf-col-resize * { cursor: col-resize !important; }
 @media (max-width: 640px) {
   .base-pick { width: 100%; }
 }
+
+/* ================= ★ M3d：星门面板（档位箭头 / 剩余时间 / 单位卡片装配） =================
+ * ★ 只用**既有配色变量**（`--accent` / `--border` / `--panel(-2)` / `--text(-dim)` / `--warn`），**不新增色值**；
+ * ★ 统计块沿用 `.base-fleet-stat*`（同一视觉语言）；本段只加"星门专属"的布局类。 */
+.base-sf { display: flex; flex-direction: column; gap: 8px; }
+.base-sf-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* ★ M3d 迭代 3：只保留标题类（原 `.base-sf-assign-title` **装配标题文字已删除** ⇒ 规则一并移除） */
+.base-sf-fronts-title { font-size: 12px; color: var(--text-dim); }
+/* 档位箭头区（★ M3d 迭代：`<<` 档位 `>>`；已开星域 ⇒ 换成「星域剩余时间」） */
+.base-sf-nav-wrap { display: flex; flex-direction: column; gap: 4px; }
+.base-sf-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.base-sf-arrow {
+  font: inherit; font-size: 13px; line-height: 1;
+  min-width: 34px; padding: 5px 8px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.base-sf-arrow:hover:not(:disabled) { border-color: var(--accent); }
+.base-sf-arrow:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.base-sf-arrow:disabled { color: var(--text-dim); cursor: not-allowed; }
+.base-sf-tier-name { font-size: 14px; color: var(--accent); }
+.base-sf-tier-name.is-short { color: var(--warn); }
+.base-sf-remain { font-size: 13px; color: var(--warn); font-variant-numeric: tabular-nums; }
+/* ★ 隐藏态必须**显式声明**（本项目没有全局 `.hidden{display:none}` 规则）：
+ *   · 已开星域 ⇒ 箭头行隐藏、剩余时间显示；未开 ⇒ 反之。 */
+.base-sf-nav.hidden, .base-sf-remain.hidden { display: none; }
+.base-sf-front-desc { font-size: 11px; color: var(--text-dim); line-height: 1.6; }
+.base-sf-front-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.base-sf-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px; color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.base-sf-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* ★★ M3d 迭代：**单位卡片装配区**（每张卡片＝该配置的 **1 艘**；点击选中/再点取消）
+ *  · 卡片内容＝单位图标 + 名称/类型/`Lv` + 模块筹码摘要（与船坞**同一渲染口径**）；
+ *  · 选中态＝既有 `--accent` 描边 + 面板底色（不新增配色）；受限（出战上限用尽）⇒ 灰 + 悬浮原因。 */
+.base-sf-cards { display: flex; flex-wrap: wrap; gap: 6px; }
+.base-sf-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.base-sf-card:hover:not(:disabled) { border-color: var(--accent); }
+.base-sf-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.base-sf-card.is-sel { border-color: var(--accent); background: var(--panel); }
+.base-sf-card:disabled { color: var(--text-dim); cursor: not-allowed; opacity: 0.55; }
+.base-sf-card-ico .unit-icon-wrap, .base-sf-card-ico .unit-icon-img { width: 24px; height: 24px; min-width: 24px; min-height: 24px; }
+.base-sf-card-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.base-sf-card-name { font-size: 12px; color: var(--text); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.base-sf-card-sub { display: flex; align-items: center; gap: 6px; }
+.base-sf-card-idx { font-size: 10px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.base-sf-card-mods { display: inline-flex; align-items: center; gap: 3px; }
+.base-sf-card-mods .module-chip { transform: scale(0.85); transform-origin: left center; }
+.base-sf-type, .base-sf-lv, .base-sf-idle { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.base-sf-lv { color: var(--text); }
+.base-sf-ops { display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; }
+/* ★★ 迭代 4：**唯一主按钮单独成列**（激活星域 ⇄ 派遣；独占一行，不与卡片区或其它操作混排）——
+ *  · `align-items: stretch` 让按钮在列内拉伸（窄屏自动变宽，**不产生横向滚动**）；
+ *  · 下方「放弃星域 / 返回星域」仍走 `.base-sf-ops`，两块互不混排。 */
+.base-sf-primary { display: flex; align-items: stretch; padding: 2px 0; }
+/* 主按钮在列内**铺满整行**（读起来就是"单独一列"；窄屏同样只换行、不横向滚动） */
+.base-sf-primary .base-sf-big { width: 100%; }
+/* ★★ M3d 迭代 3/4：**大按钮**（主按钮 + 放弃星域 / 返回星域）
+ *  · 按钮本体沿用 `.btn` 体系（`css/base.css` 的配色/圆角/交互零改动），只在本段**放大尺寸并改为两行布局**；
+ *  · **按钮内是"唯一显示费用"的地方**：标签行 + 费用行（`costIcons` 的图标/数量，**合并求和的一个数**）；
+ *  · ★ 迭代 4：**橙字分界说明行（`.base-sf-big-bound`）已删除** —— 引擎 `view.price` 数据仍保留；
+ *  · `align-items: stretch` ⇒ 高度对齐（无费用的按钮靠 `min-height` 与其余一致）；
+ *  · ★ **不新增任何配色值**（只用既有 `--accent` / `--border` / `--panel(-2)` / `--text(-dim)`）。 */
+.base-sf-bigwrap { display: inline-flex; flex: 1 1 auto; }
+.base-sf-big {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 132px; min-height: 52px; padding: 8px 14px;
+  line-height: 1.35;
+}
+.base-sf-big-label { font-size: 14px; }
+.base-sf-big-cost { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+/* 窄屏：卡片区自动换行即可（卡片本身已是 flex 项） */
+@media (max-width: 640px) {
+  .base-sf-card { flex: 1 1 100%; }
+  .base-sf-big { min-width: 108px; }
+}
+
+/* ★ M3d：星域地图侧栏「返回基地」（**只加布局**；按钮本体沿用 `.btn.tiny`，配色零新增）
+ * ★ 迭代 2：**只在星门类型星区显示** ⇒ 非星门星区整块隐藏（`.hidden` 本就无全局规则 ⇒ 按本选择器显式声明）。 */
+.sf-sb-return { display: inline-flex; margin-left: auto; }
+.sf-sb-return.hidden { display: none; }
+
+/* ================= ★ M3d 迭代 2：结束演出（渐变式逐环变白） =================
+ * ★★ **唯一允许的新字面色值**（用户口径明确豁免）：`#fff`（纯白）——"星区变白"这件事在既有配色变量里
+ *    没有对应语义（既有变量全是面板/文字/资源色，没有"白"），故此处用一个白色字面值并在此注明；
+ *    **其余一切仍走既有变量**（描边/底色/文字色零新增）。
+ * · **渐变口径**：每格带自定义属性 `--sf-white`（0..1，**由引擎 `sectors[].whiten` 给出**、UI 只写不算是），
+ *   本规则用一层 `::after` 纯白遮罩按 `opacity: var(--sf-white)` 叠加 ⇒ **色深随进度连续变化**
+ *   （`0` ＝ 原色不着色、`1` ＝ 全白），同环内所有星区**并行**、环与环依次推进（进度由引擎给）。
+ *   位置固定为 `absolute; inset:0` ⇒ 覆盖格子的类型色/标记/单位图标/进度条（`pointer-events:none` 不挡交互）。
+ * · `.sf-canvas.is-collapsing`：演出期间**关掉指针交互**（玩法操作全部失效；引擎侧也已冻结 ⇒ 双保险）。 */
+.sf-cell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: var(--sf-white, 0);
+  pointer-events: none;
+  border-radius: inherit;
+}
+.sf-canvas.is-collapsing { pointer-events: none; }
+

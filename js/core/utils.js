@@ -11,7 +11,16 @@ export function $$(sel, root = document) {
 /**
  * 创建元素：
  * el('div', { class: 'x', text: '你好', onclick: fn, dataset: {...}, style: '...' }, [children])
- * children 元素或字符串/数字，可嵌套数组。
+ * `children`（第三参，**可省略**）接受形态 —— **全部视为合法，任何数据状态下都不抛错**：
+ *   · `Array`（可**任意嵌套**，元素可以是下述任意形态）；
+ *   · **单个 `Node`**（等价于 `[node]` ⇒ 直接挂上）；
+ *   · **单个 `string` / `number`**（等价于 `[value]` ⇒ 生成**一个**文本节点）；
+ *   · `null` / `undefined` / `false` ⇒ **视作没有子节点**（跳过；典型来自 `cond && el(...)` 的假值分支）；
+ *   · 其它**可迭代**对象（`NodeList` / `Set` / `HTMLCollection`…）⇒ 逐个展开（同数组口径）；
+ *   · 其它任何值（普通对象、`true`、函数…）⇒ 退化为**一个文本节点** `String(value)`
+ *     （与历史行为一致：数组里出现这些值时本来就是 `String(child)` 成文本）。
+ * ★ **纯放宽**：不改任何既有语义与返回值 —— 数组/嵌套数组/`Node`/字符串的渲染结果逐字不变，
+ *   只把"非可迭代 children ⇒ `TypeError: children is not iterable`"改判为"按单元素/空处理"。
  */
 export function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
@@ -32,13 +41,33 @@ export function el(tag, props = {}, children = []) {
   return node;
 }
 
+/** ★ **子节点挂载（唯一实现；容忍一切 children 形态）** —— 与 `el()` 的第三参同口径：
+ *  · 空/假值（`null` / `undefined` / `false`）⇒ **什么都不做**（不抛错）；
+ *  · 单个 `Node` ⇒ 直接 `append`；单个 `string` / `number` ⇒ **一个**文本节点；
+ *  · 可迭代（数组 / `NodeList` / `Set`…）⇒ 逐个递归（嵌套数组照旧摊平）；
+ *  · 其它值 ⇒ `String(value)` 文本节点（历史行为）。
+ *  ★ 本函数是"渲染不因数据为空而崩"的**兜底点**：任何视图把 `undefined`、`false`、
+ *    一个节点、一个字符串误当 children 传入，都只会**少渲染/正常渲染**，绝不抛 `TypeError`。 */
 function appendChildren(node, children) {
-  for (const child of children) {
-    if (child === undefined || child === null || child === false) continue;
-    if (Array.isArray(child)) appendChildren(node, child);
-    else if (child instanceof Node) node.append(child);
-    else node.append(document.createTextNode(String(child)));
+  // ① 空值 / 假值 ⇒ 无子节点（**旧实现会 `for…of null` ⇒ TypeError，这里是核心放宽点**）
+  if (children === undefined || children === null || children === false) return;
+  // ② 单个节点 ⇒ **视作单元素**
+  if (children instanceof Node) {
+    node.append(children);
+    return;
   }
+  // ③ 单个字符串 / 数字 ⇒ **视作单元素**（生成一个文本节点；不再按字符逐个拆）
+  if (typeof children === 'string' || typeof children === 'number') {
+    node.append(document.createTextNode(String(children)));
+    return;
+  }
+  // ④ 数组 / 其它可迭代 ⇒ 逐个递归（与旧实现同分支、同顺序）
+  if (typeof children[Symbol.iterator] === 'function') {
+    for (const child of children) appendChildren(node, child);
+    return;
+  }
+  // ⑤ 其它值（普通对象 / true / 函数…）⇒ 退化为文本节点（与历史行为一致）
+  node.append(document.createTextNode(String(children)));
 }
 
 export const clamp = (v, min, max) => Math.min(max, Math.max(min, v));

@@ -67,11 +67,34 @@
  *     `deleteFleetConfig(id)`（**仅** `count === 0 && out === 0`）、`setFleetOut(id, n)`（M3d 预留 / 调试）；
  *   · 建造：`buildCostOf(id)`（该配置**单艘**造价）、`canBuild(id, n)`、`build(id, n)`；
  *   · 拆解：`scrapRefundOf(id, n)`（只读预览）、`scrap(id, n)`（只拆未出征的部分）；
- *   · 统计：`fleetStats()` ⇒ `{ capacity, total, out, remaining, scrapRefundRatio }`。
+ *   · 统计：`fleetStats()` ⇒ `{ capacity, total, out, remaining, scrapRefundRatio, maxFleet, deployUsed, deployRemaining }`。
  *   失败一律返回 `{ ok:false, reason:{ code, ...参数 } }`；`code` 清单见 `FLEET_REASON_CODES`
  *   （**每个 code 都有成对的 i18n 词条** `base.reason.<code>`，界面据此显示禁用原因）。
  *   ★ 数值全部来自配置：船型 `buildCost` / `upgradeCost` / `slots` / `unlockByLevel`、
  *     模块 `installCost` / `blueprint`、船坞 `effect.fleetCapacity` / `effect.scrapRefundRatio`。
+ *
+ * ★ 指挥中心与**出战上限**（M3c）：`upgradeBuilding(id)`（**即时生效**：校验 ⇒ 扣资源 ⇒ 等级 +1 ⇒ 效果立刻生效）、
+ *   `maxFleetOf()` / `deployUsed()` / `deployRemaining()`（出战名额三件套，只读）、
+ *   `canDeploy(id, n)`（与 `setFleetOut` **同一口径**的干跑）。
+ *   · ★★ **M3d 迭代 3 语义修订**：`Σ out ＋ 本次新增 ≤ maxFleet` **不再是**约束 ——
+ *     出战上限降级为「**费率分界**」（判断"正常 r 艘 / 超出加价"），**超出照常登记**
+ *     （`deployCheckIn` 给出 `remaining`（可为负）/ `over`；**收费**由编排层 `systems/expedition.js`
+ *     的 `dispatchPriceOf` 按 `overQuota` 加价，本层不收费）；
+ *     **减少 `out`（含归零）不受限**（撤回永远允许）；死亡时 `count` 与 `out` 同步减 ⇒ **名额即时释放**；
+ *   · 上限取值链 ＝ **指挥中心该等级** `levels[].effect.maxFleet`（**配置决定，代码零公式**）。
+ *
+ * ★ 出征装配与返回结算（M3d，**基地侧账目**；星域侧只管交出单位载荷，见 `systems/expedition.js`）：
+ *   · 干跑／落地：`previewDeploySquad(specs, cost)` / `deploySquad(specs, cost)`
+ *     —— `specs` ＝ `[{ id, n }]`（`n` ＝ **本次新增派遣数**，0..空闲数 `count − out`）；
+ *     校验：形状/数量 ⇒ 配置存在 ⇒ **非空装配** ⇒ 逐条名额（复用 `deployCheckIn`）⇒
+ *     **费用**（由编排层传进来的费用对象，资源不足即拒 —— ★ M3d 迭代 3 口径：星域侧传的是
+ *     **合并后的实际总价**：派遣 ⇒ 费率分界合计（正常段 ＋ 超出加价）；激活星域 ⇒ 激活费 ＋ 随行派遣费）
+ *     —— ★ **没有"合计名额"这一关了**（上限＝费率分界，超出只加价）；
+ *     落地：扣费用 ＋ 各配置 `out` 增加（`count` 不变）；失败 ⇒ **状态零改动**。
+ *   · 返回／损毁**唯一结算入口**：`settleReturn(report)`
+ *     —— 返回 ⇒ `out -= 1`、`count` 不变；未返回（损毁 / 结束时不在**星门类型**星区）⇒ `count` 与 `out` 同减；
+ *     矿物走 `gain` 口径（**超上限丢弃**并记 `overflow`）、货物并入 `cargoStore`（**按类型 + 等级堆叠**）；
+ *     只读：`cargoStoreOf()`。
  */
 import { i18n } from '../i18n/index.js';
 import { BASE_CONFIG } from '../data/baseConfig.js';
@@ -165,7 +188,9 @@ function capValue(v) {
  *  **上限完全随配置变**、代码里没有任何硬编码上限）：
  *      上限[k] ＝ initialCaps[k] ＋ Σ_{建筑} 该建筑**该等级** `effect.resourceCap[k]`
  *  · 建筑等级取 `levelsOf[id]`（缺省 0 ⇒ 不生效）；等级项沿用"逐级回退"（取 level ≤ 目标的最深一项）；
- *  · `effect.resourceCap` 缺失 / 非对象 / 键缺失 / 非法值 ⇒ 一律按 0 计（＝不提升）。 */
+ *  · `effect.resourceCap` 缺失 / 非对象 / 键缺失 / 非法值 ⇒ 一律按 0 计（＝不提升）。
+ *  ★★ M3d 迭代 4 用户已定（**方案 A**）：本阶段**不改任何上限数值**；各档费用可能高于现有上限
+ *     属**既有占位状态** ⇒ **等 M4 星球 `effect.resourceCap` 抬上限**（届时只改配置，本函数不动）。 */
 function capsFromConfig(initialCaps, buildings, levelsOf) {
   const out = {};
   for (const k of RESOURCE_KEYS) out[k] = capValue(initialCaps ? initialCaps[k] : 0);
@@ -231,6 +256,36 @@ export const FLEET_REASON_CODES = [
   'badOrder', 'edgeMove',
   // ★ 模块槽位编辑（二级弹窗的确认 / 添加 / 移除，见 `applyModuleSlotIn`）
   'badAction', 'noTarget', 'slotsFull',
+  // ★★ M3d 迭代 3：`deployLimit` **不再由引擎抛出**（出战上限＝**费率分界**、只加价不拦截）——
+  //   本码**保留在词表里**仅作**界面短语**（按钮 `title` 说明"正常 r 艘 / 超出加价"），见 `deployCheckIn`。
+  'deployLimit',
+  // ★ M3c：本配置**没有未出征的单位**可派（`deployable` 视图的前置原因，见 `deployableViewIn`）
+  'noIdle',
+  // ★ M3d：**出征装配 / 返回结算**（见 `deploySquadCheckIn` / `settleReturnIn`）——
+  //   · `emptyDeploy`：装配表里一艘都没派（**空出征**不是合法出征）；
+  //   · `fieldBusy`  ：★★ M3d 迭代**语义修订** —— 已开着**另一档**星域时**不可另开新档**
+  //                   （同一时刻只允许一个星域）；★ 已开着**同一档**时**不再**返回本码，而是允许**继续派遣**；
+  //   · `fieldOver`  ：星域已结束 / 已结算（不再接受返回等指令）；
+  //   · `notDeployed`：该单位**不是基地派出的**（无归属 ⇒ 没有可结算的基地账目）；
+  //   · `unitDead`   ：该单位**已阵亡**（阵亡由结算统一销账，不能"返回"）；
+  //   · `notAtGate`  ：该单位**不在星门星区**（返回点＝入场星区，见 `inEntry` 口径）；
+  //   · `tooMany`    ：本次派遣数**超过该配置的空闲数**（"想派的比空闲的多"——★ 迭代 3 起这是
+  //                   **唯一**与出战数量相关的硬拒绝；"超出出战上限"已不再是原因，只影响计价）；
+  //   · `badSeed`    ：出征时**星域编号缺失/非法**（编号由界面生成后传入，引擎不自造）。
+  'emptyDeploy', 'fieldBusy', 'fieldOver', 'notDeployed', 'unitDead', 'notAtGate', 'tooMany', 'badSeed',
+  // ★ M3d 迭代（星门交互 / 多次派遣 / 放弃星域）：
+  //   · `unitsAlive`：**放弃星域**时星域里**仍有存活的派遣单位**（用户口径：只要还有活着的派遣单位，
+  //                  就不允许放弃 ⇒ 必须先把它们返回基地或等它们阵亡）；
+  //   · `noField`   ：**当前没有星域**（放弃星域 / 未开星域时想继续派遣等前置原因）；
+  //   · `oneTier`   ：**只有一档战区**（左右箭头无处可切 ⇒ 两个箭头都灰）。
+  'unitsAlive', 'noField', 'oneTier',
+];
+
+/** ★ 建筑相关**失败原因码**（M3c；与 `FLEET_REASON_CODES` 同体例：每个 code 都有成对词条
+ *  `base.reason.<code>` ⇒ 界面显示"为什么升级按钮是灰的"，自检 ⑥ 逐语言核对）。
+ *  `upgradeBuildingIn` 的返回码是这两个清单的**并集**。 */
+export const BASE_REASON_CODES = [
+  'unknown', 'notBuilding', 'locked', 'notImplemented', 'maxLevel',
 ];
 
 /** 去掉条目里的 `level` 标注（用于"整条即资源表"的写法 `{ level, energy, ore, ... }`） */
@@ -499,8 +554,11 @@ function canAffordIn(state, cost) {
   return reasonOfIn(state, cost) === null;
 }
 
-/** 扣减：**先校验、后落地** ⇒ 不足时**状态逐字段不变**（返回 `{ ok:false, reason }`） */
-function spendIn(state, cost) {
+/** 扣减：**先校验、后落地** ⇒ 不足时**状态逐字段不变**（返回 `{ ok:false, reason }`）
+ *  ★ M3d 迭代 2 起**导出**（`state` 参数版）：星门「**零单位激活**」要收**激活费**、但没有任何单位要登记
+ *    （`deploySquadIn` 会以 `emptyDeploy` 拒绝空装配）⇒ 编排层需要一个**只扣资源**的唯一口径；
+ *    本函数就是既有唯一扣减口径本身（`deploySquadIn` / `buildIn` 内部都调它），**无任何行为改动**。 */
+export function spendIn(state, cost) {
   const c = normalizeAmounts(cost);
   if (c === null) return { ok: false, reason: { code: 'badCost' } };
   const reason = reasonOfIn(state, c);
@@ -602,6 +660,29 @@ function fleetOutIn(state) {
   let n = 0;
   for (const c of state.fleetConfigs || []) n += Number.isFinite(c.out) ? c.out : 0;
   return n;
+}
+
+/** ★★ **出战上限**（M3c）：**同一星域内同时存活的单位数量**上限
+ *  —— 读**指挥中心**该等级 `effect.maxFleet`（**配置决定**，代码不写上限公式）；
+ *  缺 / 非法 / ≤0 ⇒ 0 ＝ 一个也派不出去（**保守**：不臆造默认值，与 `fleetCapacityIn` 同体例）。
+ *  ★ 口径：**船坞等级 ＝ 舰队总容量**、**指挥中心等级 ＝ 出战上限**（两者独立、互不换算）。
+ *  ★★ 迭代 3：本值**只作费率分界**（`r ＝ maxFleet − Σ 同时存活` ⇒ 正常段艘数），**不再拦截**登记。 */
+function maxFleetIn(state) {
+  const v = buildingEffectOf('commandCenter', stateLevelOf(state, 'commandCenter')).maxFleet;
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+/** ★ **已用出征名额**（只读）＝ Σ`out`（**在星域中存活的单位数**；死亡即时释放名额——
+ *  死亡时 `count` 与 `out` 同步减，见 M3b 既有口径） */
+function deployUsedIn(state) {
+  return fleetOutIn(state);
+}
+
+/** ★ **剩余出征名额**（只读）＝ `max(0, 出战上限 − 已用)`（**界面只读它，不自算**）
+ *  ★★ 迭代 3：本值**只作显示**（出战上限不再拦截登记 ⇒ 它不是任何判据的输入）；
+ *    "超出多少艘"的权威口径在 `deployCheckIn` 的 `remaining`（**可为负**）/ `over`。 */
+function deployRemainingIn(state) {
+  return Math.max(0, maxFleetIn(state) - deployUsedIn(state));
 }
 
 /** 舰队**剩余容量** ＝ `max(0, 容量 − 拥有总数)` */
@@ -768,7 +849,7 @@ function canBuildIn(state, id, n = 1, opts = {}) {
 }
 
 /** ★ **建造**：扣资源 ⇒ `count += n`（`out` 不变；**先校验、后落地**，失败 ⇒ 状态零改动） */
-function buildIn(state, id, n = 1, opts = {}) {
+export function buildIn(state, id, n = 1, opts = {}) {
   const pre = canBuildIn(state, id, n, opts);
   if (!pre.ok) return { ok: false, reason: pre.reason };
   const paid = spendIn(state, pre.cost);
@@ -814,7 +895,7 @@ function scrapIn(state, id, n = 1, opts = {}) {
  *   · 草稿与既有条目**逐字段完全相同**（含名称） ⇒ 照旧合并、**不产生新条目 / 空条目**；
  *   · 未命中既有条目（例如同时改了船型 / 等级 / 模块） ⇒ 走"新建条目"分支（编辑＝另存为新配置时，
  *     原条目**原样保留**，见 `cloneFleetConfigIn`）。 */
-function createFleetConfigIn(state, spec, opts = {}) {
+export function createFleetConfigIn(state, spec, opts = {}) {
   const v = validateFleetSpecIn(state, spec, opts);
   if (!v.ok) return { ok: false, reason: v.reason };
   const wanted = spec && typeof spec.name === 'string' ? spec.name.trim() : '';
@@ -929,16 +1010,361 @@ function deleteFleetConfigIn(state, id) {
   return { ok: true, id, name: c.name };
 }
 
-/** ★ **出征数量登记**（M3d 预留：出征 ⇒ `out += n`、返回 ⇒ `out -= n`、损毁 ⇒ `count/out` 同步减）。
- *  本步**只登记、不做任何出征业务**；约束 `0 ≤ out ≤ count`（越界 ⇒ 拒绝且零改动）。 */
-function setFleetOutIn(state, id, n) {
+/** ★ **出征登记的唯一校验口径**（M3c；`canDeployIn` 与 `setFleetOutIn` **共用这一处** ⇒ 不可能走偏）。
+ *  `n` ＝ **目标在外数**（与 `setFleetOutIn` 同参，不是增量）。
+ *  ★★ **M3d 迭代 3 语义修订（用户口径）**：**出战上限不再拦截**，它只是一条「**费率分界**」
+ *    （超出部分由 `systems/expedition.js` 的 `dispatchPriceOf` **加价**，不再是拒绝原因）——
+ *    因此本函数**只出价、不再出 `deployLimit` 拒绝**（`deployLimit` 一词条保留在 `FLEET_REASON_CODES`
+ *    里仅作**界面短语**复用：按钮 `title` 用来说明"正常 r 艘 / 超出加价"）。
+ *  校验顺序（**任一不过 ⇒ 调用方零改动**）：
+ *    ① 配置存在      ⇒ 否则 `unknown`（带 id）；
+ *    ② 入参合法      ⇒ `0 ≤ n ≤ count` 的整数，否则 `badOut`（沿用 M3b 既有码，**不夹取、不默认**）；
+ *    ③ 名额事实      ⇒ **只统计、不拒绝**：返回 `limit`（上限）/ `used`（现有 Σ 在外）/ `delta`（本次增量）
+ *                       / `remaining`（**落地之后**的剩余正常名额，**可为负**＝超出多少艘）/ `over`
+ *                       （＝`max(0, −remaining)` ⇒ **超出艘数**，供计价与显示"费率分界"）。
+ *  @returns `{ ok:true, id, from, out, delta, limit, used, remaining, over }` /
+ *           `{ ok:false, reason:{ code, ... } }` */
+function deployCheckIn(state, id, n) {
   const cfg = findFleetConfigIn(state, id);
   if (!cfg) return { ok: false, reason: { code: 'unknown', id: id === undefined ? null : String(id) } };
   if (!Number.isInteger(n) || n < 0 || n > cfg.count) {
     return { ok: false, reason: { code: 'badOut', n: Number.isFinite(n) ? n : null, count: cfg.count } };
   }
+  const limit = maxFleetIn(state);
+  const used = deployUsedIn(state);
+  const delta = n - cfg.out;
+  // ★ 迭代 3：**不再有 `deployLimit` 拒绝** —— 上限只是费率分界（`remaining` 允许为负 ＝ 超出艘数）
+  const remaining = limit - used - delta;
+  return {
+    ok: true,
+    id,
+    from: cfg.out,
+    out: n,
+    delta,
+    limit,
+    used,
+    remaining,
+    over: Math.max(0, -remaining),
+  };
+}
+
+/** ★ **能否这样登记出征**（**不改状态**；与 `setFleetOutIn` 同一口径，先校验后落地） */
+function canDeployIn(state, id, n) {
+  return deployCheckIn(state, id, n);
+}
+
+/** ★ 逐条配置的**可否出征**视图（只读；`listFleetConfigsIn` 的 `deployable` 字段用它）：
+ *  · 只看**本配置还有没有未出征的单位**（`idle === 0` ⇒ `noIdle`，带 `idle` / `out`）——
+ *    否则`out + 1` 会超出 `count`，报出来的会是入参码 `badOut`（"在外数量无效"），对界面是误导；
+ *  · ★★ **M3d 迭代 3：不再有"出战名额不足"这一条** —— 上限只是**费率分界**（超出加价、不拦截）
+ *    ⇒ 只要本配置还有空闲单位，就**可以**再派 1 艘（`ok:true`，并带上 `limit`/`used`/`remaining`/`over`
+ *    供界面显示"正常 r 艘 / 超出加价"）。
+ *  ★ 口径固定为"**从本配置再派 1 艘**"（与 `canBuild` / `canScrap` 的 `n = 1` 同体例）。 */
+function deployableViewIn(state, cfg) {
+  const idle = Math.max(0, cfg.count - cfg.out);
+  if (idle <= 0) return { ok: false, reason: { code: 'noIdle', idle, out: cfg.out, id: cfg.id } };
+  return deployCheckIn(state, cfg.id, cfg.out + 1);
+}
+
+/** ★ **出征数量登记**（M3d 预留：出征 ⇒ `out += n`、返回 ⇒ `out -= n`、损毁 ⇒ `count/out` 同步减）。
+ *  本步**只登记、不做任何出征业务**；约束 ① `0 ≤ out ≤ count`
+ *  ② ★★ **M3d 迭代 3：`Σ out` 不再受出战上限约束**（上限＝**费率分界**，超出只是**加价**、
+ *  **不拦截** —— 见 `deployCheckIn`／`systems/expedition.js` `dispatchPriceOf`）
+ *  —— 违反 ① ⇒ 拒绝且**状态逐字段零改动**（**先校验、后落地**）。 */
+function setFleetOutIn(state, id, n) {
+  const chk = deployCheckIn(state, id, n);
+  if (!chk.ok) return { ok: false, reason: chk.reason }; // ★ 校验不过 ⇒ 一个字段都不动
+  const cfg = findFleetConfigIn(state, id);
   cfg.out = n;
-  return { ok: true, id, out: n, count: cfg.count };
+  return {
+    ok: true,
+    id,
+    out: n,
+    count: cfg.count,
+    delta: chk.delta,
+    limit: chk.limit,
+    used: chk.used,
+    remaining: chk.remaining,
+  };
+}
+
+/* ---------- ★ M3d：出征装配（多配置批量）＋ 返回结算（基地侧账目，**单一入口**） ---------- */
+
+/** ★ 出征装配 `specs` 的**归一化**（只读；`specs` ＝ `[{ id, n }]`，`n` ＝ **本次新增派遣数**）：
+ *  · **同 id 重复出现 ⇒ 数量合并**（不重复记账）；
+ *  · 输出顺序＝**状态里配置的顺序**（`state.fleetConfigs[]`）⇒ 与界面表格顺序一致、**确定可复现**；
+ *  · `n === 0` ⇒ 该条**不入册**（"不派"与"不存在"都不产生条目）；
+ *  · **不在这里报错**：形状问题收集进 `badSpec` / `badN` / `unknown`，由调用方决定口径
+ *    （⇒ 汇总与校验读的是**同一份册子**，界面 chips 与"能不能出征"不可能各算一遍）。
+ *  @returns `{ items:[{ id, n, out, count, idle }], total, badSpec, badN:[{id,n}], unknown:[id] }` */
+function normalizeSquadSpecsIn(state, specs) {
+  const out = { items: [], total: 0, badSpec: false, badN: [], unknown: [] };
+  if (!Array.isArray(specs)) {
+    out.badSpec = true;
+    return out;
+  }
+  const want = new Map();
+  for (const it of specs) {
+    if (!it || typeof it !== 'object' || Array.isArray(it)) {
+      out.badSpec = true;
+      continue;
+    }
+    const id = it.id === undefined || it.id === null ? '' : String(it.id);
+    if (!id) {
+      out.badSpec = true;
+      continue;
+    }
+    if (!Number.isInteger(it.n) || it.n < 0) {
+      out.badN.push({ id, n: Number.isFinite(it.n) ? it.n : null });
+      continue;
+    }
+    want.set(id, (want.get(id) || 0) + it.n);
+  }
+  for (const c of state.fleetConfigs || []) {
+    const n = want.get(c.id) || 0;
+    if (n > 0) {
+      const idle = Math.max(0, c.count - c.out);
+      out.items.push({ id: c.id, n, out: c.out, count: c.count, idle });
+      out.total += n;
+    }
+    want.delete(c.id);
+  }
+  for (const [id, n] of want) if (n > 0) out.unknown.push(id);
+  return out;
+}
+
+/** ★ **出征装配的纯汇总**（只读、**不校验**）——界面 chips（出战上限 / 已在外 / 本次派遣 / 余量）
+ *  与 `deploySquadCheckIn` **读同一份册子** ⇒ 汇总口径只有这一处。
+ *  · `remaining` ＝ **本次出征之后**的剩余名额（clamp ≥ 0；超编时为 0，**报错交给校验**）；
+ *  · 形状非法 ⇒ 空册子（`badSpec:true`）＋ 仍然给出 `used/limit`（这两项与装配无关，总能算）。 */
+export function deploySquadTotalsIn(state, specs) {
+  const norm = normalizeSquadSpecsIn(state, specs);
+  const limit = maxFleetIn(state);
+  const used = deployUsedIn(state);
+  return {
+    items: norm.items,
+    total: norm.total,
+    used,
+    limit,
+    remaining: Math.max(0, limit - used - norm.total),
+    badSpec: norm.badSpec,
+    badN: norm.badN,
+    unknown: norm.unknown,
+  };
+}
+
+/** ★★ **出征装配的唯一校验口径**（`previewDeploySquad` 与 `deploySquad` **共用这一处** ⇒ 不可能走偏）。
+ *  校验顺序（任一不过 ⇒ 调用方**状态逐字段零改动**）：
+ *    ① 形状 / 数量     ⇒ `badSpec` / `badOut`（非负整数、**不超过该配置空闲数** `count − out`）；
+ *    ② 配置存在        ⇒ `unknown`；
+ *    ③ **非空装配**    ⇒ `emptyDeploy`（Σ`n` ＝ 0 不算出征）；
+ *    ④ **逐条登记合法**⇒ 复用 M3c 唯一口径 `deployCheckIn`（`noIdle` / `badOut` / `unknown`）；
+ *    ⑤ ★★ **M3d 迭代 3：不再校验"合计出战名额"**（上限＝**费率分界**，超出由编排层**加价**、不拦截）；
+ *    ⑥ **费用**        ⇒ 资源足够付**调用方传入的 `cost`**（`notAffordable` / `badCost`）。
+ *      ★ M3d 迭代 2：本函数**不认识**"单船费用/激活费"这类业务口径 —— 费用对象由编排层
+ *        （`systems/expedition.js`）按动作算好：派遣 ⇒ **按费率分界计价**（正常部分 ＋ 超出加价，
+ *        `dispatchPriceOf`）；激活星域 ⇒ 激活费 ＋（随行单位的派遣费）**合并求和**（可零单位）。
+ *      ★★ **"名额不足"已不再是拒绝原因**（`deployLimit` 只留在词表里作界面短语用）。
+ *  @returns `{ ok:true, items:[{id,n,out,count,idle}], total, used, limit, remaining, cost }` /
+ *           `{ ok:false, reason:{ code, ... } }`（`remaining` ＝ **本次出征之后**的剩余正常名额，
+ *           ★ 迭代 3：**可为负** ＝ 超出多少艘 —— 超出**不是**失败，只是**加价**；
+ *           纯汇总 `deploySquadTotalsIn` 的同名字段仍是 **clamp ≥ 0** 的显示值） */
+export function deploySquadCheckIn(state, specs, cost) {
+  const sum = deploySquadTotalsIn(state, specs);
+  if (sum.badSpec) return { ok: false, reason: { code: 'badSpec' } };
+  if (sum.badN.length) return { ok: false, reason: { code: 'badOut', ...sum.badN[0] } };
+  if (sum.unknown.length) return { ok: false, reason: { code: 'unknown', id: sum.unknown[0] } };
+  for (const it of sum.items) {
+    // ③ 本配置**没有空闲单位** ⇒ `noIdle`（与 `deployableViewIn` 同一分类，界面读到的是同一句话）
+    if (it.idle <= 0) return { ok: false, reason: { code: 'noIdle', idle: it.idle, out: it.out, id: it.id } };
+    // ① 超出空闲数 ⇒ `tooMany`（带 idle ⇒ 界面能说清"最多能派几艘"；与"在外数量无效"是两回事）
+    if (it.n > it.idle) {
+      return { ok: false, reason: { code: 'tooMany', n: it.n, idle: it.idle, count: it.count, out: it.out, id: it.id } };
+    }
+    // ④ 逐条走 M3c 唯一口径（★ 迭代 3：**只出价、不出 `deployLimit`** ⇒ 这里只剩入参类失败可能）
+    const per = deployCheckIn(state, it.id, it.out + it.n);
+    if (!per.ok) return { ok: false, reason: per.reason };
+  }
+  if (!sum.total) return { ok: false, reason: { code: 'emptyDeploy' } };
+  // ★★ M3d 迭代 3：**不再有"合计出战名额"拒绝** —— 上限只是**费率分界**（超出加价、不拦截）；
+  //    超出部分由编排层（`systems/expedition.js` `dispatchPriceOf`）计进 `cost`，本层只校验付得起。
+  const short = reasonOfIn(state, cost);
+  if (short) return { ok: false, reason: short.code ? short : { code: 'notAffordable', ...short } };
+  return {
+    ok: true,
+    items: sum.items,
+    total: sum.total,
+    used: sum.used,
+    limit: sum.limit,
+    // ★ 迭代 3：**不再 clamp** —— 与 `deployCheckIn` 同口径（可为负 ＝ 超出多少艘），
+    //   因为"超出上限"现在是一种**合法结果**（只是加价），不是被拒的错误。
+    remaining: sum.limit - sum.used - sum.total,
+    cost: normalizeAmounts(cost),
+  };
+}
+
+/** ★★ **出征落地**（＝"派出去"）：**扣该档出征费用** ＋ **各配置 `out` 增加**（`count` 不变）。
+ *  · **先校验、后落地**（校验＝`deploySquadCheckIn`，与干跑同一处 ⇒ 结论必然一致）；
+ *  · 费用**不返还**（损毁也退不回来），资源按**唯一扣减口径** `spendIn`；
+ *  · 逐配置写入走 M3c 的 `setFleetOutIn`（**复核一次**，理论不可达 ⇒ 防御式返回原因）。 */
+export function deploySquadIn(state, specs, cost) {
+  const chk = deploySquadCheckIn(state, specs, cost);
+  if (!chk.ok) return { ok: false, reason: chk.reason };
+  const paid = spendIn(state, cost);
+  if (!paid.ok) return { ok: false, reason: paid.reason };
+  for (const it of chk.items) {
+    const r = setFleetOutIn(state, it.id, it.out + it.n);
+    if (!r.ok) return { ok: false, reason: r.reason }; // 防御：校验刚过 ⇒ 正常不会发生
+  }
+  return {
+    ok: true,
+    items: chk.items,
+    total: chk.total,
+    spent: paid.spent,
+    used: deployUsedIn(state),
+    limit: chk.limit,
+    // ★ 迭代 3：与 `deploySquadCheckIn` 同口径（可为负；超出上限是**合法结果**，只是加价）
+    remaining: chk.limit - deployUsedIn(state),
+  };
+}
+
+/** ★★ **出征装配 → 星域玩家单位规格**（M3d；只读、`state` 参数版）＝**唯一翻译点**：
+ *  把装配册 `items:[{id,n}]`（顺序＝配置顺序）翻成两串**一一对应**的数组：
+ *   · `units` ＝ 星域配置 `playerUnits[]` 形态（`{shipId, count, level, modules:[{moduleId,level}]}`）
+ *     —— 由 `systems/expedition.js` 覆写到**该次出征专用**的星域配置副本上；
+ *   · `refs`  ＝ **归属标签** `{configId, ordinal}`（**每艘一条**、`ordinal` 从 1 起，顺序＝展开顺序）
+ *     —— 星域侧把它写到**单位对象**上（`unit.baseRef`）⇒ 返回/损毁结算据此对回基地配置。
+ *  · 字段全部**读状态里的配置条目**、`modules` **深拷贝**（不共享引用、不改状态）；
+ *  · 本函数**不校验**（校验唯一入口＝`deploySquadCheckIn`）；未知 id ⇒ `unknown`（防御式）。 */
+export function squadUnitsIn(state, items) {
+  const units = [];
+  const refs = [];
+  for (const it of Array.isArray(items) ? items : []) {
+    const id = it && it.id !== undefined && it.id !== null ? String(it.id) : '';
+    const cfg = findFleetConfigIn(state, id);
+    if (!cfg) return { ok: false, reason: { code: 'unknown', id } };
+    const n = it && Number.isInteger(it.n) && it.n > 0 ? it.n : 0;
+    if (!n) continue;
+    units.push({
+      shipId: cfg.shipId,
+      count: n,
+      level: cfg.level,
+      modules: (cfg.modules || []).map((m) => ({ moduleId: m.moduleId, level: m.level })),
+    });
+    for (let k = 1; k <= n; k += 1) refs.push({ configId: cfg.id, ordinal: k });
+  }
+  return { ok: true, units, refs };
+}
+
+/** ★ 货物条目**归一化**（只读；非法 ⇒ `null`）：
+ *  `{ templateId | type, level }` ⇒ `{ templateId, level }`（类型 id 非空字符串、等级 ≥ 1 的整数）。 */
+function normalizeCargoEntry(c) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
+  const templateId = c.templateId !== undefined && c.templateId !== null ? String(c.templateId) : String(c.type === undefined || c.type === null ? '' : c.type);
+  if (!templateId) return null;
+  const level = Number.isInteger(c.level) ? c.level : 1;
+  if (level < 1) return null;
+  return { templateId, level };
+}
+
+/** ★★ **返回 / 损毁的唯一结算入口（基地侧账目）**（M3d）——**返回与损毁都走这一处**，
+ *  不允许"两处各算一遍"（星域侧只负责交出**单位载荷**，账目只有本函数在写）。
+ *  @param report `{ returns:[{ configId, ore?, cargos?[] }], losses:[{ configId }] }`
+ *    · `returns[i].ore`    ＝ 该单位带回的**矿物**（非负整数；缺省 0）；
+ *    · `returns[i].cargos` ＝ 该单位带回的**货物**（`{ templateId | type, level }`；缺省 `[]`）。
+ *  落地（**先整体校验、后落地** ⇒ 任一非法 ⇒ **状态逐字段零改动**）：
+ *    ① **返回**：`out -= 1`、**`count` 不变**（船回港了，还是你的船 ⇒ 修复后随时可再派）；
+ *    ② **未返回（损毁 / 结束时不在星门星区）**：`count -= 1` **且** `out -= 1`（**单位与出征费用都不返还**）；
+ *    ③ **矿物入基地**：走**唯一入账口径** `gainIn` ⇒ **超出容量上限的部分丢弃**并计入 `overflow`；
+ *    ④ **货物入研究站库** `cargoStore`：**按类型 + 等级堆叠**（同 `templateId` 同 `level` ⇒ 同一堆、`count` 累加）。
+ *  @returns `{ ok:true, returned, lost, gained, overflow, cargoAdded:[{templateId,level,count}],
+ *             out, count, limit, deployRemaining }` / `{ ok:false, reason }` */
+export function settleReturnIn(state, report) {
+  if (!report || typeof report !== 'object' || Array.isArray(report)) return { ok: false, reason: { code: 'badSpec' } };
+  const returns = report.returns === undefined ? [] : report.returns;
+  const losses = report.losses === undefined ? [] : report.losses;
+  if (!Array.isArray(returns) || !Array.isArray(losses)) return { ok: false, reason: { code: 'badSpec' } };
+
+  // ① 先整体校验（按配置汇总，任一不过 ⇒ 零改动）
+  const tally = new Map(); // configId -> { ret, loss }
+  const oreTotal = {};
+  const cargoList = [];
+  for (const r of returns) {
+    const id = r && r.configId !== undefined && r.configId !== null ? String(r.configId) : '';
+    if (!id) return { ok: false, reason: { code: 'badSpec' } };
+    const cfg = findFleetConfigIn(state, id);
+    if (!cfg) return { ok: false, reason: { code: 'unknown', id } };
+    const ore = r.ore === undefined || r.ore === null ? 0 : r.ore;
+    if (!Number.isInteger(ore) || ore < 0) return { ok: false, reason: { code: 'badSpec' } };
+    const cargos = r.cargos === undefined || r.cargos === null ? [] : r.cargos;
+    if (!Array.isArray(cargos)) return { ok: false, reason: { code: 'badSpec' } };
+    const norm = [];
+    for (const c of cargos) {
+      const e = normalizeCargoEntry(c);
+      if (!e) return { ok: false, reason: { code: 'badSpec' } };
+      norm.push(e);
+    }
+    const t = tally.get(id) || { ret: 0, loss: 0 };
+    t.ret += 1;
+    tally.set(id, t);
+    if (ore > 0) oreTotal.ore = (oreTotal.ore || 0) + ore;
+    cargoList.push(...norm);
+  }
+  for (const l of losses) {
+    const id = l && l.configId !== undefined && l.configId !== null ? String(l.configId) : '';
+    if (!id) return { ok: false, reason: { code: 'badSpec' } };
+    const cfg = findFleetConfigIn(state, id);
+    if (!cfg) return { ok: false, reason: { code: 'unknown', id } };
+    const t = tally.get(id) || { ret: 0, loss: 0 };
+    t.loss += 1;
+    tally.set(id, t);
+  }
+  // 结算量不得超过该配置**当前在外数**（否则是账目错误 ⇒ 拒绝，不猜）
+  for (const [id, t] of tally) {
+    const cfg = findFleetConfigIn(state, id);
+    if (t.ret + t.loss > cfg.out) {
+      return { ok: false, reason: { code: 'badOut', n: t.ret + t.loss, out: cfg.out, count: cfg.count, id } };
+    }
+  }
+
+  // ② 落地：配置账目（返回 ⇒ 只减 out；损毁 ⇒ count 与 out 同减）
+  let returned = 0;
+  let lost = 0;
+  for (const [id, t] of tally) {
+    const cfg = findFleetConfigIn(state, id);
+    cfg.out = Math.max(0, cfg.out - t.ret - t.loss);
+    cfg.count = Math.max(0, cfg.count - t.loss);
+    returned += t.ret;
+    lost += t.loss;
+  }
+  // ③ 矿物入基地（**唯一入账口径**；超上限丢弃）
+  const g = gainIn(state, oreTotal);
+  // ④ 货物入研究站库（**按类型 + 等级堆叠**；顺序＝首次出现顺序 ⇒ 确定）
+  const store = Array.isArray(state.cargoStore) ? state.cargoStore : (state.cargoStore = []);
+  const added = [];
+  for (const e of cargoList) {
+    let row = store.find((c) => c && c.templateId === e.templateId && c.level === e.level);
+    if (!row) {
+      row = { templateId: e.templateId, level: e.level, count: 0 };
+      store.push(row);
+    }
+    row.count += 1;
+    const a = added.find((x) => x.templateId === e.templateId && x.level === e.level);
+    if (a) a.count += 1;
+    else added.push({ templateId: e.templateId, level: e.level, count: 1 });
+  }
+  return {
+    ok: true,
+    returned,
+    lost,
+    gained: g.ok ? g.gained : {},
+    overflow: g.ok ? g.overflow : {},
+    cargoAdded: added,
+    out: fleetOutIn(state),
+    count: fleetTotalIn(state),
+    limit: maxFleetIn(state),
+    deployRemaining: deployRemainingIn(state),
+  };
 }
 
 /** ★ 逐条配置的**只读派生视图**（造价、拆解预览、槽位、单位图标入参、模块筹码、能力标记
@@ -1003,6 +1429,9 @@ function listFleetConfigsIn(state, opts = {}) {
       canBuild: canBuildIn(state, c.id, 1, opts),
       canScrap: canScrapIn(state, c.id, 1, opts),
       canDelete: deleteCheckOf(c),
+      /** ★ **能不能再派 1 艘**（M3c；口径见 `deployableViewIn`：先看本配置有无空闲单位、再看出战名额；
+       *  `ok === false` 必带 `reason.code` ⇒ 界面只读它，不自算、不推导） */
+      deployable: deployableViewIn(state, c),
       /** ★ 排序按钮的可用性（**引擎给，界面只读**）：与 `moveFleetConfigIn` 同一口径 ⇒ 禁用原因一致 */
       canMoveUp: idx > 0 ? { ok: true } : { ok: false, reason: { code: 'edgeMove', index: idx, total: list.length, dir: -1 } },
       canMoveDown: idx < list.length - 1 ? { ok: true } : { ok: false, reason: { code: 'edgeMove', index: idx, total: list.length, dir: 1 } },
@@ -1116,16 +1545,25 @@ function applyModuleSlotIn(modules, op, opts = {}) {
   return { ok: true, action, index: out.length - 1, modules: out };
 }
 
-/** ★ 舰队统计（只读）：容量 / 拥有 / 在外 / 剩余 / 拆解比例 */
+/** ★ 舰队统计（只读）：容量 / 拥有 / 在外 / 剩余 / 拆解比例 ＋ **出战名额三件套（M3c）**
+ *  · `maxFleet`       ＝ 出战上限（指挥中心该等级 `effect.maxFleet`）
+ *  · `deployUsed`     ＝ 已用名额（Σ`out`）
+ *  · `deployRemaining`＝ 剩余名额（`max(0, 上限 − 已用)`）
+ *  ⇒ **界面只读这三个数，绝不自算**（`out` 与 `deployUsed` 同源，仅语义命名不同）。 */
 function fleetStatsIn(state) {
   const capacity = fleetCapacityIn(state);
   const total = fleetTotalIn(state);
+  const out = fleetOutIn(state);
+  const maxFleet = maxFleetIn(state);
   return {
     capacity,
     total,
-    out: fleetOutIn(state),
+    out,
     remaining: Math.max(0, capacity - total),
     scrapRefundRatio: scrapRatioIn(state),
+    maxFleet,
+    deployUsed: out,
+    deployRemaining: Math.max(0, maxFleet - out),
   };
 }
 
@@ -1195,9 +1633,56 @@ export function applyModuleSlot(modules, op) {
 export function deleteFleetConfig(id) {
   return deleteFleetConfigIn(baseState, id);
 }
-/** 出征数量登记（M3d 预留 / 调试用；只改 `out`，不改 `count`） */
+/** 出征数量登记（M3d 预留 / 调试用；只改 `out`，不改 `count`；★ 迭代 3：**出战上限不拦截**，
+ *  `Σ out` **允许**超出上限（上限只是费率分界，收费口径在编排层），见 `deployCheckIn`） */
 export function setFleetOut(id, n) {
   return setFleetOutIn(baseState, id, n);
+}
+/** ★ **出战上限**（只读；读指挥中心该等级 `effect.maxFleet`）—— 与 `fleetCapacityOf()` 同体例 */
+export function maxFleetOf() {
+  return maxFleetIn(baseState);
+}
+/** ★ **已用出征名额**（只读）＝ Σ`out` */
+export function deployUsed() {
+  return deployUsedIn(baseState);
+}
+/** ★ **剩余出征名额**（只读）＝ `max(0, 上限 − 已用)`（**UI 不自算**） */
+export function deployRemaining() {
+  return deployRemainingIn(baseState);
+}
+/** ★ **能否这样登记出征**（**不改状态**；`n` ＝ 目标在外数，与 `setFleetOut` 同参；
+ *  与 `setFleetOut` **同一校验口径** ⇒ 先 `canDeploy` 后 `setFleetOut` 的结论必然一致） */
+export function canDeploy(id, n) {
+  return canDeployIn(baseState, id, n);
+}
+/** ★★ **出征装配的干跑**（M3d；**不改状态**）：`specs` ＝ `[{ id, n }]`（`n` ＝ 本次新增派遣数）、
+ *  `cost` ＝ **本次实际收费**（编排层按动作算好；★ 迭代 3：派遣＝费率分界合计（正常段 ＋ 超出加价）、
+ *  激活＝激活费 ＋（随行单位的派遣费），两者都**已合并成一个总价**）。
+ *  与 `deploySquad` **同一校验口径** ⇒ 先干跑后落地结论必然一致；
+ *  返回值含 `total / used / limit / remaining`（界面**只读**这些数，**不自算**名额）。 */
+export function previewDeploySquad(specs, cost) {
+  return deploySquadCheckIn(baseState, specs, cost);
+}
+/** ★★ **出征装配的纯汇总**（M3d；**只读、不校验**）：`{ items, total, used, limit, remaining }`
+ *  —— 界面 chips（出战上限 / 已在外 / 本次派遣 / 余量）**只读它**（与校验同一册子 ⇒ 不自算）。 */
+export function deploySquadTotals(specs) {
+  return deploySquadTotalsIn(baseState, specs);
+}
+/** ★★ **出征落地**（M3d）：扣该档出征费用 ＋ 各配置 `out` 增加（`count` 不变）；
+ *  **先校验、后落地** ⇒ 失败（空闲不足 / 资源不足 / 非法）时**状态逐字段零改动**
+ *  （★ 迭代 3：**出战上限不再否决任何一次登记** ⇒ 这里不会因名字里的"名额"而失败）。 */
+export function deploySquad(specs, cost) {
+  return deploySquadIn(baseState, specs, cost);
+}
+/** ★★ **返回 / 损毁的唯一结算入口（基地侧账目）**（M3d）——**返回与损毁都走这一处**：
+ *  返回 ⇒ `out -= 1`（`count` 不变）；未返回 ⇒ `count` 与 `out` **同减**；
+ *  矿物走 `gain` 口径（**超上限丢弃**、`overflow` 记录）；货物并入研究站库（**按类型 + 等级堆叠**）。 */
+export function settleReturn(report) {
+  return settleReturnIn(baseState, report);
+}
+/** ★ **研究站货物库只读快照**（**新数组 + 新对象**；`[{ templateId, level, count }]`，堆叠后） */
+export function cargoStoreOf() {
+  return (baseState.cargoStore || []).map((c) => ({ ...c }));
 }
 /** 某条配置的**单艘造价**（未知 id ⇒ `null`） */
 export function buildCostOf(id) {
@@ -1230,21 +1715,54 @@ export function buildingLevelOf(id) {
   return b ? b.level : 0;
 }
 
-/** ★ `upgradeBuilding(id)` —— **M3a 只留入口**（**绝不改动状态**；升级逻辑属 M3c）
- *  @returns `{ ok:false, reason:{ code } }`，`code` ∈
- *    · `'unknown'`        未知 id（既不是建筑也不是左列表项）；
- *    · `'notBuilding'`    左列表项但**不是建筑**（★ M3a 修订后**不会出现**：左列表 ≡ 建筑注册表；
- *                        本分支保留仅为将来若重新引入"非建筑列表项"时的防御性出口）；
- *    · `'locked'`         本阶段**未开放**（`placeholder: true`，如星球）；
- *    · `'notImplemented'` 该建筑属于后续步骤（`stage` 字段给出里程碑），M3a **未实现**。 */
-export function upgradeBuilding(id) {
+/** ★ **升级某建筑**（M3c：**已实装指挥中心**，其余建筑仍按阶段返回"未实现"）。
+ *
+ *  ★ 用户口径（M3c **即时生效**、**不做队列 / 耗时字段**）：
+ *    校验资源 ⇒ 扣资源 ⇒ **等级立即 +1、效果立即生效**（指挥中心 ⇒ `maxFleetOf()` 立刻变大）。
+ *
+ *  ★ 校验顺序（**任一不过 ⇒ 状态逐字段零改动**，返回 `{ ok:false, reason:{ code, ... } }`）：
+ *    ① 未知 id（既不是建筑也不是左列表项）⇒ `unknown`；
+ *    ② 左列表项但非建筑 ⇒ `notBuilding`（M3a 修订后不会出现，仅作防御性出口）；
+ *    ③ `placeholder: true`（如星球）⇒ `locked`（带 `stage`）；
+ *    ④ 本阶段**未实装**的建筑 ⇒ `notImplemented`（带 `stage`）——M3c **只放行指挥中心**；
+ *    ⑤ 已达该建筑配置区间上限（`levels[]` 最深一项的 `level`）⇒ `maxLevel`（带 `level` / `maxLevel`）；
+ *    ⑥ 资源不足 ⇒ 沿用既有 `notAffordable` 口径（带 `resource` / `need` / `have`；造价本身非法 ⇒ `badCost`）。
+ *
+ *  ★ 数值零硬编码：**升级消耗**读下一级 `levels[].cost`（`buildingCostOf`），
+ *    **新效果**读下一级 `levels[].effect`（`buildingEffectOf`）—— 代码里没有第二份常量、没有上限公式。
+ *  @returns `{ ok:true, id, from, level, spent, effect }`（`effect` ＝ 新等级的**完整效果字段对象**） */
+function upgradeBuildingIn(state, id) {
   const def = getBaseBuilding(id);
   if (!def) {
     const item = getBaseListItem(id);
-    return { ok: false, reason: { code: item ? 'notBuilding' : 'unknown' } };
+    return { ok: false, reason: { code: item ? 'notBuilding' : 'unknown', id: id === undefined ? null : String(id) } };
   }
-  if (def.placeholder === true) return { ok: false, reason: { code: 'locked', stage: def.stage } };
-  return { ok: false, reason: { code: 'notImplemented', stage: def.stage } };
+  if (def.placeholder === true) return { ok: false, reason: { code: 'locked', stage: def.stage, id: def.id } };
+  if (def.id !== 'commandCenter') return { ok: false, reason: { code: 'notImplemented', stage: def.stage, id: def.id } };
+  const levels = Array.isArray(def.levels) ? def.levels : [];
+  const topLevel = levels.length ? levels[levels.length - 1].level : 0;
+  const from = stateLevelOf(state, def.id);
+  const nextLevel = clampBuildingLevel(def, from + 1);
+  if (!levels.length || nextLevel <= from) {
+    return { ok: false, reason: { code: 'maxLevel', level: from, maxLevel: topLevel, id: def.id } };
+  }
+  // ★ 造价 ＝ **下一级**该建筑配置里的 cost（口径同 `buildIn`：先 `reasonOfIn` 查缺口，再 `spendIn` 落地）
+  const cost = buildingCostOf(def.id, nextLevel);
+  const short = reasonOfIn(state, cost);
+  // `short` ＝ `{ resource, need, have }`；成本本身非法时是 `{ code:'badCost' }` ⇒ **原样上报**（不覆盖 code）
+  if (short) return { ok: false, reason: short.code ? short : { code: 'notAffordable', ...short } };
+  const paid = spendIn(state, cost);
+  if (!paid.ok) return { ok: false, reason: paid.reason }; // 双保险：预校验过了仍失败 ⇒ 不落地
+  const b = state.buildings[def.id] || (state.buildings[def.id] = { level: from });
+  b.level = nextLevel;
+  return { ok: true, id: def.id, from, level: nextLevel, spent: paid.spent, effect: buildingEffectOf(def.id, nextLevel) };
+}
+
+/** ★ `upgradeBuilding(id)` —— 建筑升级（M3c 实装指挥中心；**即时生效**，失败 ⇒ 状态零改动）
+ *  失败码见 `BASE_REASON_CODES`（`unknown` / `notBuilding` / `locked` / `notImplemented` / `maxLevel`），
+ *  资源不足沿用 `notAffordable`。 */
+export function upgradeBuilding(id) {
+  return upgradeBuildingIn(baseState, id);
 }
 
 /* ---------- 只读快照（**供 UI**；UI 不自算任何数值） ---------- */
@@ -1306,9 +1824,10 @@ export function snapshot() {
       maxLevel: it.maxLevel,
     })),
     listItemIds: BASE_LIST_ITEM_IDS.slice(),
-    /** ★ 舰队（M3b）：统计（容量 / 拥有 / 在外 / 剩余 / 拆解比例）＋ 逐条配置的**只读派生视图**
+    /** ★ 舰队（M3b）：统计（容量 / 拥有 / 在外 / 剩余 / 拆解比例 **＋ M3c 出战名额三件套
+     *  `maxFleet` / `deployUsed` / `deployRemaining`**）＋ 逐条配置的**只读派生视图**
      *  （造价 `cost`、拆解预览 `refundPerUnit` / `refundIdle`、槽位 `slots`、能力标记
-     *   `canBuild` / `canScrap` / `canDelete`）—— **UI 直接渲染，不自算任何数值**。 */
+     *   `canBuild` / `canScrap` / `canDelete` 与 `deployable`）—— **UI 直接渲染，不自算任何数值**。 */
     fleet: { ...fleetStatsIn(baseState), configs: listFleetConfigsIn(baseState) },
     blueprints: { ...baseState.blueprints },
     cargoStore: baseState.cargoStore.map((c) => ({ ...c })),
@@ -1602,6 +2121,10 @@ export function baseSelfCheck() {
     }
     // ★ M3b：引擎的**失败原因码**必须有成对词条 `base.reason.<code>`（界面据此显示"按钮为什么灰着"）
     for (const code of FLEET_REASON_CODES) {
+      for (const loc of i18n.locales) if (!i18n.has(`base.reason.${code}`, loc)) p.push(`缺词条 base.reason.${code}@${loc}`);
+    }
+    // ★ M3c：**建筑升级**失败码同体例（升级按钮将来只读词条 ⇒ 现在就把词条补齐、并逐语言核对）
+    for (const code of BASE_REASON_CODES) {
       for (const loc of i18n.locales) if (!i18n.has(`base.reason.${code}`, loc)) p.push(`缺词条 base.reason.${code}@${loc}`);
     }
     // ★ 副标题**必须互不相同**（防"所有面板同一句"复发；按**当前语言**逐个取值比对）
@@ -2147,6 +2670,8 @@ export function baseSelfCheck() {
       'id', 'name', 'order', 'shipId', 'typeNameKey', 'iconShip', 'level', 'maxLevel', 'slots',
       'modules', 'moduleChips', 'moduleCount', 'count', 'out', 'idle',
       'cost', 'refundPerUnit', 'canBuild', 'canScrap', 'canDelete', 'canMoveUp', 'canMoveDown',
+      // ★ M3c：每条配置的"还能不能再派 1 艘"（出征上限口径）
+      'deployable',
     ];
     const st = createBaseState();
     const sampleMods = installableModuleIds().slice(0, 1).map((mid) => ({ moduleId: mid, level: 1 }));
@@ -2166,7 +2691,7 @@ export function baseSelfCheck() {
       if (v.idle !== Math.max(0, v.count - v.out)) p.push('舰队配置视图 idle 口径应为 max(0, count − out)');
       if (!v.cost || typeof v.cost !== 'object') p.push('舰队配置视图 cost 应为对象');
       if (!v.refundPerUnit || typeof v.refundPerUnit !== 'object') p.push('舰队配置视图 refundPerUnit 应为对象');
-      for (const k of ['canBuild', 'canScrap', 'canDelete', 'canMoveUp', 'canMoveDown']) {
+      for (const k of ['canBuild', 'canScrap', 'canDelete', 'canMoveUp', 'canMoveDown', 'deployable']) {
         if (!v[k] || typeof v[k].ok !== 'boolean') p.push(`舰队配置视图 ${k} 必须带布尔 ok`);
         if (v[k] && v[k].ok === false && (!v[k].reason || !v[k].reason.code)) p.push(`${k} 为 false 时必须带 reason.code（禁用必有原因）`);
       }
@@ -2785,6 +3310,246 @@ export function baseSelfCheck() {
       }
     }
     add('㉘ 模块槽位编辑（确认＝set 替换 / 新增＝add 追加 / 移除＝remove 删除；越界与非法被拒、**输入数组零改动**）', p);
+  }
+
+  // ㉙ 建筑升级（M3c：指挥中心**即时生效**）：恰好够 ⇒ 成功且等级 +1 / 效果立刻生效；差 1 ⇒ notAffordable 且零改动；到顶 ⇒ maxLevel；其余建筑仍未实装
+  {
+    const p = [];
+    const def = BASE_BUILDINGS.commandCenter;
+    const top = def.levels[def.levels.length - 1].level;
+    const st = createBaseState();
+    const lv0 = st.buildings.commandCenter.level;
+    const nextCost = buildingCostOf('commandCenter', lv0 + 1);
+    const needed = RESOURCE_KEYS.filter((k) => (nextCost[k] || 0) > 0);
+    if (!needed.length) p.push('指挥中心下一级造价应非 0（初始等级之后的升级必须有消耗）');
+    const k0 = needed[0] || RESOURCE_KEYS[0]; // 配置缺失时也不让断言崩掉（会以"升级竟成功"报错）
+    // (a) 差 1 个资源 ⇒ notAffordable（指向该资源、need/have 精确）且**状态逐字段零改动**
+    for (const k of RESOURCE_KEYS) st.resources[k] = nextCost[k] || 0;
+    st.resources[k0] -= 1;
+    const frozen = JSON.stringify(st);
+    const r1 = upgradeBuildingIn(st, 'commandCenter');
+    if (r1.ok) p.push('资源差 1 时升级竟成功');
+    else if (r1.reason.code !== 'notAffordable' || r1.reason.resource !== k0) {
+      p.push(`资源不足应返回 notAffordable / ${k0}（现 ${r1.reason.code} / ${r1.reason.resource}）`);
+    } else if (r1.reason.need !== nextCost[k0] || r1.reason.have !== nextCost[k0] - 1) {
+      p.push('notAffordable 的 need / have 应与配置值精确相符');
+    }
+    if (JSON.stringify(st) !== frozen) p.push('升级失败必须状态零改动（等级 / 资源都不得变）');
+    // (b) 恰好够 ⇒ 成功：等级 +1、资源按该级 cost 精确扣减、**效果即时生效**
+    for (const k of RESOURCE_KEYS) st.resources[k] = nextCost[k] || 0;
+    const fleetBefore = maxFleetIn(st);
+    const lvBefore = st.buildings.commandCenter.level;
+    const r2 = upgradeBuildingIn(st, 'commandCenter');
+    if (!r2.ok) p.push(`恰好够时应可升级（现 ${r2.reason.code}）`);
+    else {
+      if (r2.from !== lvBefore || r2.level !== lvBefore + 1) p.push(`升级应 +1 级（现 ${r2.from} → ${r2.level}）`);
+      if (st.buildings.commandCenter.level !== lvBefore + 1) p.push('升级后状态里的等级应立刻 +1（即时生效）');
+      if (!RESOURCE_KEYS.every((k) => st.resources[k] === 0)) p.push(`升级扣减额应与该级 cost 精确一致（残留 ${JSON.stringify(st.resources)}）`);
+      const spentWant = {};
+      for (const k of needed) spentWant[k] = nextCost[k];
+      if (!jsonEq(r2.spent, spentWant)) p.push(`spent 应＝下一级 cost 中 >0 的项（现 ${JSON.stringify(r2.spent)}）`);
+      if (!jsonEq(r2.effect, buildingEffectOf('commandCenter', r2.level))) p.push('返回值应带**新等级**的完整效果字段');
+      if (maxFleetIn(st) !== buildingEffectOf('commandCenter', r2.level).maxFleet) p.push('出战上限应＝新等级配置效果值（效果即时生效）');
+      if (!(maxFleetIn(st) > fleetBefore)) p.push(`升级后出战上限应变大（${fleetBefore} → ${maxFleetIn(st)}）`);
+    }
+    // (c) 已到配置区间上限 ⇒ maxLevel 且零改动
+    const st2 = createBaseState();
+    st2.buildings.commandCenter.level = top;
+    const frozen2 = JSON.stringify(st2);
+    const r3 = upgradeBuildingIn(st2, 'commandCenter');
+    if (r3.ok || r3.reason.code !== 'maxLevel') p.push(`到顶升级应返回 maxLevel（现 ${r3.ok ? 'ok' : r3.reason.code}）`);
+    else if (r3.reason.level !== top || r3.reason.maxLevel !== top) p.push('maxLevel 原因应带当前等级与上限');
+    if (JSON.stringify(st2) !== frozen2) p.push('到顶升级失败必须状态零改动');
+    // (d) 其余建筑（M3c 未实装）/ 未知 id / placeholder：既有码不变
+    const wantBy = { planet: 'locked' }; // 星球 placeholder ⇒ 未开放；其余建筑 ⇒ 未实装
+    for (const id of BASE_BUILDING_IDS) {
+      if (id === 'commandCenter') continue;
+      const r = upgradeBuildingIn(createBaseState(), id);
+      const want = wantBy[id] || 'notImplemented';
+      if (r.ok || r.reason.code !== want) p.push(`${id} 仍应返回 ${want}（现 ${r.ok ? 'ok' : r.reason.code}）`);
+    }
+    if (upgradeBuildingIn(createBaseState(), 'noSuchId').reason.code !== 'unknown') p.push('未知 id 升级应返回 unknown');
+    add('㉙ 建筑升级（M3c 指挥中心即时生效：恰好够 ⇒ 等级 +1 且效果立刻生效、差 1 ⇒ notAffordable、到顶 ⇒ maxLevel、其余建筑仍未实装；失败一律零改动）', p);
+  }
+
+  // ㉚ 出战上限语义（M3c ＋ 迭代 3 修订）：上限＝**费率分界**（只加价、不拦截）；恰好到上限可派、超 1 艘照常写入、减少 out 不受限、死亡释放名额、canDeploy ≡ setFleetOut
+  {
+    const p = [];
+    // ★ 样本：船坞拉到配置顶（容量不再是瓶颈）⇒ 只让"指挥中心出战上限"成为唯一约束
+    const syDef = BASE_BUILDINGS.shipyard;
+    const mkDeployState = () => {
+      const s = createBaseState();
+      s.buildings.shipyard.level = syDef.levels[syDef.levels.length - 1].level;
+      for (const k of RESOURCE_KEYS) s.resources[k] = 1e6;
+      const lim = maxFleetIn(s);
+      const a = createFleetConfigIn(s, { name: 'A', shipId: 'combat', level: 1, modules: [] });
+      const b = createFleetConfigIn(s, { name: 'B', shipId: 'combat', level: 1, modules: [] });
+      if (!a.ok || !b.ok) return { ok: false, reason: (a.ok ? b : a).reason };
+      // A 备足"上限 ＋ 1"艘、B 备 2 艘：★ 迭代 3 需要**仍有空闲单位**才能在"上限之外"继续登记
+      //   （否则会先被 `badOut`——`n > count`——挡住，测不到"超出上限只加价"）；
+      //   总拥有数须落在舰队总容量内（否则样本前提不成立）。
+      const ba = buildIn(s, a.id, lim + 1);
+      if (!ba.ok) return { ok: false, reason: ba.reason };
+      const bb = buildIn(s, b.id, 2);
+      if (!bb.ok) return { ok: false, reason: bb.reason };
+      return { ok: true, s, a: a.id, b: b.id, limit: lim };
+    };
+    const A = mkDeployState();
+    if (!A.ok) p.push(`出战样本创建失败（${A.reason && A.reason.code}）`);
+    else {
+      const st = A.s;
+      const a = A.a;
+      const b = A.b;
+      const L = A.limit;
+      if (!(L > 0)) p.push('指挥中心初始等级的出战上限应为正数（配置缺失？）');
+      if (L !== buildingEffectOf('commandCenter', st.buildings.commandCenter.level).maxFleet) {
+        p.push('出战上限应＝指挥中心该等级 effect.maxFleet');
+      }
+      // ① 一次性派到上限：恰好到上限 ⇒ 成功、剩余名额 0
+      const r1 = setFleetOutIn(st, a, L);
+      if (!r1.ok) p.push(`一次派到上限应成功（现 ${r1.reason.code}）`);
+      else if (r1.out !== L || r1.delta !== L || r1.remaining !== 0) p.push('一次派到上限的 out / delta / remaining 口径不对');
+      if (deployUsedIn(st) !== L || deployRemainingIn(st) !== 0) p.push('到上限后 Σout 应＝上限且剩余名额应为 0');
+      // ② 减少 out（含归零）**不受限**：撤回永远允许 ⇒ 名额只会被释放
+      const r3 = setFleetOutIn(st, a, 0);
+      if (!r3.ok || deployUsedIn(st) !== 0) p.push('减少 out（归零）不应受出战上限约束');
+      // ③ **分批派遣**：逐艘累加恰好到上限全部成功（与"一次派"等价）；跨配置共用同一份名额
+      let acc = 0;
+      let stepErr = null;
+      for (let i = 1; i <= L; i += 1) {
+        acc = i;
+        const r = setFleetOutIn(st, a, acc);
+        if (!r.ok) { stepErr = r.reason.code; break; }
+      }
+      if (stepErr) p.push(`分批派遣第 ${acc} 艘本应成功（现 ${stepErr}）`);
+      if (deployUsedIn(st) !== L) p.push(`分批派遣应恰好累计到上限（现 ${deployUsedIn(st)} / ${L}）`);
+      // ④ 死亡释放名额（M3b 口径：死亡时 count 与 out **同步减**）⇒ 名额立刻回来、可再派
+      const roomBefore = deployRemainingIn(st);
+      const cfgA = findFleetConfigIn(st, a);
+      cfgA.count -= 1;
+      cfgA.out -= 1;
+      if (deployRemainingIn(st) !== roomBefore + 1) p.push('死亡（count / out 同减）应即时释放 1 个出战名额');
+      const r5 = setFleetOutIn(st, b, 1);
+      if (!r5.ok) p.push(`释放名额后应可再派 1 艘（现 ${r5.reason.code}）`);
+      if (findFleetConfigIn(st, a).out > findFleetConfigIn(st, a).count) p.push('任何登记都不得破坏 out ≤ count');
+      // ⑤ ★★ **M3d 迭代 3：超出上限不再拦截**（上限＝**费率分界** ⇒ 只是**加价**、不是拒绝原因）
+      const usedBeforeOver = deployUsedIn(st);
+      const r2 = setFleetOutIn(st, b, 2); // B 由 1 艘加到 2 艘 ⇒ Σout ＝ 上限 ＋ 1（超 1 艘）
+      if (!r2.ok) p.push(`超出上限 1 艘**不应再被拒**（现 ${r2.reason.code}）`);
+      else {
+        if (r2.over !== 1 || r2.remaining !== -1) {
+          p.push(`超出 1 艘应给出 over＝1 / remaining＝−1（现 ${r2.over} / ${r2.remaining}）`);
+        }
+        if (deployUsedIn(st) !== usedBeforeOver + 1) p.push('超出上限的登记应真的写入（Σout 应 ＋1）');
+        if (!(fleetOutIn(st) > maxFleetIn(st))) p.push('本项样本前提：该次登记后 Σout 应确实超过出战上限');
+      }
+      // ⑥ 跨配置累计同样**不拦截**（上限是**总量**口径 ⇒ 逐条登记各自合法即可；超出部分交给计费层加价）
+      const r4 = setFleetOutIn(st, a, findFleetConfigIn(st, a).out + 1);
+      if (!r4.ok) p.push(`跨配置累计超过上限后仍应可登记（现 ${r4.reason.code}）`);
+      if (findFleetConfigIn(st, a).out > findFleetConfigIn(st, a).count) p.push('任何登记都不得破坏 out ≤ count');
+      // ⑦ 逐条视图 deployable：口径＝"从本配置再派 1 艘"（★ 迭代 3：只剩 `noIdle` 一种否决）
+      const viewsA = listFleetConfigsIn(st, {});
+      for (const v of viewsA) {
+        if (!v.deployable || typeof v.deployable.ok !== 'boolean') {
+          p.push('每条配置视图必须带 deployable.ok（界面只读它）');
+          continue;
+        }
+        if (v.deployable.ok === false && !(v.deployable.reason && v.deployable.reason.code)) p.push('deployable 为 false 必带 reason.code');
+        // ★ **独立重推**（不复用同一 helper，避免同义反复）：无空闲 ⇒ noIdle；否则 ＝ canDeploy(out + 1)
+        const idle = Math.max(0, v.count - v.out);
+        const want = idle > 0 ? canDeployIn(st, v.id, v.out + 1) : { ok: false, reason: { code: 'noIdle' } };
+        if (want.ok !== v.deployable.ok) p.push(`deployable 口径应为"无空闲 ⇒ noIdle，否则 canDeploy(out + 1)"（${v.id}）`);
+        else if (!want.ok && want.reason.code !== v.deployable.reason.code) {
+          p.push(`deployable 原因码不一致（${v.id}：want ${want.reason.code} / got ${v.deployable.reason.code}）`);
+        }
+        // ★ 迭代 3：**只要还有空闲单位，deployable 就必须是可派的**（上限不再否决）
+        if (idle > 0 && v.deployable.ok !== true) p.push(`还有 ${idle} 艘空闲时 deployable 必须为 true（上限不拦截；${v.id}）`);
+      }
+      // ⑧ canDeploy ≡ setFleetOut（**同一校验口径**）：并行两份相同状态对拍 + canDeploy 必须零改动
+      const cases = [['a', 0], ['a', 1], ['b', 1], ['b', 2], ['a', -1], ['a', 1.5], ['none', 1]];
+      for (const [role, n] of cases) {
+        const S1 = mkDeployState();
+        const S2 = mkDeployState();
+        if (!S1.ok || !S2.ok) { p.push('canDeploy 对拍样本创建失败'); break; }
+        // 先各自推到"名额已满"（★ 迭代 3 下这只是**费率分界**，不再否决任何一次登记）
+        setFleetOutIn(S1.s, S1.a, S1.limit);
+        setFleetOutIn(S2.s, S2.a, S2.limit);
+        const idOf = (S) => (role === 'a' ? S.a : role === 'b' ? S.b : 'noSuchId');
+        const z1 = JSON.stringify(S1.s);
+        const c = canDeployIn(S1.s, idOf(S1), n);
+        if (JSON.stringify(S1.s) !== z1) p.push('canDeploy 必须零改动（先校验后落地）');
+        if (!c || typeof c.ok !== 'boolean') p.push('canDeploy 必须返回带布尔 ok 的结果');
+        const z2 = JSON.stringify(S2.s);
+        const r = setFleetOutIn(S2.s, idOf(S2), n);
+        if (c.ok !== r.ok) p.push(`canDeploy 与 setFleetOut 结论不一致（${role} / n=${n}）`);
+        else if (!c.ok && c.reason.code !== r.reason.code) p.push(`canDeploy 与 setFleetOut 原因码不一致（${role} / n=${n}）`);
+        if (!r.ok && JSON.stringify(S2.s) !== z2) p.push('setFleetOut 失败必须状态零改动');
+        if (r.ok) {
+          if (findFleetConfigIn(S2.s, idOf(S2)).out !== n) p.push('setFleetOut 成功应写入目标在外数');
+          // ★ 迭代 3：成功登记后 Σout **允许**超过上限（上限只是费率分界）；但每个配置仍不得越出 count
+          for (const c2 of S2.s.fleetConfigs || []) {
+            if (c2.out > c2.count) p.push(`登记成功也不得破坏 out ≤ count（${c2.id}：${c2.out} > ${c2.count}）`);
+          }
+        }
+      }
+      // ⑨ 非法入参沿用既有码：badOut / unknown
+      if (setFleetOutIn(st, a, -1).reason.code !== 'badOut') p.push('out 为负应返回 badOut');
+      if (setFleetOutIn(st, a, 1.5).reason.code !== 'badOut') p.push('非整数 out 应返回 badOut');
+      if (setFleetOutIn(st, a, findFleetConfigIn(st, a).count + 1).reason.code !== 'badOut') p.push('out 超过 count 应返回 badOut');
+      if (setFleetOutIn(st, 'noSuchId', 1).reason.code !== 'unknown') p.push('未知 id 登记应返回 unknown');
+      // ⑩ 快照：上限 / 已用 / 余量三件套齐全且同源（UI 零自算）
+      const snap = snapshot();
+      for (const k of ['maxFleet', 'deployUsed', 'deployRemaining']) {
+        if (!(k in snap.fleet)) p.push(`snapshot().fleet 缺 ${k}（界面据此显示出战名额）`);
+      }
+      if (!Number.isInteger(snap.fleet.maxFleet)) p.push('snapshot().fleet.maxFleet 应为整数');
+      if (snap.fleet.deployUsed !== snap.fleet.out) p.push('deployUsed 应与 out 同源（＝Σout）');
+      if (snap.fleet.deployRemaining !== Math.max(0, snap.fleet.maxFleet - snap.fleet.out)) {
+        p.push('deployRemaining 口径应为 max(0, 出战上限 − 已用)');
+      }
+      // ⑪ 船坞总容量口径不受影响（两套上限相互独立、互不换算）
+      const S3 = mkDeployState();
+      if (S3.ok && !(fleetCapacityIn(S3.s) >= maxFleetIn(S3.s))) p.push('样本前提：舰队总容量应 ≥ 出战上限（两者独立）');
+    }
+    add('㉚ 出战上限语义（M3c ＋ ★ M3d 迭代 3 修订：上限＝**费率分界**、**不再拦截任何登记** —— 恰好到上限可派、超 1 艘照常写入且给出 over/remaining(−1)、分批＝一次、减少 out 不受限、死亡释放名额、canDeploy ≡ setFleetOut、快照三件套齐全）', p);
+  }
+
+  // ㉛ 指挥中心费用表逐级递增（M3c）：levels 覆盖 1..maxLevel、Lv1 全 0、逐级严格递增、资源键均为已注册键
+  {
+    const p = [];
+    const def = BASE_BUILDINGS.commandCenter;
+    const levels = def.levels;
+    if (levels.length !== def.maxLevel) p.push(`指挥中心 levels.length(${levels.length}) 应等于 maxLevel(${def.maxLevel})`);
+    levels.forEach((e, i) => {
+      const cost = e.cost || {};
+      const ef = e.effect || {}; // ★ 防御式读取：配置缺字段时**报错而不是抛异常**
+      const nx = levels[i + 1];
+      const ncost = nx ? nx.cost || {} : {};
+      const nef = nx ? nx.effect || {} : {};
+      if (e.level !== i + 1) p.push(`指挥中心等级表应连续（下标 ${i} 的 level 应为 ${i + 1}，现 ${e.level}）`);
+      for (const k of Object.keys(cost)) {
+        if (!isResourceKey(k)) p.push(`指挥中心 Lv${e.level} 造价含未知资源键 ${k}`);
+      }
+      if (!Number.isInteger(ef.maxFleet) || ef.maxFleet < 1) {
+        p.push(`指挥中心 Lv${e.level} 的 effect.maxFleet 应为正整数（现 ${ef.maxFleet}）`);
+      }
+      if (!nx) return;
+      if (!((ncost.energy || 0) > (cost.energy || 0))) p.push(`指挥中心 Lv${i + 2} 的能量币应比 Lv${e.level} 多（逐级递增）`);
+      if (!((ncost.alloy || 0) > (cost.alloy || 0))) p.push(`指挥中心 Lv${i + 2} 的合金应比 Lv${e.level} 多（逐级递增）`);
+      if ((ncost.rare || 0) < (cost.rare || 0)) p.push(`指挥中心 Lv${i + 2} 的稀土不应少于 Lv${e.level}`);
+      if ((nef.maxFleet || 0) < (ef.maxFleet || 0)) p.push(`指挥中心 Lv${i + 2} 的出战上限不应比 Lv${e.level} 小`);
+    });
+    const first = levels[0];
+    const last = levels[levels.length - 1];
+    const firstCost = first.cost || {};
+    const firstEf = first.effect || {};
+    const lastCost = last.cost || {};
+    const lastEf = last.effect || {};
+    if (!Object.keys(firstCost).every((k) => (firstCost[k] || 0) === 0)) p.push('指挥中心 Lv1（初始等级）造价应为全 0');
+    if (!((lastCost.energy || 0) > 0)) p.push('指挥中心末级造价应非 0');
+    if (!((lastCost.rare || 0) > 0)) p.push('指挥中心末级应含稀土（Lv3 起逐级递增）');
+    if (!((lastEf.maxFleet || 0) > (firstEf.maxFleet || 0))) p.push('指挥中心末级出战上限应大于 Lv1（每级都要有实质收益）');
+    add('㉛ 指挥中心费用表（M3c：levels 连续覆盖 1..maxLevel、Lv1 全 0、能量币/合金逐级严格递增、稀土自 Lv3 非减、资源键均为已注册键）', p);
   }
 
   return { pass: checks.every((c) => c.pass), checks };

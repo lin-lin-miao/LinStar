@@ -31,18 +31,18 @@
  *   · **落点**＝地图格子（`.sf-cell`，**非空位**）；拖动中该格加 `.sf-cell.drop-target`（**仅描边**，
  *     复用既有视觉、不新增配色）；
  *   · **放开** ⇒ 调**唯一写入口** `starfield.moveUnitTo(unitId, targetIndex)`（**UI 绝不自算**可达性/冷却）；
- *     · **失败**（`dead/owner/far/invalid/finished`）⇒ 顶栏**短提示**（`starfield.move.failed.*` 按 reason
- *       映射），**不改队列、不改任何字段**；
- *     · ★ **拖到该单位“自身所在星区” ⇒ 取消移动**（引擎成功返回 `{cancelled:true}`，**不是失败**）⇒
- *       短提示「已取消移动」并立即清掉卡片 `⇥#n` 与地图路径描边；本来就没有指令 ⇒ 静默无操作；
- *   · **无新配色**：提示用既有 `--warn`，高亮用既有 `--accent`；
+ *     · ★★ **M3d 迭代 2（用户口径）**：**星域地图内不显示任何提示文字** —— 失败
+ *       （`dead/owner/far/invalid/finished`）与"取消移动"都**只静默生效**（状态照常由引擎记录：
+ *       非法指令本就零副作用；取消移动立即清掉卡片 `⇥#n` 与路径描边，但不弹任何文案）；
+ *     · ★ **拖到该单位“自身所在星区” ⇒ 取消移动**（引擎成功返回 `{cancelled:true}`，**不是失败**）；
+ *   · **无新配色**：拖拽高亮沿用既有 `--accent`（原提示用的 `--warn` 与 `.sf-move-msg` 规则已整段删除）；
  *   · **零回归**：既有点击选中 / 平移 / 缩放 / 侧栏宽度逻辑**一字未改**（拖拽只用 `drag*` 事件，
  *     与既有 `pointer*` 平移/点击链路互不干扰）。
  *
  * ★★ 阶段 2 增补②：**侧栏跟随被选单位** ＋ **地图描出其余路径** ★★
  *   · 选中态来源＝侧栏「单位详情」的选中（`battleView` 经 `navHook.onSelect` 回报；**UI 不另建选中态**）；
  *   · **跟随**：被选单位跨区移动 ⇒ 侧栏场景自动切到它所在的新星区（`mountSectorScene(newBattle)`）并
- *     **保持详情展开**（同一渲染链 `battleView.selectSceneUnit`）；单位已不存在 ⇒ 收起详情 + 一次短提示；
+ *     **保持详情展开**（同一渲染链 `battleView.selectSceneUnit`）；单位已不存在 ⇒ 收起详情（★ 迭代 2：不弹提示）；
  *   · **描边**：有移动指令 ⇒ 逐格描出**剩余路径**（数据＝容器只读 `unitNav().navPath`，引擎算好、UI 只渲染）；
  *     无指令 ⇒ 只描其**当前所在格**；随移动逐格消减、随新指令重算；
  *   · 类名 `.sf-cell.nav-here` / `.sf-cell.nav-path`（**只用既有 `--accent`**），与 `.selected` / `.drop-target`
@@ -51,12 +51,15 @@
 import { el } from '../core/utils.js';
 import { bus } from '../core/eventBus.js';
 import { i18n } from '../i18n/index.js';
-import { formatTickSeconds } from '../core/tick.js';
+import { formatTickSeconds, ticker } from '../core/tick.js';
 import { getSectorType } from '../data/sectorTypes/index.js';
 import { router } from './router.js';
-import { ensureStarfield, getStarfield } from './starfieldSession.js';
+import { ensureStarfield, getStarfield, setStarfield } from './starfieldSession.js';
 import { unitIcon } from './unitIcon.js'; // ★ 单位图标**唯一口径**（与战斗屏共用；见 `ui/unitIcon.js`）
 import { mountSectorScene, selectSceneUnit } from './battleView.js'; // ★ C-2：复用**同一套**战斗场景渲染/交互链（无第二套实现）
+// ★ M3d：返回闭环 —— 判据（`returnCheck`）/ 主动返回（`settleExpedition`）/ 例行结算（`tickExpedition`）
+//   全部走 `systems/expedition.js` 的**唯一结算入口**；本视图**只渲染按钮状态与回执文案**，不自算账目。
+import { returnCheck, settleExpedition, tickExpedition } from '../systems/expedition.js';
 
 /* ---------- 交互常量（纯表现层参数，非游戏数值） ---------- */
 const ZOOM_MIN = 0.5;
@@ -115,16 +118,22 @@ let gridCols = 1; // 网格列数（建图时记录；用于推导「单列星�
 /* ★★ 阶段 2：拖拽下达「星区间移动」的**视图内状态**（与容器/引擎无关，纯 UI 中间态）：
  *   · `navDragUnitId` ＝ 正在拖拽的单位 id（由单位卡的 `dragstart` 经 `navHook.beginDrag` 登记）；
  *   · `dropCell`       ＝ 当前高亮的目标格（`.sf-cell.drop-target`；同一时刻至多一个）；
- *   · `moveMsgEl/Timer`＝ 顶栏短提示（非法下达专用；自动消隐）；
  *   · `navSelId`       ＝ 侧栏**当前选中（详情已展开）的单位 id**：用于①侧栏跟随其移动 ②地图描边其路径；
  *   · `navFocusCells`  ＝ 地图上**当前被描边**的格子（`.nav-here`/`.nav-path`）——每帧先清后画（幂等）；
- *   · `sceneSwitching` ＝ 正在切换侧栏场景（切换过程中的内部“清空选中”通知**不代表用户收起详情**）。 */
+ *   · `sceneSwitching` ＝ 正在切换侧栏场景（切换过程中的内部“清空选中”通知**不代表用户收起详情**）。
+ * ★★ M3d 迭代 2（用户口径）：**星域地图内不显示任何浮动提示文字** ——
+ *   原 `moveMsgEl/moveMsgTimer/showMoveMsg/moveReasonText/returnReportText` 及其全部调用点**已整段移除**
+ *   （含"无法移动"的非法下达提示、单位/物品结算回执的橙色短句、"已取消移动"、"跟随目标已不存在"、
+ *   "结束演出开始"等）；**战报日志照常记录**（结算/战斗日志在引擎侧，与本视图无关）。
+ *   失败原因仍然从**引擎回执照**（`reason.code`）与按钮 `title` 可读，只是不再弹浮动文字。 */
 let navDragUnitId = null;
 let dropCell = null;
-let moveMsgEl = null;
-let moveMsgTimer = 0;
 let navSelId = null;
 let sceneSwitching = false;
+// ★ M3d：侧栏「返回基地」按钮与其 `title` 承载节点（可用性由 `returnCheck` 判定 ⇒ 界面只读）
+let returnBtnEl = null;
+let returnWrapEl = null;
+let returnWrapHost = null; // ★ 迭代 2：显隐承载节点（`.base-act-wrap.sf-sb-return`；非星门类型星区 ⇒ 整块隐藏）
 const navFocusCells = [];
 let selectedIndex = null;
 let scale = 1;
@@ -150,8 +159,9 @@ function paintCell(cell, def) {
   cell.style.setProperty('--sf-glyph', `'${String(def.marker || '·').replace(/'/g, "\\'")}'`);
 }
 
-/** 状态词条 key（finished/stopped/settled 优先级：手动停止 > 时间耗尽 > 运行中） */
+/** 状态词条 key（优先级：**结束演出中** > 手动停止 > 时间耗尽 > 运行中） */
 function statusKey(sf) {
+  if (sf.collapsing) return 'starfield.map.status.collapsing'; // ★ M3d 迭代：逐环变白演出
   if (sf.stopped) return 'starfield.map.status.stopped';
   if (sf.finished) return sf.settled ? 'starfield.map.status.settled' : 'starfield.map.status.finished';
   return 'starfield.map.status.running';
@@ -234,17 +244,27 @@ function buildTopbar() {
     //   此处由"返回星域配置"改为**直接返回主菜单**，地图屏仍保留唯一出口（不留死路）。
     onclick: () => router.show('menu'),
   });
+  // ★ M3d：**回基地屏**的入口（与上面的"回主菜单"并存 —— 两者都是"离开星域地图"，
+  //   离开即 **挂起**（不再驱动 tick），`out` 不变；回来继续（见 `ui/baseView.js` 星门面板「返回星域」）。
+  const toBase = el('button', {
+    class: 'btn small',
+    text: i18n.t('menu.base'),
+    title: i18n.t('base.stargate.resumeHint'),
+    // ★ M3d 迭代 2：**出口之一** ⇒ 离开星域回基地时把全局 tick 变速器恢复常态（唯一入口 `ticker.restore()`）
+    onclick: () => {
+      ticker.restore();
+      router.show('base');
+    },
+  });
   metaEl = el('div', { class: 'sf-meta' });
   remainEl = el('div', { class: 'sf-remain' });
   statusEl = el('div', { class: 'sf-status' });
-  // ★ 阶段 2：拖拽下达的**短提示**（非法/失败专用；无内容时整块隐藏 ⇒ 既有呈现零变化）
-  moveMsgEl = el('div', { class: 'sf-move-msg hidden' });
   zoomEl = el('div', { class: 'sf-zoom-label', text: '100%' });
   const bar = el('div', { class: 'sf-topbar' }, [
     back,
+    toBase,
     el('div', { class: 'sf-title', text: i18n.t('starfield.map.title') }),
     el('div', { class: 'sf-top-meta' }, [metaEl, remainEl, statusEl]),
-    moveMsgEl,
     el('div', { class: 'sf-zoom' }, [
       el('button', { class: 'btn tiny', text: '−', title: i18n.t('starfield.map.zoom.out'), onclick: () => zoomBy(1 / ZOOM_STEP) }),
       zoomEl,
@@ -356,6 +376,20 @@ function buildLegend(sf) {
  *  那些信息战斗场景里都有，星区名集成到战斗屏的**星区栏** `.zone-label`） */
 function buildSidebar() {
   sbTitleEl = el('span', { class: 'sf-sb-title' }); // 标题＝星区名（与星区栏同一口径）
+  // ★ M3d 侧栏「返回基地」：**只在所选单位位于星门类型星区时显示**（迭代 2 用户口径；判据＝星区**类型**，
+  //   不按入场下标；见 `paintReturnButton`）；显示时可用性走 `systems/expedition.js returnCheck`，
+  //   不可用 ⇒ 灰 + 悬浮原因短语（`starfield.return.reason.<code>`）。
+  //   ★ 与其它禁用按钮同体例：用一层 `.base-act-wrap` 承载 `title`（禁用按钮自身不弹悬浮）。
+  returnBtnEl = el('button', {
+    class: 'btn tiny',
+    type: 'button',
+    text: i18n.t('starfield.return.title'),
+    onclick: onReturnClick,
+  });
+  returnWrapEl = el('span', { class: 'base-act-wrap sf-sb-return' }, [returnBtnEl]);
+  // ★ 迭代 2：显隐承载节点（`.hidden` 由 `paintReturnButton` 切换；本元素**没有全局 `.hidden` 规则**，
+  //   故在 `css/screens.css` 里按本选择器显式声明 ⇒ 不依赖任何隐式样式）
+  returnWrapHost = returnWrapEl;
   // ★★ C-2 挂载点：`battleView.mountSectorScene()` 在此渲染该星区**完整战斗场景**（同一套渲染/交互链；
   //   数据＝`starfield.battleOf(index)` 只读口径；**星域容器是实例生命周期的唯一所有者**）。
   sbStageEl = el('div', { class: 'starfield-sidebar-stage' });
@@ -365,6 +399,7 @@ function buildSidebar() {
     [
       el('div', { class: 'sf-sb-head' }, [
         sbTitleEl,
+        returnWrapEl,
         el('button', {
           class: 'btn tiny',
           text: i18n.t('starfield.sidebar.close'),
@@ -375,6 +410,44 @@ function buildSidebar() {
     ]
   );
   return sidebarEl;
+}
+
+/* ---------- ★ M3d：返回基地（主动返回；结算走唯一入口 `settleExpedition`） ---------- */
+
+/** 侧栏「返回基地」点击：**主动返回**当前选中的单位（判据与按钮可用性同源 ⇒ 不会"看着能点却没反应"）
+ *  ★ M3d 迭代 2：**不再弹浮动提示**（成功/失败都一样）—— 成功时侧栏随 `refresh()` 立刻反映单位已离开；
+ *    失败时按钮本就按其 `title` 灰着（`paintReturnButton`），因此这里只在失败时**直接返回**。 */
+function onReturnClick() {
+  const sf = getStarfield();
+  if (!sf || navSelId == null) return;
+  const r = settleExpedition(sf, { mode: 'unit', unitId: navSelId });
+  if (!r.ok) return; // 判据与按钮同源 ⇒ 正常不可达；即使发生也不渲染任何提示文字
+  navSelId = null; // ★ 单位已离开星域场景 ⇒ 清掉选中（避免"跟随"再报一次"单位不存在"）
+  refresh();
+}
+
+/** 侧栏「返回基地」按钮状态（每帧只改 `disabled` / `title` / `hidden` 三个变化项；**不重建 DOM**）
+ *  ★★ M3d 迭代 2（用户口径）：**按钮只在「星门类型星区」显示**（判据＝该星区类型 id 为星门类型，
+ *     **不按入场下标判定**）—— 单位位于**任一**星门星区 ⇒ 显示且可用；在别的类型星区 ⇒ **隐藏**（不是灰）；
+ *     未选中单位 ⇒ 同样隐藏（没有"对着谁返回"这回事）。
+ *  · 类型来源＝容器只读字段：`sf.gateTypeId`（本档星域配置 `sideRules.playerEntryTypeId`）
+ *    与所选单位 `baseUnits[].atGate`（容器按**类型**判定好的布尔值）⇒ 界面**不自算类型比较**。 */
+function paintReturnButton(sf) {
+  if (!returnBtnEl || !returnWrapEl || !returnWrapHost) return;
+  const hint = i18n.t('starfield.return.hint');
+  const view = navSelId == null ? null : (sf && Array.isArray(sf.baseUnits) ? sf.baseUnits.find((u) => u.unitId === navSelId) : null);
+  // ① 未选中 / 不在星门星区 ⇒ **整块隐藏**（不是灰）
+  const show = !!(view && view.atGate);
+  returnWrapHost.classList.toggle('hidden', !show);
+  if (!show) return;
+  const chk = returnCheck(sf, navSelId);
+  let reason = '';
+  if (!chk.ok) {
+    const key = `starfield.return.reason.${chk.reason.code}`;
+    reason = i18n.has(key) ? i18n.t(key) : String(chk.reason.code || '');
+  }
+  returnBtnEl.disabled = !chk.ok; // ★ property（不是 attribute；见 `ui/baseView.js actButton` 的历史缺陷说明）
+  returnWrapEl.title = chk.ok ? hint : `${hint} —— ${reason}`;
 }
 
 /* ---------- 刷新（只读 sectors 快照；变化才写 DOM） ---------- */
@@ -447,6 +520,29 @@ function refreshCells(sf) {
   }
 }
 
+/** ★★ **结束演出：渐变式逐环变白**（M3d 迭代 2）——渲染**只读**引擎给出的**每区进度**：
+ *  · **进度源**＝`sectors[].whiten`（0..1；容器 `sectorProgress(index)` 派生 ⇒ **引擎算好、UI 不自算**，
+ *    同环内所有星区并行、在 `collapseRingTicks` 内线性 0→1，环与环依次推进）；
+ *  · 呈现手法＝**每格一个 CSS 变量 `--sf-white`（＝进度）**，CSS 用一层 `::after` 白色遮罩按 `opacity`
+ *    连续叠色（唯一白色字面值写在 `css/screens.css` 的规则里并注明；**不新增配色变量**）；
+ *  · **只改变化项**：每格只在进度数值变化时写一次自定义属性（`ref.cache.white` 记上一次的值），不重建 DOM；
+ *  · 演出期间给画布加 `.is-collapsing`（CSS 关掉指针交互 ⇒ 玩法操作全部失效，防御性双保险）。 */
+function paintCollapse(sf) {
+  if (!canvasEl) return;
+  const on = !!sf.collapsing;
+  if (canvasEl.classList.contains('is-collapsing') !== on) canvasEl.classList.toggle('is-collapsing', on);
+  if (!on) return;
+  for (const s of sf.sectors) {
+    const ref = cellRefs.get(s.index);
+    if (!ref) continue;
+    const p = Number.isFinite(s.whiten) ? s.whiten : 0;
+    if (ref.cache.white !== p) {
+      ref.cell.style.setProperty('--sf-white', String(p));
+      ref.cache.white = p;
+    }
+  }
+}
+
 /** 统一刷新（每 tick 调用一次；`queueMicrotask` 中执行 ⇒ 读到本 tick 结算后的状态） */
 function refresh() {
   const sf = getStarfield();
@@ -454,7 +550,9 @@ function refresh() {
   // ★ 阶段 2：**侧栏跟随被选单位**（在刷格子之前先决定“当前该显示哪个星区”，保证同帧一致）
   followSelectedUnit(sf);
   refreshTopbar(sf);
+  paintReturnButton(sf); // ★ M3d：侧栏「返回基地」的可用性（判据＝`returnCheck`，每帧只改 disabled/title）
   refreshCells(sf);
+  paintCollapse(sf); // ★ M3d 迭代：结束演出的逐环变白（只改变化项）
   paintNavFocus(); // ★ 阶段 2：选中单位的高亮格 + 剩余路径浅色描边（只改类名，不重建 DOM）
   if (sceneHost) sceneHost.refresh(); // ★ C-2：**只刷新当前选中星区**的侧栏战斗场景
 }
@@ -462,17 +560,15 @@ function refresh() {
 /* ---------- ★★ 阶段 2：被选单位的「跟随」与「路径描边」 ---------- */
 
 /** 侧栏跟随：被选单位**跨区移动** ⇒ 侧栏场景自动切到它所在的新星区，并**保持详情展开**；
- *  · 单位已不存在（阵亡/被移出场景）⇒ 收起详情 + 收起侧栏 + **一次短提示**（不报错）；
+ *  · 单位已不存在（阵亡/被移出场景）⇒ 收起详情 + 收起侧栏（★ 迭代 2：**不再弹提示文字**）；
  *  · 只读口径：单位位置一律取容器 `unitNav().sectorIndex`，UI 不自算。
  *  ★ 幂等：`selectedIndex` 已是目标区 ⇒ 什么都不做（不打断用户在别处的浏览以外的任何交互）。 */
 function followSelectedUnit(sf) {
   if (navSelId == null) return;
   const n = sf.unitNav(navSelId);
   if (!n) {
-    const lost = navSelId;
     navSelId = null;
     selectSector(null); // 收起侧栏（内部会卸载场景 ⇒ 选中态随之清空）
-    if (lost) showMoveMsg(i18n.t('starfield.follow.lost'));
     return;
   }
   if (n.sectorIndex !== selectedIndex) {
@@ -498,6 +594,7 @@ function paintNavFocus() {
   for (const ref of navFocusCells) ref.classList.remove('nav-path', 'nav-here');
   navFocusCells.length = 0;
   const sf = getStarfield();
+  paintReturnButton(sf); // ★ M3d：选中单位变化 ⇒ 「返回基地」可用性同步重画（同一帧内，不等下一次 refresh）
   if (!sf || navSelId == null) return;
   const n = sf.unitNav(navSelId);
   if (!n) return;
@@ -618,6 +715,9 @@ function resetView() {
 
 /** 选中/取消选中某星区（`null` ⇒ 收起侧栏） */
 function selectSector(index) {
+  // ★★ M3d 迭代：**结束演出期间禁止一切玩法操作** ⇒ 不允许再打开侧栏（引擎侧也已冻结）
+  const cur = getStarfield();
+  if (index != null && cur && cur.collapsing) return;
   selectedIndex = index == null ? null : index;
   for (const [idx, ref] of cellRefs) ref.cell.classList.toggle('selected', idx === selectedIndex);
   if (!sidebarEl) return;
@@ -787,23 +887,13 @@ function endNavDrag() {
   setDropCell(null);
 }
 
-/** 失败原因文案：`reason` 与引擎 `moveUnitTo` 词表**一一对应**（缺词条 ⇒ 原样回显，不造词） */
+/** 失败原因文案：`reason` 与引擎 `moveUnitTo` 词表**一一对应**（缺词条 ⇒ 原样回显，不造词）
+ *  ★ M3d 迭代 2：**浮动提示已整段移除**（星域地图内不显示任何提示文字）⇒ 本函数只保留给
+ *    **按钮 `title`/调试**使用；失败时界面**不渲染任何文字**（引擎侧本就无副作用）。 */
 function moveReasonText(reason) {
   const key = `starfield.move.${reason || 'none'}`;
   const t = i18n.t(key);
   return t && !t.startsWith('??') ? t : String(reason || '');
-}
-
-/** 顶栏**短提示**（非法下达专用；自动消隐 ⇒ 不常驻、不遮挡） */
-function showMoveMsg(text) {
-  if (!moveMsgEl) return;
-  moveMsgEl.textContent = text;
-  moveMsgEl.classList.remove('hidden');
-  if (moveMsgTimer) clearTimeout(moveMsgTimer);
-  moveMsgTimer = setTimeout(() => {
-    moveMsgTimer = 0;
-    if (moveMsgEl) moveMsgEl.classList.add('hidden');
-  }, 2600);
 }
 
 /** `dragover`（网格级事件委托，**只对“单位卡拖拽”生效**）：
@@ -840,18 +930,11 @@ function onGridDrop(e) {
   if (!sf) return;
   // ★ **唯一写入口**：UI 只调用、不自算（可达性/冷却/能量判据全在引擎）
   const res = sf.moveUnitTo(unitId, idx);
-  if (!res || !res.ok) {
-    showMoveMsg(i18n.t('starfield.move.failed', { reason: moveReasonText(res && res.reason) }));
-    return; // 非法 ⇒ 不改队列、不改任何字段（引擎侧本就无副作用）
-  }
+  // ★ 迭代 2：失败**不弹任何提示文字**（星域地图内禁止浮动提示）⇒ 直接返回，不做任何 DOM 改动
+  if (!res || !res.ok) return; // 非法 ⇒ 不改队列、不改任何字段（引擎侧本就无副作用）
   // ★ **拖到“自身所在星区” ＝ 取消移动**（引擎成功返回 `cancelled`；**不是失败**）：
-  //   仅当本次**确实清掉了一条指令**（`cleared === true`）才提示；本来就没有指令 ⇒ 静默无操作。
-  if (res.cancelled) {
-    if (res.cleared) showMoveMsg(i18n.t('starfield.move.cancelled'));
-    refresh(); // 取消后立即清掉卡片上的 `⇥#n` 与地图路径描边
-    return;
-  }
-  refresh(); // 立即反映“排队标记 / 已冻结冷却”，不等下一 tick
+  //   取消后立即清掉卡片上的 `⇥#n` 与地图路径描边（同样不弹提示）
+  refresh(); // 立即反映“排队标记 / 已冻结冷却 / 取消后的清空”，不等下一 tick
 }
 
 /* ---------- tick 驱动（打开期间推进星域；离开路由即停） ---------- */
@@ -860,12 +943,51 @@ function onTick() {
   if (!mounted || router.current !== 'starfieldMap') return;
   const sf = getStarfield();
   if (!sf) return;
+  /* ★★ M3d 迭代：**结束演出（变白）**期间 —— 时序已由容器冻结玩法（`step()` 只推进变白进度）：
+   *   · 只推进演出、**不再结算**（结束结算已在开演前做完，`settleExpeditionIn` 幂等）；
+   *   · 播完 ⇒ **跳回主基地 + 清理该星域**（可再开新星域）。 */
+  if (sf.collapsing) {
+    sf.step(1); // ★ 引擎侧：不 step 任何星区、不动 runTicks、不产生战报（零玩法副作用）
+    queueMicrotask(() => {
+      if (mounted && router.current === 'starfieldMap') refresh();
+    });
+    if (sf.collapseDone) finishCollapse();
+    return;
+  }
   // ★ 时间耗尽/手动停止后不再推进（容器自身也会拒绝 step；此处只是省掉空调用）
   if (!sf.finished && !sf.stopped) sf.step(1);
+  /* ★ M3d：**例行结算**（走唯一入口 `tickExpedition` ⇒ 内部仍是 `systems/base.js settleReturnIn`）：
+   *   · 本 tick 阵亡的基地单位 ⇒ 立刻销账（`count` 与 `out` 同减 ⇒ 名额即时释放）；
+   *   · 星域时间耗尽（`finished`）⇒ 立刻做**结束结算**：**仍在星门星区存活**者自动返回，
+   *     其余（阵亡 / 已离开星门星区）按**未返回**销账；同一次运行只会结算一次。
+   *   ★ 有回执 ⇒ 复用顶栏**短提示**（自动消隐），文案里的数字全部来自回执。 */
+  const ex = tickExpedition(sf);
+  // ★ 迭代 2：结算回执**不再弹浮动提示**（星域地图内不显示任何提示文字）；账目照常在引擎侧记录
+  //   （`systems/base.js settleReturnIn` ⇒ 基地资源/`out`/货物与战报日志均已更新），界面只靠只读快照反映。
+  void ex;
+  /* ★★ M3d 迭代：倒计时结束（或手动停止）⇒ 按用户定好的时序**开演**：
+   *   **先结算**（上面已做：`tickExpedition` 的 `end` 回执）⇒ **关闭侧栏** ⇒ 变白动画（容器只读计划驱动）。
+   *   ★ 开演后**禁止一切玩法操作**（引擎冻结 + 侧栏已关 + 本视图在演出期间不响应拖拽/选格）。 */
+  if ((sf.finished || sf.stopped) && !sf.collapsing) {
+    selectSector(null); // ① 关闭侧栏（内部会卸载场景 ⇒ 侧栏不可操作）
+    sf.beginCollapse(); // ② 开演（幂等；计划＝引擎只读 `whitenPlan`）；★ 迭代 2 不再提示"演出开始"
+  }
   // ★ 延后一拍：本帧所有 tick 同步回调跑完后再刷新 ⇒ 读到本 tick 结算后的状态（体例同 battleView）
   queueMicrotask(() => {
     if (mounted && router.current === 'starfieldMap') refresh();
   });
+}
+
+/** ★★ **结束演出收尾**（用户口径）：全部星区变白后 ⇒ **跳回主基地**并**清理该星域**（可再开新星域）。
+ *  · 「清理」＝把 `ui/starfieldSession` 的当前星域置空（**唯一持有者**写入）⇒ 星门面板恢复"可择档激活"；
+ *  · ★★ 迭代 2：**出口之一** ⇒ 必须调**唯一恢复入口** `ticker.restore()`（运行中 + x1；HUD 随之刷新）；
+ *  · 只在本视图仍挂载且仍在星域路由时执行（用户已手动离开 ⇒ 不抢路由）。 */
+function finishCollapse() {
+  const sf = getStarfield();
+  if (!sf || !sf.collapseDone) return;
+  setStarfield(null); // ★ 星域实例到此释放（演出已完成）
+  ticker.restore(); // ★ 出口③：演出播完回基地 ⇒ 变速器恢复常态（唯一入口）
+  if (mounted && router.current === 'starfieldMap') router.show('base');
 }
 
 function bindGlobalListeners() {
@@ -880,21 +1002,24 @@ function bindGlobalListeners() {
       mounted = false;
       dragState = null;
       splitterDrag = null; // 调宽拖拽同样清空（宽度值本身保留在 `sidebarW` ⇒ 会话内记忆）
-      // ★ 阶段 2：清拖拽中间态 + 提示定时器 + 跟随目标/描边（DOM 即将被 router 换掉 ⇒ 引用一并置空）
+      /* ★★ M3d 迭代 2（用户口径）：**变速器只在星域内生效** ⇒ 离开星域路由即恢复常态。
+       *   · 这是**兜底出口**：顶栏/菜单等任何离开星域的方式都会走到这里（「返回基地」按钮自己也调一次，
+       *     同一个唯一入口 `ticker.restore()`、**幂等** ⇒ 重复调用无副作用、不产生多余事件）；
+       *   · 三个显式出口：① 侧栏/顶栏「回基地」② 演出播完回基地（`finishCollapse`）③ 放弃星域（`baseView`）。 */
+      ticker.restore();
+      /* ★ 阶段 2：清拖拽中间态 + 跟随目标/描边（DOM 即将被 router 换掉 ⇒ 引用一并置空） */
       navDragUnitId = null;
       dropCell = null;
       navSelId = null;
       navFocusCells.length = 0;
       sceneSwitching = false;
-      if (moveMsgTimer) {
-        clearTimeout(moveMsgTimer);
-        moveMsgTimer = 0;
-      }
-      moveMsgEl = null;
       // ★ C-2：离开地图 ⇒ **卸载侧栏场景**（还原 battleView 的场景引用；**不停星区实例**）
       mountSceneFor(null);
       sbStageEl = null;
       sbTitleEl = null;
+      returnBtnEl = null; // ★ M3d：侧栏「返回基地」随 DOM 一起失效 ⇒ 引用清空（防悬空）
+      returnWrapEl = null;
+      returnWrapHost = null;
     }
   });
 }
@@ -904,13 +1029,15 @@ function bindGlobalListeners() {
 function root() {
   bindGlobalListeners();
   mountSceneFor(null); // ★ C-2 防御：重绘前先卸载旧侧栏场景（严格还原 battleView 的场景引用）
-  // ★ 阶段 2：重绘 ⇒ 拖拽中间态、提示定时器、描边引用一并归零（DOM 全量重建，旧引用不再有效）
+  // ★ 阶段 2：重绘 ⇒ 拖拽中间态、描边引用一并归零（DOM 全量重建，旧引用不再有效）
   endNavDrag();
   navFocusCells.length = 0; // ★ 描边引用指向旧 DOM ⇒ 必须清空（`cellRefs` 会随建图重建）
-  if (moveMsgTimer) {
-    clearTimeout(moveMsgTimer);
-    moveMsgTimer = 0;
-  }
+  /* ★★ M3d 迭代 2（用户口径）：**变速器只在星域内生效** ⇒ **进入星域**时把全局 tick 变速器
+   *   置为星域需要的常态（**运行中 + x1**，唯一入口 `ticker.restore()`）：
+   *   · 星域由**全局 ticker** 驱动（`onTick` ← `bus 'tick'`）⇒ 暂停/慢速会让星域看起来"卡住"；
+   *   · 从战斗屏（可能停在中途暂停）直接进星域时，也由此统一到常态；
+   *   · 出口三处（侧栏「回基地」/「放弃星域」/ 演出完成回基地）同样调它 ⇒ **进出一致、HUD 控件同步**。 */
+  ticker.restore();
   const sf = ensureStarfield(); // 兜底：尚无星域实例时用「默认配置 h1 + 随机种子」建一个（见 starfieldSession.js）
   const body = el('div', { class: 'sf-body' });
   viewportEl = el('div', { class: 'sf-viewport' }, [buildGrid(sf)]);

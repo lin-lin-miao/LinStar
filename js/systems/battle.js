@@ -1169,9 +1169,27 @@ export function createBattle(preset, opts) {
     return { ok: true, unit, reason: null };
   }
 
+  /** ★★ **增援单位（容器「多次派遣」专用最小接口）**：把若干**新单位**按既有编队口径生成并**追加**到某阵营**数组末尾**。
+   *  · 与 `spawnList`（开战建单位）**同一套口径**：`createShip` → `installModule` → 满盾/满血满能量 → 出场序号；
+   *  · 与召唤单位（`spawnSummoned`）**不同**：本接口产出的是**普通单位**（非 `isSummon`/非临时），
+   *    也不改任何 `seqCount` 之外的规则；`seqCount`/`order`/`sideSize` 全部与 `spawnList` 同源；
+   *  · **纯追加**：不动既有单位、不动目标/队列缓存（新单位在下一 tick 的目标解析里自然参与）；
+   *  · 既有单星区玩法（`LS.drill()` / 战斗屏）**从不调用** ⇒ 行为一字不变（零回归）。
+   *  @param {Array<{type:string, level?:number, modules?:Array, role?:string}>} list 编队条目（与 `startBattle` 的 `allies` 同构）
+   *  @param {'ally'|'enemy'} [side] 阵营（缺省 `'ally'`；非法值同样落到 `'ally'`）
+   *  @returns {{ ok:boolean, units:object[], count:number, side:'ally'|'enemy' }} `units` ＝ **本次新增的单位对象**（按传入顺序） */
+  function reinforce(list, side) {
+    const s = side === 'enemy' ? 'enemy' : 'ally';
+    const arr = sidesOf(s);
+    const spec = Array.isArray(list) ? list : [];
+    const before = arr.length;
+    spawnList(arr, s, spec);
+    refreshSideSize(s);
+    return { ok: true, units: arr.slice(before), count: arr.length - before, side: s };
+  }
+
   /* ---------- 统一目标系统 ---------- */
-  const policies = { ally: 'order', enemy: 'order' };
-  // 单位级策略：ship.policy 有效则用它覆盖全队策略；否则跟随全队
+  const policies = { ally: 'order', enemy: 'order' };  // 单位级策略：ship.policy 有效则用它覆盖全队策略；否则跟随全队
   const policyOf = (ship) =>
     ship.policy && TARGET_POLICIES.includes(ship.policy) ? ship.policy : policies[ship.side] || 'order';
   /** 设置某船的自动目标策略（ship 对象或 id）；kind=null → 跟随全队。即时清除旧自动粘性目标。 */
@@ -5136,6 +5154,8 @@ export function createBattle(preset, opts) {
     takeUnit,
     /** ★ **收编单位**（容器搬迁第二步）：把**同一实例**挂回本实例阵营并重绑本实例引用 */
     adoptUnit,
+    /** ★★ **增援单位**（M3d「多次派遣」：星域容器把新派遣的单位**增量注入既有战斗实例**；见同名函数注释） */
+    reinforce,
     /** 某阵营同盟共享池的总盾量/上限（只统计非防爆 alliance && !blastproof 的模块池）。 */
     alliancePool(side) {
       return poolTotalFor(side, (p) => p.alliance && !p.blastproof);

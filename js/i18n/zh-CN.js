@@ -41,12 +41,16 @@ export default {
   'starfield.h1': 'H1',
   'starfield.h2': 'H2',
   'starfield.h3': 'H3',
+  // ★ M3d：难度描述（星门面板"战区"行只读 `data/starfields/*.js` 的 `descKey`；数值仍在配置里）
+  'starfield.h1.desc': '入门：低巡逻密度，适合试探与采矿',
+  'starfield.h2.desc': '中档：矿物区有轻巡逻，战线更长',
+  'starfield.h3.desc': '高档：重巡逻驻守，收益与风险最高',
 
   /* 星域大地图（步骤 C-1：只读视图 + 缩放平移 + 点击选中；★ 完整战斗侧栏＝C-2）。
    * ★ 星区类型名**不在此重复**：直接用既有 `sectorType.<id>`（`data/sectorTypes/` 的 nameKey）。 */
   'starfield.map.title': '星域大地图',
   'starfield.map.back': '返回星域配置',
-  'starfield.map.meta': '难度 {id} · 种子 {seed} · 半径 {r}',
+  'starfield.map.meta': '难度 {id} · 编号 {seed} · 半径 {r}',
   'starfield.map.remaining': '剩余 {s}s',
   // ★ 地图下方的操作说明（原 `starfield.map.hint`）已按用户口径整段移除 ⇒ 键随之删除。
   'starfield.map.legend': '图例',
@@ -191,6 +195,8 @@ export default {
   'starfield.map.status.finished': '时间耗尽',
   'starfield.map.status.settled': '已结算',
   'starfield.map.status.stopped': '已停止',
+  // ★ M3d 迭代：**结束演出（逐环变白）**期间的状态词（此时一切玩法操作已冻结）
+  'starfield.map.status.collapsing': '收束中',
   /* 单个**星区**（该区 battle 实例）的阶段文案：值＝容器只读口径 `sectors[].phase`（原样映射、不自算） */
   'starfield.phase.idle': '未开始',
   'starfield.phase.running': '运行中',
@@ -215,14 +221,15 @@ export default {
   'starfield.sidebar.none': '无',
   'starfield.sidebar.stageTodo': '完整战斗场景将在后续步骤（C-2）挂载于此。',
   /* ★★ 星区间移动（阶段 2 UI）：**从侧栏单位卡拖到地图格子**下达移动 ——
-   * 失败提示的 `reason` 与引擎唯一写入口 `moveUnitTo` 的词表**一一对应**（UI 只做映射、不自造判据）；
-   * ★ **拖到“自身所在星区” ＝ 取消移动**（成功语义，不是失败）⇒ 用 `cancelled` 短提示。 */
-  'starfield.move.failed': '无法移动：{reason}',
-  'starfield.move.cancelled': '已取消移动',
+   * 失败原因短语的 `reason` 与引擎唯一写入口 `moveUnitTo` 的词表**一一对应**（UI 只做映射、不自造判据）；
+   * ★ **拖到“自身所在星区” ＝ 取消移动**（成功语义，不是失败）。
+   * ★ M3d 迭代 2：原 `starfield.move.failed`（"无法移动：{reason}"）与 `starfield.move.cancelled`（"已取消移动"）
+   *   **已删除** —— 星域地图内不弹任何提示文字；下面这些 `reason` 短语只供调试/按钮 `title` 复用。
+   * ★ M3d 迭代 3：`'far'` 口径改为**图上无通路**（四方向逐格都到不了 ⇒ 拒绝；有通路一律绕行 ⇒ 不再拒绝）。 */
   'starfield.move.none': '无此单位',
   'starfield.move.dead': '该单位已阵亡',
   'starfield.move.owner': '该单位不归你指挥',
-  'starfield.move.far': '版图阻断，无法抵达该星区',
+  'starfield.move.far': '图上无通路：四方向都到不了该星区',
   'starfield.move.invalid': '目标星区不存在',
   'starfield.move.finished': '星域已结束，无法再下达指令',
   /* 星域配置占位页：进入地图的入口（C-1） */
@@ -524,8 +531,8 @@ export default {
   'unit.navQueued': '排队前往 #{n}',
   'unit.navQueueMark': '⇥#{n}',
   'unit.navCd': '本步冷却 {n}t',
-  /* ★ 被选单位在移动中“消失”（阵亡/被移出场景）⇒ 收起详情并给一次短提示（不报错） */
-  'starfield.follow.lost': '所选单位已不在星域中',
+  /* ★ 被选单位在移动中“消失”（阵亡/被移出场景）⇒ 收起详情（★ M3d 迭代 2：**不再提示**，
+   *   原 `starfield.follow.lost` 词条已删除 —— 星域地图内不渲染任何提示文字） */
   'battle.detail.empty': '点击场景中的单位查看详情',
   'battle.detail.slots': '模块槽 {n}',
   'battle.detail.modules': '模块',
@@ -833,8 +840,91 @@ export default {
   'base.reason.badAction': '操作类型无效',
   'base.reason.noTarget': '没有对应的模块条目',
   'base.reason.slotsFull': '模块槽位已满（{total}/{slots}）',
+  // · ★ M3c：原本用于"出征登记受**出战上限**约束"；★★ M3d 迭代 3 起**上限不再拦截**（只是费率分界）⇒
+  //   本码**永远不会被抛出**，但**保留词条**：`FLEET_REASON_CODES` 里仍留有 `deployLimit` 作**界面短语**
+  //   （自检 ⑥ 逐语言核对成对存在 ⇒ 两侧必须都在）。文案已改成**分界口径**，不再读作"被拒"。
+  'base.reason.deployLimit': '出战名额已满（已用 {used} / 上限 {limit}，本次需 {need}）—— 超出部分按费率加价',
+  // · ★ M3c：本配置已无未出征单位（`deployable` 视图的前置原因；不带出战的"名额"含义，故单列一码）。
+  'base.reason.noIdle': '没有可派遣的单位（未出征 {idle} 艘 / 在外 {out} 艘）',
+  // · ★ M3c：建筑升级（`upgradeBuildingIn`）的失败码 —— 与上方舰队码同体例，供升级按钮显示禁用原因。
+  'base.reason.notBuilding': '该列表项不是建筑',
+  'base.reason.locked': '本阶段未开放',
+  'base.reason.notImplemented': '该建筑尚未实装',
+  'base.reason.maxLevel': '已达最高等级（Lv{level} / Lv{maxLevel}）',
   // · ★ **界面本地**原因码（不是引擎码，故不进 `FLEET_REASON_CODES`）：
   //   仅用于弹窗"添加模块"按钮的禁用说明 —— 保证"**禁用必有原因**"这条口径无例外。
   //   口径（用户要求）：原因**一律短语**、**只进悬浮 `title`**，行内不再另铺文字。
   'base.reason.noModuleLeft': '无可装配模块',
+  // ================= ★ M3d：出征 / 返回闭环 =================
+  // · 口径：费用、名额、矿物、货物**全部由引擎给出**（界面只填词）；下面只有措辞与短语。
+  // · 新增失败码（`FLEET_REASON_CODES` 同体例 ⇒ 自检 ⑥ 逐语言核对成对存在）：
+  'base.reason.emptyDeploy': '尚未选择派遣数量',
+  'base.reason.tooMany': '超过该配置的空闲数（空闲 {idle} 艘）',
+  'base.reason.badSeed': '星域编号无效',
+  // · ★ M3d 迭代：已开着**同档**星域时**可继续派遣**（不再报本码）；只有**另开别档**才报它。
+  'base.reason.fieldBusy': '已有别的档位星域在进行中（先返回或放弃它）',
+  'base.reason.fieldOver': '星域已结束',
+  'base.reason.notDeployed': '该单位不是基地派出的',
+  'base.reason.unitDead': '单位已阵亡',
+  'base.reason.notAtGate': '不在星门星区',
+  // · ★ M3d 迭代：**放弃星域**时星域里仍有**存活的派遣单位**（必须先让它们返回或等它们阵亡）。
+  'base.reason.unitsAlive': '星域里还有存活的派遣单位（{alive} 艘）',
+  // · ★ M3d 迭代：**只有一档战区** ⇒ 左右箭头无处可切。
+  'base.reason.oneTier': '只有一档战区，无法切换',
+  // · ★ 界面本地原因码（同 `noModuleLeft`）：星门面板在**当前无星域**时的禁用原因。
+  'base.reason.noField': '当前没有星域',
+  // · 星门面板（分区名 → `data/baseBuildings/stargate.js` 的 `zones[].nameKey`）
+  'building.stargate.zoneField': '出征星域',
+  'base.stargate.frontTitle': '战区（难度档）',
+  'base.stargate.radius': '半径',
+  'base.stargate.duration': '持续时间',
+  // ★ M3d 迭代 3：`cost`（单船费用标签）/ `activateCost`（激活费标签）**已删除** ——
+  //   用户口径：**费用只在按钮内显示**（档位行、统计块、状态行都不再出现任何费用）。
+  'base.stargate.free': '免费',
+  'base.stargate.tierPrev': '上一档战区',
+  'base.stargate.tierNext': '下一档战区',
+  'base.stargate.remaining': '星域剩余时间 {left}',
+  'base.stargate.remainingHint': '该星域仍在进行（离开地图即挂起，剩余时间不再推进）',
+  // ★ M3d 迭代 3：`assign`（装配标题）/ `noIdleUnit` / `emptyFleet`（面板内空态说明）**已删除** ——
+  //   面板内不再有任何说明性文字节点，原因只保留在按钮 `title`。
+  'base.stargate.limit': '出战上限',
+  'base.stargate.outCount': '已在外',
+  'base.stargate.dispatch': '本次派遣',
+  'base.stargate.spare': '余量',
+  'base.stargate.cardPick': '{name} #{k}：点击选中这一艘',
+  'base.stargate.cardOff': '{name} #{k}：已选中，再点一次取消',
+  // ★ M3d 迭代 2：原 `base.stargate.send` / `base.stargate.sendHint`（"出征"）**已删除** ——
+  //   主按钮**同一个按钮**（★ 迭代 4：合并为一，不再并存）按模式切换文本：
+  //   「激活星域」（`activateGo`/`activateHint`）⇄「派遣」（`dispatchGo`/`dispatchHint`），
+  //   旧的"出征"文案不再有任何调用点（避免留下与口径冲突的死键）。
+  // ★ M3d 迭代 3：`costNow`（状态行费用）/ `dispatched` / `giveUpDone` / `noField` / `running`（状态行文案）
+  //   **已删除** —— 面板内不再有状态行节点；费用只在按钮内（见 `costTotal`）。
+  'base.stargate.activateGo': '激活星域',
+  'base.stargate.activateHint': '创建该档星域（可零单位激活：空星域先存在，之后再用「派遣」逐艘注入）；按钮内的数字＝激活费与随行单位派遣费的合计',
+  'base.stargate.dispatchGo': '派遣',
+  'base.stargate.dispatchHint': '把选中的单位增援到进行中的星域（不新建星域、不重置星域状态）；按钮内的数字＝正常名额内每艘计价与超出部分加价的合计',
+  'base.stargate.giveUp': '放弃星域',
+  'base.stargate.giveUpHint': '立刻结束该星域（仅在星域中没有存活的派遣单位时可用）',
+  'base.stargate.resume': '返回星域',
+  'base.stargate.resumeHint': '回到进行中的星域地图（离开即挂起、名额不变）',
+  // ★ M3d 迭代 3 新增：按钮内**费用行**的 `title`（★ 唯一一处费用显示 = 按钮内那一个合并后的数）
+  'base.stargate.costTotal': '本次点击要付的合计（激活费与超出加价都已合并成一个数）',
+  // ★★ M3d 迭代 4：`base.stargate.rateBound` / `overBound`（按钮内那行**橙字分界说明**）**已删除** ——
+  //   用户口径：面板里不再出现"正常 N 艘 · 超出 M 艘加价"这行文字；引擎的 `view.price` 数据**照旧保留**。
+  // ★ M3d 迭代 3：`base.stargate.note`（星门分区下方的说明段落）**已删除** ——
+  //   连同 `data/baseBuildings/stargate.js` 的 `zones[].noteKey` 一起移除（该面板不再有 `.base-note`）。
+
+  // · 星域地图侧栏：「返回基地」（仅星门星区内的基地单位可用；不可用 ⇒ 灰 + 原因短语）
+  'starfield.return.title': '返回基地',
+  'starfield.return.hint': '把该单位送回基地（返回即修复 + 入账；仅星门星区内可用）',
+  'starfield.return.reason.none': '未选中单位',
+  'starfield.return.reason.notDeployed': '该单位不是基地派出的',
+  'starfield.return.reason.unitDead': '单位已阵亡',
+  'starfield.return.reason.notAtGate': '不在星门星区',
+  'starfield.return.reason.fieldOver': '星域已结束',
+  // ★ M3d 迭代 2：**浮动提示文字已整段下线** —— 下列词条**已删除**（星域地图内不渲染任何提示文字；
+  //   结算/返回/损毁的账目照常由引擎记录并写入战报日志，只是不再在星域地图里弹字）：
+  //   `starfield.return.done` / `.drop` / `.end`（返还结算）/ `.lost`（损毁销账）/ `starfield.collapse.start`
+  //   （演出开场）/ `starfield.move.failed` / `.cancelled` / `starfield.follow.lost`。
+  //   ★ 保留 `starfield.return.reason.*`：它们是**按钮 title** 的禁用原因短语（不是浮动提示）。
 };

@@ -95,6 +95,16 @@ export const ticker = {
 
   toggle() { running ? this.pause() : this.resume(); },
 
+  /** ★★ **恢复常态（唯一入口）**：**运行中 ＋ x1 速度** —— 全仓"变速场景（战斗 / 星域）结束后必须复位"的
+   *  **唯一实现**（星域的三个出口：① 侧栏「回基地」② 演出完成回基地 ③ 放弃星域，都只调它，勿散落多处）；
+   *  · 幂等：已是常态 ⇒ 两步都提前返回、**不发多余事件**；确有变化才 `emitState()` ⇒ HUD 控件随之刷新
+   *    （`ui/hud.js` 订 `ticker:state` ⇒ 按钮文案/禁用态与全局状态**永远一致**，界面不自己记状态）；
+   *  · 不销毁定时器、不动 `count`/`acc`（`resume()`/`setSpeed()` 自身已清 `history` ⇒ 不产生 TPS 虚高）。 */
+  restore() {
+    this.setSpeed(1);
+    this.resume();
+  },
+
   /** 逐帧：仅暂停状态下手动推进一帧（结算 1 tick）。运行中调用无效果。 */
   step() {
     if (running) return false;

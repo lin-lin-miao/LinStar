@@ -22,7 +22,12 @@
  *   ⑧ 布局规则自洽：**`mode:'center'` 的类型恰有一个**（恒星星区＝中心）且其 `count {1,1}`；`ring` 的
  *      可选 `minRadius/maxRadius`（若给出）合法；
  *   ⑨ 星域配置**结构合法**：`radius ≥ 1`、`durationTicks > 0`、`seed` 为 null/字符串/数字、
- *      `sectorTypes` 非空且 **`star` 已启用且数量恰为 1**（中心恒星口径）、`sideRules`/`specialEffects` 结构在位；
+ *      `sectorTypes` 非空且 **`star` 已启用且数量恰为 1**（中心恒星口径）、`sideRules`/`specialEffects` 结构在位、
+ *      ★ M3d **`deployCost`**（可选：**基地资源键 → 非负整数**，未知键报错；**迭代 2 起＝单船费用**）／
+ *      **`activateUnits`**（可选：激活激活费倍数，**>0 整数**）／ ★ M3d 迭代 3 **`overQuota`**
+ *      （可选：超出「出战上限（费率分界）」的加价费率 `{ exponent >0 有限数, offset ≥1 整数 }`）／
+ *      **`descKey`**（可选：i18n 词条键，
+ *      词条存在性随 ⑨ 的 i18n 项一并核对）／ **`collapseRingTicks`**（可选：结束演出每环 tick 数，**>0 整数**）；
  *   ⑨ **i18n 词条齐全**：全部 `nameKey` 在 `i18n.locales` 的**每个语言**字典中都存在（缺词条时 `t()` 会返回
  *      `??key`）；命名体例＝`sectorType.<id>` / `npcList.<id>` / `starfield.<id>`。
  *   ⑩ ★ **恰有一个填充类型**（`fill:true`）：生成器「剩余格位补位 ⇒ 星区总数恒 ＝ layout.cells」的结构前提
@@ -51,6 +56,7 @@ import { SECTOR_TYPES, SECTOR_TYPE_IDS, getSectorType } from './sectorTypes/inde
 import { NPC_LISTS, NPC_LIST_IDS, getNpcList } from './npcLists/index.js';
 import { STARFIELDS, STARFIELD_IDS } from './starfields/index.js';
 import { moduleMaxLevel } from '../entities/module.js'; // 模块等级上限的唯一口径（数据层只读它，不另算）
+import { isResourceKey } from './resources.js'; // ★ M3d：出征费用（`deployCost`）的键口径＝基地资源键
 
 /* ---------- 内部小工具（纯函数） ---------- */
 
@@ -399,6 +405,56 @@ export function validateStarfieldConfig(cfg) {
   const seedKind = cfg.seed === null || typeof cfg.seed === 'string' || typeof cfg.seed === 'number';
   if (!seedKind) p.push(`${sid}: seed 应为 null / 字符串 / 数字`);
 
+  /* ★★ M3d 迭代 2 **单船费用**（可选字段 `deployCost`；未写 ⇒ 无费用＝零影响）：
+   *   · 键必须是**已注册的基地资源键**（`data/resources.js isResourceKey`；未知键**报错、不静默吞掉**）；
+   *   · 值必须是**非负整数**（0 合法＝该项免费；负值/小数/NaN 一律报错）；
+   *   · 口径＝**每派出一艘单位收一次**（派遣 n 艘 ⇒ 扣 n ×；激活另收 `activateUnits ×`）与
+   *     「损毁不返还」见 `data/starfields/h1.js` 字段注释。 */
+  if (cfg.deployCost !== undefined && cfg.deployCost !== null) {
+    const dc = cfg.deployCost;
+    if (typeof dc !== 'object' || Array.isArray(dc)) p.push(`${sid}: deployCost 应为对象（资源键 → 非负整数）`);
+    else {
+      for (const [k, v] of Object.entries(dc)) {
+        if (!isResourceKey(k)) p.push(`${sid}.deployCost: 未知资源键 ${k}`);
+        if (!Number.isInteger(v) || v < 0) p.push(`${sid}.deployCost.${k}: 应为非负整数（现 ${String(v)}）`);
+      }
+    }
+  }
+  /* ★★ M3d 迭代 2 **激活星域的激活费**（可选字段 `activateUnits`；未写 ⇒ 引擎兜底常量 2）：
+   *   · 必须是 **>0 的整数**（＝"多少个单船费用"；0/负/小数 ⇒ 报错）；
+   *   · 用途 ⇒ 激活费用 ＝ `activateUnits × deployCost`（**与随行单位数无关**；允许零单位激活）。 */
+  if (cfg.activateUnits !== undefined && cfg.activateUnits !== null) {
+    const a = cfg.activateUnits;
+    if (!Number.isInteger(a) || a <= 0) p.push(`${sid}: activateUnits 应为 >0 的整数（现 ${String(a)}）`);
+  }
+  /* ★★ M3d 迭代 3 **超出「出战上限（费率分界）」的加价费率**（可选字段 `overQuota`；未写 ⇒ 引擎兜底常量）：
+   *   · 结构＝`{ exponent, offset }`：**exponent** 为 `> 0` 的有限数（幂指数，如 1.5）、
+   *     **offset** 为 `≥ 1` 的整数（超出 m 艘时按 `(m + offset) ^ exponent` 倍计 —— `offset ≥ 1` 保证
+   *     **第一艘超出就已经加价**，不会出现 `(0)^x` 或恰好等于正常价）；
+   *   · 未知键 ⇒ 报错（不静默吞掉拼写错误）；公式/取整的唯一实现在 `systems/expedition.js` `dispatchPriceOf`。 */
+  if (cfg.overQuota !== undefined && cfg.overQuota !== null) {
+    const oq = cfg.overQuota;
+    if (typeof oq !== 'object' || Array.isArray(oq)) p.push(`${sid}: overQuota 应为对象（{ exponent, offset }）`);
+    else {
+      for (const k of Object.keys(oq)) if (k !== 'exponent' && k !== 'offset') p.push(`${sid}.overQuota: 未知键 ${k}`);
+      const ex = oq.exponent;
+      if (!Number.isFinite(ex) || ex <= 0) p.push(`${sid}.overQuota.exponent: 应为 >0 的有限数（现 ${String(ex)}）`);
+      const off = oq.offset;
+      if (!Number.isInteger(off) || off < 1) p.push(`${sid}.overQuota.offset: 应为 ≥1 的整数（现 ${String(off)}）`);
+    }
+  }
+  // ★ M3d：`descKey`（难度描述词条键；可选，供星门面板显示）——只校验类型，词条存在性由 ⑨ 按 `nameKey` 体例查
+  if (cfg.descKey !== undefined && cfg.descKey !== null && typeof cfg.descKey !== 'string') {
+    p.push(`${sid}: descKey 应为字符串（i18n 词条键）`);
+  }
+  /* ★★ M3d **结束演出每环 tick 数**（可选字段 `collapseRingTicks`；未写 ⇒ 引擎兜底 20）：
+   *   · 必须是 **>0 的整数**（0/负/小数 ⇒ 无法形成"逐环"时序，报错）；
+   *   · 用途 ⇒ 变白计划的**唯一时序来源**（界面不硬编码、不自算，见 `systems/starfield.js` 的 `whitenPlan`）。 */
+  if (cfg.collapseRingTicks !== undefined && cfg.collapseRingTicks !== null) {
+    const t = cfg.collapseRingTicks;
+    if (!Number.isInteger(t) || t <= 0) p.push(`${sid}: collapseRingTicks 应为 >0 的整数（现 ${String(t)}）`);
+  }
+
   /* ★★ C-3b **内嵌自定义 NPC 列表**（配置根层 `npcLists`；未写 ⇒ 无内嵌列表、零影响）：
    *   · 结构 + id 前缀/冲突/重复 ⇒ `customListsProblems`（单位部分复用 `unitsProblems`）；
    *   · 之后的**引用解析**一律带 `{ customLists: cfg.npcLists }` ⇒ 内嵌列表可被引用，未知 id 仍报错。 */
@@ -573,6 +629,12 @@ export function selfCheck() {
       if (!key) continue;
       for (const loc of i18n.locales) if (!i18n.has(key, loc)) p.push(`缺词条 ${key}@${loc}`);
     }
+    // ★ M3d：**难度描述词条**（`descKey`，可选字段）——写了就必须每个语言都有（星门面板只读它）
+    for (const id of STARFIELD_IDS) {
+      const key = STARFIELDS[id].descKey;
+      if (!key) continue;
+      for (const loc of i18n.locales) if (!i18n.has(key, loc)) p.push(`缺词条 ${key}@${loc}`);
+    }
     add('⑨ i18n 词条齐全（zh/en 成对 + 命名体例）', p);
   }
 
@@ -724,6 +786,17 @@ export function listStarfieldData() {
         // ★ 玩家单位列表（我方初始编队）条目数 + 入场星区类型引用（只读摘要，便于控制台核对）
         playerUnits: Array.isArray(d.playerUnits) ? d.playerUnits.length : 0,
         playerEntryTypeId: (d.sideRules && d.sideRules.playerEntryTypeId) || null,
+        // ★ M3d：单船费用（**新对象**，只读摘要）＋难度描述词条键（缺省 null）＋结束演出每环 tick 数（缺省 null）
+        deployCost: { ...(d.deployCost || {}) },
+        descKey: d.descKey || null,
+        collapseRingTicks: Number.isInteger(d.collapseRingTicks) ? d.collapseRingTicks : null,
+        // ★ M3d 迭代 2：激活星域的激活费倍数（＝多少个单船费用；缺省 null ⇒ 引擎兜底常量）
+        activateUnits: Number.isInteger(d.activateUnits) ? d.activateUnits : null,
+        // ★ M3d 迭代 3：超出「出战上限（费率分界）」的加价费率（**新对象**只读摘要；缺省 null ⇒ 引擎兜底常量）
+        overQuota:
+          d.overQuota && typeof d.overQuota === 'object'
+            ? { exponent: Number(d.overQuota.exponent), offset: Number(d.overQuota.offset) }
+            : null,
         // ★ C-3b：**内嵌自定义 NPC 列表** id 清单（只读摘要；未写 ⇒ `[]`）
         customNpcListIds: customNpcListIds(d),
       };

@@ -50,6 +50,37 @@
  *   · ★ `starfield.moveQueue` ⇒ **移动指令**只读列表（每次读取返回**新数组 + 新对象**；顺序＝下达顺序）；
  *   · ★ **写接口**：`starfield.moveUnitTo(unitId, targetIndex)` ⇒
  *     `{ ok, queued?, cancelled?, cleared?, reason? }`（见文件头）；
+ *   · ★ **M3d 出征单位**：`starfield.baseUnits` ⇒ **出征单位只读汇总**（每次读取返回**新数组 + 新对象**；
+ *     只含**有归属标签**的单位；条目含 `unitId / configId / ordinal / alive / sectorIndex / inEntry /
+ *     hp / hpMax / shield / energy / ore / cargos[]`）＋ **唯一取回入口**
+ *     `starfield.takeBackUnit(unitId, { allowDead? })` ⇒ 把单位**摘出星域**并交出**携回载荷**
+ *     （`{ ok, unitId, configId, ordinal, alive, inEntry, ore, cargos, repaired }`）；**返回即修复**
+ *     （满血满盾满能量、模块冷却归零；**等级与模块保留**）由 `repairForReturn` 落地；
+ *     单位归属由 `createStarfield(cfg, seed, { baseRefs })` 写在**单位对象**上（`unit.baseRef`，跨区随对象走）；
+ *   · ★★ **M3d 多次派遣（增援注入）**：`starfield.reinforce(list)` ⇒ 把新派遣的单位**增量并入入场星区**
+ *     的我方编队（**不新建星域、不重建星区、不动既有状态**；引擎新增最小接口 `battle.reinforce()`）；
+ *     仅**运行中**可注入（`finished`/`stopped`/`settled`/演出中 ⇒ 拒绝 `fieldOver`）；配套
+ *     `starfield.undoReinforce(unitIds)` 供编排层"基地侧落地失败"时**原样回滚**（不带业务语义）；
+ *   · ★★ **M3d 结束演出（变白）**：`starfield.beginCollapse()` ⇒ 开始演出（**幂等**；运行中拒绝 `running`）；
+ *     只读口径 `starfield.collapsing / collapseElapsed / collapseDone / collapseRingTicks` 与
+ *     **`starfield.whitenPlan`**（唯一顺序来源：`{ ringTicks, rings:[{ring, atTick, fromTick, toTick,
+ *     sectorIndexes, count}], order, ringCount, sectorCount, totalTicks }`——环号＝`round(到中心欧氏距离)`，
+ *     中心恒星在 `(0,0)` 环号 0；★ 迭代 2 每环带**起止 tick**：`fromTick ＝ atTick`（该环开始变白）、
+ *     `toTick ＝ fromTick + ringTicks`（该环变满）；`totalTicks ＝ 环数 × ringTicks` **口径未变**）、
+ *     `starfield.whiteSectorIndexes`（**已整环走完**的星区集合，严格由计划派生）；
+ *     ★★ **迭代 2「渐变式变白」**：引擎给出**每区进度 0..1**（只读、确定、无随机），界面**只渲染不算**——
+ *     · `starfield.sectorWhitenProgress(index)` ⇒ 该星区此刻的白化进度
+ *       （＝`(collapseElapsed − 该环 fromTick) / ringTicks`，夹取到 `[0,1]`；**同环内所有星区并行同值**、
+ *       环与环**依次**推进 ⇒ 前一环走完才轮到后一环）；
+ *     · 只读快照 `starfield.sectors[].whiten` 与上者同源（`sectorSummaries()` 每个星区都带）；
+ *     · ★ 语义边界：`whiteSectorIndexes` ＝ "**已达 1.0**"，`whiten`/`sectorWhitenProgress` ＝ "白到几成"；
+ *     演出期间 `step()` **只推进变白进度**（不 step 任何星区 ⇒ 无 AI/攻击/事件/结算 ⇒ 零玩法副作用）；
+ *     每环间隔读**星域配置字段 `collapseRingTicks`**（内置三档显式配置；缺失才用兜底常量）；
+ *   · ★★ **M3d 迭代 2：返回点判据＝「星门**类型**」**：只读字段 `starfield.gateTypeId`
+ *     （＝该档配置 `sideRules.playerEntryTypeId`，兜底 `data/sectorTypes` 的 `stargate.id`）与
+ *     每个星区的 `isGate`（`typeId === gateTypeId`）、每个出征单位的
+ *     `baseUnits[].atGate`/`sectorTypeId`（**按类型判定，不按入场下标**）—— `playerEntryIndex` 只表示
+ *     **入场点**（生成器规则），**不再**作为"能否返回"的判据；
  *   · `starfield.summary()` ⇒ 星域级只读摘要（含各类型星区数、敌我存活合计、货物合计、告警）。
  *
  * ★★ 星区间移动（阶段 1 引擎 + 阶段 2 UI）★★
@@ -87,8 +118,9 @@
  *      · ⚠ 该分支对“无移动指令”的单位也会**扣能量**（必要时写 `navReadyUntil`）——
  *        这是「始终充能」的**必然结果**，自检①已按新口径改写（见下）；
  *   ③ **移动规则**：一次只移动**一个星区**、只走**上下左右**相邻格；目标由玩家指定；
- *      路径＝**最短路径的「均匀阶梯」序列**（**交替推进**，对角被均匀拆开），每步 |Δ|=1，
- *      且**每一步的落点都必须是 `layout` 有效格**（任一步无格 ⇒ 该目标**不可达**）；
+ *      路径＝**最短路径**（★ M3d 迭代 3：**先在现有星区图上求四方向逐格最短通路（BFS）** ⇒ 可**绕开**
+ *      版图边界与不存在的格位；★ **无障碍时仍走既有「均匀阶梯」**（交替推进，对角被均匀拆开）⇒ 手感不变）；
+ *      每步 |Δ|=1，且**每一步的落点都必须是 `layout` 有效格**（图上**无通路** ⇒ 该目标**不可达**，拒绝并给原因码）；
  *      **每完成一步即为下一步重新计时**（**无论是否还有后续指令** —— 充能照常进行）；
  *      剩余路径可按只读口径 `unitNav().navPath` 取（UI 只渲染）；
  *   ④ **跨区时机＝即时到区**：一步落地即把该单位**整体搬**进相邻 B 区实例 ——
@@ -132,8 +164,16 @@ import { navCoeffOf, timeCoeffOf, navCdTicksOf, navEnergyPerTickOf } from '../en
 //   · 星区类型注册表：自检要把配置覆写成“只留填充类型”的小版图；
 //   · `set*Mod`：自检按**既有唯一落地入口**给单位写入“自身来源 / 外部来源”两种修饰，用于验证
 //     「迁移只清外部来源」这一条（引擎侧同源实现见 `battle.js clearForeignMods`）。
-import { SECTOR_TYPE_IDS, getSectorType } from '../data/sectorTypes/index.js';
+import { SECTOR_TYPE_IDS, getSectorType, STARGATE_TYPE_ID } from '../data/sectorTypes/index.js';
 import { setCoeffMod, setTimeCoeffMod, setStealthMod, setDamageTakeMulMod } from '../entities/ship.js';
+// ★ M3d：返回时**携回**的矿物 / 货物走单位既有只读口径（本文件**不自己数货仓**）
+import { oreLoadOf, cargoListOf } from '../entities/ship.js';
+
+/** ★★ M3d **结束演出（变白）每环间隔的兜底值**（tick）：
+ *  · **唯一来源仍是配置**（星域配置字段 `collapseRingTicks`，内置三档均已显式写 20）；
+ *  · 本常量只在「配置没写 / 写了非法值」时兜底（例如控制台临时构造的自定义配置），
+ *    ⇒ 运行期**不参与**内置三档的任何计算（数值仍在配置文件里调）。 */
+const DEFAULT_COLLAPSE_RING_TICKS = 20;
 
 /** ★ **③ 跨星区阶段**（**唯一落地处**）：推进**航行引擎充能**（冷却）＋把**已下达的移动指令**推进一格。
  *
@@ -219,10 +259,10 @@ export function crossSectorPhase(sf) {
       continue;
     }
     if (now < until) continue; // 尚未充能完成 ⇒ 本 tick 不迁移（只读冻结值，绝不重算）
-    // ③ 一步：均匀阶梯路径（交替推进，每步 |Δ|=1、不得越出有效格）的第一格
+    // ③ 一步：**移动路径**（无障碍＝均匀阶梯；被边界/空位挡住＝图上最短通路 绕行）的**第一格**
     const nextIndex = navNextStepOf(sf, e.index, target);
     if (nextIndex == null) {
-      dropNavTarget(sf, u, 'far'); // 无有效阶梯路径 ⇒ 不可达（与 `moveUnitTo` 的 'far' 同一判据）
+      dropNavTarget(sf, u, 'far'); // **图上无通路**（四方向都到不了）⇒ 与 `moveUnitTo` 的 'far' 同一判据
       continue;
     }
     const nextEntry = sf.entryByIndex.get(nextIndex);
@@ -316,7 +356,7 @@ function navCooldownOf(unit) {
   return Math.max(1, Math.round((baseCd / safe) * (1 + t)));
 }
 
-/** ★ **阶梯路径（唯一实现）**：从 `fromIndex` 到 `toIndex` 的**最短路径「均匀阶梯」序列** ——
+/** ★ **均匀阶梯路径（无障碍时的首选口径）**：从 `from` 到 `to` 的**最短路径「均匀阶梯」序列** ——
  *  **交替推进（Bresenham/DDA 式误差累计）**：每一步都在 q 与 r 之间选**当前相对进度“落后”的那个轴**前进，
  *  于是整条路径呈**均匀阶梯**，而不再是“先走完一个轴、再走另一个轴”的直角折线；
  *  · 每步仍只前进 **1 格且只沿一个轴**（`|Δq| + |Δr| = 1`、**绝不斜走**），步数恒 ＝ 曼哈顿距离（最短）；
@@ -325,17 +365,11 @@ function navCooldownOf(unit) {
  *      `(qDone + 1) * ar ≤ (rDone + 1) * aq` ⇒ **走 q**；否则走 r。
  *    ★ **对角（`aq === ar`）时上式取等 ⇒ 一律“先 q”** ⇒ 对角路径呈严格交替 `q, r, q, r, …`；
  *    ★ 某一轴已到位（`aq` 或 `ar` 为 0）⇒ 余下全部走另一个轴。
- *  · 逐格取 `layout` 有效格（＝**已生成的星区**；不存在 ⇒ 本步无格 ⇒ 整条路径判为**不可达**）；
+ *  · 逐格取 `layout` 有效格（＝**已生成的星区**；不存在 ⇒ 本步无格 ⇒ 本函数判为**不可用**，交 `navPathOf` 兜底）；
  *  · 起点＝目标 / 任一端不存在 ⇒ `null`。
- *  ★ **可达性判据未变**（仍要求“每一步的落点都是有效格”）；变的只是**步进顺序** ⇒
- *    个别目标的“可达/不可达”会随之变化（原本被直角折线挡住的绕行现在可能成立），这是本口径的预期结果。
- *  @returns {number[]|null} 逐格**星区 index**（**不含起点**，末项＝目标）；不可达 ⇒ `null`
- *   （★ 与 `moveUnitTo` 的 `reason:'far'` 是**同一判据**；UI 描边读的 `unitNav().navPath` 也来自这里
- *     ⇒ 引擎判据、剩余路径、地图描边**三者必然一致**，不存在第二套路径规则） */
-function navPathOf(sf, fromIndex, toIndex) {
-  const from = sf.entryByIndex.get(fromIndex);
-  const to = sf.entryByIndex.get(toIndex);
-  if (!from || !to || from === to) return null;
+ *  @returns {number[]|null} 逐格**星区 index**（**不含起点**，末项＝目标）；不可用 ⇒ `null`
+ *  ★ 本函数**只负责"无障碍的均匀阶梯"**；"被边界挡住怎么绕"由 `navPathOf` 交给 `bfsPathOf`（见下）。 */
+function stairPathOf(sf, from, to) {
   const out = [];
   let q = from.q;
   let r = from.r;
@@ -360,21 +394,92 @@ function navPathOf(sf, fromIndex, toIndex) {
       rDone += 1;
     }
     const idx = sf.entryIndexAtCell.get(`${q},${r}`);
-    if (idx === undefined) return null; // 越出 layout 有效格 ⇒ 不可达
+    if (idx === undefined) return null; // 越出 layout 有效格 ⇒ 阶梯不可用（改走 BFS 绕行）
     out.push(idx);
   }
   if (!out.length) return null;
-  return out[out.length - 1] === toIndex ? out : null;
+  return out[out.length - 1] === to.index ? out : null;
 }
 
-/** 阶梯路径的**第一格**（一步推进；不可达 ⇒ `null`）—— 与 `navPathOf` **同一实现**，不再写第二套规则。 */
+/** ★★ **M3d 迭代 3：图上最短通路（BFS）的邻居扩展顺序 —— 固定写死、即"平局打破"口径**：
+ *  **上（r−1） → 右（q+1） → 下（r+1） → 左（q−1）**（以地图朝向为准：`ui/starfieldMapView.js` 的行号 ＝
+ *  `r + R` ⇒ `r−1` 是**上一行＝上**、`q+1` 是**右**）。顺序即**方向优先级**：BFS 层序扩展时，
+ *  同一层的格子按此顺序入队 ⇒ **多解（等长路径）时恒取"先上、再右、再下、再左"能探到的那条**。 */
+const NAV_DIRS = [
+  { dq: 0, dr: -1 }, // 上
+  { dq: 1, dr: 0 }, // 右
+  { dq: 0, dr: 1 }, // 下
+  { dq: -1, dr: 0 }, // 左
+];
+
+/** ★★ **图上最短通路（BFS；四方向、逐格、可绕行）** —— 当「均匀阶梯」被版图边界/空位挡住时接管：
+ *  · **图**＝`sf.entryIndexAtCell`（「q,r」→ 星区 index）＝**已生成的星区**（**唯一版图口径**，不另建第二张图）；
+ *    ⇒ 不存在的格位（圆外 / 越界）**不可通行**，但**可以绕开**它走别的格；
+ *  · **BFS**（层序扩展）：每格**首次被发现**时记下唯一前驱 ⇒ 由目标回溯得到**一条图上最短**路径；
+ *  · **确定性（同起终点恒同一条路径）**：① 邻居扩展顺序**固定**（见 `NAV_DIRS`）；② 前驱只由首次发现决定
+ *    （层序 + 固定顺序 ⇒ 与遍历次数、单位 id、时间戳**全无关**）；③ 全程整数运算、**无浮点、无随机**；
+ *  · **无通路**（目标不在图上 / 被隔断）⇒ `null`（与 `moveUnitTo` 的 `reason:'far'` 同一判据）。
+ *  @returns {number[]|null} 逐格**星区 index**（**不含起点**，末项＝目标）；无通路 ⇒ `null` */
+function bfsPathOf(sf, from, to) {
+  const grid = sf.entryIndexAtCell;
+  const keyOf = (q, r) => `${q},${r}`;
+  const startKey = keyOf(from.q, from.r);
+  const goalKey = keyOf(to.q, to.r);
+  if (!grid.has(startKey) || !grid.has(goalKey)) return null; // 起点/目标不在图上 ⇒ 无通路
+  const prev = new Map(); // 格键 → 前驱格键（**首次发现即固定** ⇒ 路径唯一确定）
+  const seen = new Set([startKey]);
+  const queue = [startKey];
+  for (let head = 0; head < queue.length; head += 1) {
+    const curKey = queue[head];
+    if (curKey === goalKey) break; // 层序 ⇒ 首次弹出目标即为最短（其余格无需再扩展）
+    const comma = curKey.indexOf(',');
+    const cq = Number(curKey.slice(0, comma));
+    const cr = Number(curKey.slice(comma + 1));
+    for (const d of NAV_DIRS) {
+      const nk = keyOf(cq + d.dq, cr + d.dr);
+      if (seen.has(nk) || !grid.has(nk)) continue;
+      seen.add(nk);
+      prev.set(nk, curKey);
+      queue.push(nk);
+    }
+  }
+  if (!seen.has(goalKey)) return null; // 图上有目标格但**没有任何四方向通路** ⇒ 不可达
+  // 回溯（防御：前驱链若断裂 ⇒ 判为无通路，绝不返回半条路径）
+  const out = [];
+  let cur = goalKey;
+  while (cur !== startKey && prev.has(cur)) {
+    out.push(grid.get(cur));
+    cur = prev.get(cur);
+  }
+  if (cur !== startKey) return null;
+  out.reverse();
+  return out.length ? out : null;
+}
+
+/** ★★ **移动路径（唯一实现）**：`fromIndex → toIndex` 的**逐格星区 index 序列**（不含起点、末项＝目标）。
+ *  口径（M3d 迭代 3 —— 用户：**有通路走最短路径**）：
+ *  ① **无障碍（均匀阶梯全程落在有效格）⇒ 用 `stairPathOf`**（＝迭代 2 的既有一致口径 ⇒ **手感不变**）；
+ *  ② 阶梯被边界/空位挡住（或目标本身是绕行才可达）⇒ **用 `bfsPathOf` 在现有星区图上绕行**（图上最短通路）；
+ *  ③ 两者都不行 ⇒ `null` ＝ **无通路**（`moveUnitTo` 返回 `reason:'far'`，拒绝且零改动）。
+ *  ★ **单一数据源**：引擎判据（`moveUnitTo`）、运行时逐步推进（`crossSectorPhase`）、
+ *    剩余路径与地图描边（`unitNav().navPath`）**读的是同一个函数** ⇒ 三者必然一致，不存在第二套路径规则。
+ *  @returns {number[]|null} 逐格**星区 index**（**不含起点**，末项＝目标）；起点＝目标 / 任一端不存在 / 无通路 ⇒ `null` */
+function navPathOf(sf, fromIndex, toIndex) {
+  const from = sf.entryByIndex.get(fromIndex);
+  const to = sf.entryByIndex.get(toIndex);
+  if (!from || !to || from === to) return null;
+  const stair = stairPathOf(sf, from, to);
+  return stair || bfsPathOf(sf, from, to);
+}
+
+/** 路径的**第一格**（一步推进；无通路 ⇒ `null`）—— 与 `navPathOf` **同一实现**，不再写第二套规则。 */
 function navNextStepOf(sf, fromIndex, toIndex) {
   const path = navPathOf(sf, fromIndex, toIndex);
   return path ? path[0] : null;
 }
 
 /** 清掉某单位的**移动目标**并记一条结构化告警（**不改** `navReadyUntil`：已冻结的冷却照旧走完）。
- *  `reason` ∈ `'invalid'`（目标星区不存在）/ `'far'`（阶梯路径越出有效格、不可达）/
+ *  `reason` ∈ `'invalid'`（目标星区不存在）/ `'far'`（**图上无通路**：四方向都到不了该星区）/
  *  `'none'`（搬迁失败：源区**摘取**或目标区**收编**未成功）。 */
 function dropNavTarget(sf, unit, reason) {
   sf.navQueue.delete(unit.id);
@@ -426,12 +531,18 @@ function expandPlayerUnits(cfg, seed) {
  * ★ 创建星域（容器）：**配置（或 id） + 种子 ⇒ 可运行的星域**。
  * @param {string|object} configOrId 星域配置 id（如 `'h1'`）或配置对象（同 A-5）
  * @param {string|number} [seed] 种子；省略 ⇒ 取 `config.seed`；**都缺 ⇒ 抛错**（生成器内不回落随机）
+ * @param {object} [opts] ★ M3d **出征归属**（可选；不传 ⇒ 与改造前逐字节一致）：
+ *   · `opts.baseRefs` ＝ `[{ configId, ordinal }]` —— 与**展开后的玩家单位顺序一一对应**的归属标签
+ *     （长度 ＝ `playerUnits` 展开后的单位数；长度不足 ⇒ 只标注能对上的前若干艘）；
+ *   · 标签**写在单位对象上**（`unit.baseRef`）⇒ `takeUnit`/`adoptUnit` 的**对象同一性**让它随单位跨星区走
+ *     （与 `navReadyUntil`/`summonMod` 同一体例），容器只按标签汇总，**不从 id/名字反推**。
  * @returns 星域容器（只读口径 + `step()` / `settle()` / `stop()` / `summary()`）
  */
-export function createStarfield(configOrId, seed) {
+export function createStarfield(configOrId, seed, opts = {}) {
   const gen = generateStarfield(configOrId, seed); // ★ A-5（纯函数；同配置同种子 ⇒ 结果完全一致）
   const warnings = (gen.warnings || []).map((w) => ({ ...w }));
   const durationTicks = Math.max(0, gen.durationTicks | 0);
+  const baseRefs = opts && Array.isArray(opts.baseRefs) ? opts.baseRefs : [];
 
   /* ★ **玩家单位入场**（用户口径）：
    *   · 入场星区＝生成结果的只读派生 `gen.playerEntryIndex`（判定唯一口径＝`resolvePlayerEntryIndex`：
@@ -441,6 +552,19 @@ export function createStarfield(configOrId, seed) {
    *     同配置同种子 ⇒ 入场星区与编队完全确定；无 `playerUnits` ⇒ 与改造前逐字节一致（零回归）。 */
   const playerUnits = expandPlayerUnits(configOf(configOrId), gen.seed);
   const playerEntryIndex = Number.isInteger(gen.playerEntryIndex) ? gen.playerEntryIndex : -1;
+
+  /* ★★ **M3d 迭代 2：星门星区的类型 id（返回判据的唯一来源）**：
+   *   · 优先读**本档星域配置**的 `sideRules.playerEntryTypeId`（配置驱动、逐档可覆写；见 `data/starfields/h1.js`）；
+   *   · 配置未写 ⇒ 回退注册表常量 `STARGATE_TYPE_ID`（读 `data/sectorTypes/stargate.js` 的 `id` 字段）；
+   *   · 用途：`isGate`（**按类型判定**，**不按下标**）：星域里可能同时存在**多个**星门星区
+   *     （`h1` 1~2 个 / `h2` 1~3 个 / `h3` 2~4 个），单位在**任一**星门星区都应能"返回基地"。
+   *   ★ 与 `playerEntryIndex`（**入场**星区）是**两个不同口径**：入场仍是"第一个该类型星区"（生成器规则未改），
+   *     返回改为"任一该类型星区"（本条＝用户口径修复：原按下标判定 ⇒ 在其它星门星区无法返回）。 */
+  const gateTypeId = (() => {
+    const cfg = configOf(configOrId);
+    const want = cfg && cfg.sideRules && cfg.sideRules.playerEntryTypeId;
+    return want || STARGATE_TYPE_ID;
+  })();
 
   // 内部条目：星区元数据 + **该区专属的 battle 实例**（实例间零共享）
   const entries = [];
@@ -482,6 +606,19 @@ export function createStarfield(configOrId, seed) {
     }
     for (const w of entry.warnings || []) warnings.push({ ...w, index: s.index }); // 编队/货物规范化的钳制告警（带星区 index）
     const battle = entry.battle;
+    /* ★ M3d **出征归属标签**（只在入场星区、只标注玩家单位）：
+     *   · 玩家编队是 `allies.unshift(...)` **置于队首**的 ⇒ 引擎 `spawnList` 按编队顺序 push
+     *     ⇒ 该实例 `allies` 数组的**前 N 个**正是刚注入的玩家单位（顺序＝`playerUnits` 展开序）；
+     *   · 标签是一次性写死的普通字段（不参与任何数值/判据）⇒ 无标签 ⇒ 与改造前逐字节一致（零回归）。 */
+    if (baseRefs.length && s.index === playerEntryIndex) {
+      const allyArr = Array.isArray(battle.allies) ? battle.allies : [];
+      const n = Math.min(baseRefs.length, playerUnits.length, allyArr.length);
+      for (let i = 0; i < n; i += 1) {
+        const ref = baseRefs[i];
+        if (!ref || typeof ref !== 'object') continue;
+        allyArr[i].baseRef = { configId: ref.configId, ordinal: ref.ordinal };
+      }
+    }
     battle.start(); // 进入 running（星域模式：不订阅全局 ticker、不发 combat:state）
     entries.push({
       index: s.index,
@@ -489,6 +626,8 @@ export function createStarfield(configOrId, seed) {
       r: s.r,
       typeId: s.typeId,
       isStar: s.isStar,
+      // ★ M3d 迭代 2：**本区是否星门类型**（按类型 id 判定 ⇒ 「返回基地」的星域侧唯一判据）
+      isGate: !!gateTypeId && s.typeId === gateTypeId,
       placement: s.placement,
       battle,
       // ★ **该区货物「初始件数」**（用户口径：地图货物进度条的分母）：来源＝**A-5 生成结果里该区 `cargos` 的长度**
@@ -507,6 +646,35 @@ export function createStarfield(configOrId, seed) {
   let settleResult = null;
   // ★ 星域级「全队主要目标」的**唯一持有处**（初始 'order' ＝ 引擎 `createBattle` 的默认档）
   let fleetPolicy = 'order';
+
+  /* ---------- ★★ M3d「结束演出（变白）」的容器状态（**只由本容器持有**）----------
+   * 口径（用户定）：倒计时结束 ⇒ **先结算**（结算在 `systems/expedition.js`，与本容器无关）⇒ 关闭侧栏
+   *   ⇒ **以中心恒星为起点、按「到中心的距离环」逐环变白**，每环间隔 ＝ **配置字段 `collapseRingTicks`**
+   *   ⇒ 全部变白后由界面跳回主基地并清理星域。
+   *  · `collapsing` ⇒ **玩法冻结**：`step()` 只推进变白进度、**不再 step 任何星区**（无 AI/攻击/事件/结算）；
+   *  · 变白顺序**只由 `whitenPlan` 给出**（`beginCollapse()` 一次算好、之后只读）⇒ 界面/调用方**不自算顺序**；
+   *  · 本容器**不驱动时钟**（与全仓一致：`step()` 是唯一驱动）⇒ 演出时长由调用方按 tick 推进。 */
+  let collapsing = false;
+  let collapseElapsed = 0; // 演出已推进 tick 数（0 ⇒ 尚未开始）
+  let whitenPlan = null; // `beginCollapse()` 产出；未开始 ⇒ null
+  /** ★ M3d 迭代 2：`星区 index → 所属环条目` 的查表（`beginCollapse()` 内建好 ⇒ 进度查询 O(1)） */
+  let whitenRingOf = null;
+  /** 配置里的每环间隔（**>0 整数**；配置缺失/非法 ⇒ 兜底常量，见 `DEFAULT_COLLAPSE_RING_TICKS`） */
+  const collapseRingTicks = (() => {
+    const t = configOf(configOrId) && configOf(configOrId).collapseRingTicks;
+    return Number.isInteger(t) && t > 0 ? t : DEFAULT_COLLAPSE_RING_TICKS;
+  })();
+  /** ★ **出征归属序号的容器级计数器**（`configId → 已用最大序号`）：
+   *  · 创建时由 `opts.baseRefs` 初始化（＝各配置的 1..n 序号）；
+   *  · 「多次派遣」注入的新单位从这里**继续递增**（**不复用已销毁单位的序号** ⇒ 同配置内序号恒唯一、可复现）。 */
+  const ordinalSeq = new Map();
+  for (const r of baseRefs) {
+    if (!r || typeof r !== 'object') continue;
+    const id = String(r.configId == null ? '' : r.configId);
+    const o = Number.isInteger(r.ordinal) ? r.ordinal : 0;
+    if (!id) continue;
+    ordinalSeq.set(id, Math.max(ordinalSeq.get(id) || 0, o));
+  }
 
   /* ---------- ★ 星区间移动的容器状态（阶段 1；**只有本容器持有**）----------
    * ★ 数据结构（用户口径：「以单位 id 为键的映射或等价结构，你定并回报」）：
@@ -605,6 +773,9 @@ export function createStarfield(configOrId, seed) {
         r: e.r,
         typeId: e.typeId,
         isStar: e.isStar,
+        isGate: e.isGate, // ★ M3d 迭代 2：星门类型星区（返回判据 / 侧栏按钮显隐都只读它）
+        // ★ M3d 迭代 2：**该区变白进度 0..1**（演出期间线性；未演出恒 0）——界面只渲染，不自算
+        whiten: sectorProgress(e.index),
         placement: { mode: e.placement.mode, edges: e.placement.edges ? e.placement.edges.slice() : null },
         alive: { ally, enemy },
         ore: snap.oreReserve,
@@ -673,6 +844,103 @@ export function createStarfield(configOrId, seed) {
     return settleResult;
   }
 
+  /* ---------- ★★ M3d「结束演出（变白）」：**只读计划** + 唯一推进入口 ---------- */
+
+  /** ★ **变白计划**（`beginCollapse()` 内算出，之后**只读**）：
+   *  · 环号 ＝ `Math.round(到中心的欧氏距离)`（中心恒星 `(0,0)` ⇒ 环号 0；`data/starfield.js` 生成不变量 ⑦：
+   *    恒有**恰一个** `isStar` 星区且坐标 `(0,0)` ⇒ 起点确定）；
+   *  · 环序 ＝ 环号**升序**（⇒ 到中心距离**单调不减**）；环内顺序 ＝ **星区 index 升序**（确定可复现）；
+   *  · ★★ **M3d 迭代 2「渐变式变白」**：每环给出**起止 tick** `fromTick ＝ atTick`、`toTick ＝ atTick + collapseRingTicks`，
+   *    该环的全部星区在这个区间内**并行**、**线性**从 `0` 变到 `1`（进度只读口径见 `sectorProgress`）；
+   *    环与环仍**依次**推进（后一环在前一环结束后才开始）。
+   *  · `totalTicks = 环数 × collapseRingTicks`（**口径未变**；末环恰好在此刻变满 ⇒ 演出随之收尾）；
+   *  · `order` ＝ 全部星区的变白顺序（**无重复无遗漏**，自检 ⑥ 断言）。 */
+  function buildWhitenPlan() {
+    const byRing = new Map(); // 环号 -> 星区 index 数组
+    for (const e of entries) {
+      const ring = Math.round(Math.sqrt(e.q * e.q + e.r * e.r));
+      if (!byRing.has(ring)) byRing.set(ring, []);
+      byRing.get(ring).push(e.index);
+    }
+    const ringsAsc = Array.from(byRing.keys()).sort((a, b) => a - b);
+    const rings = ringsAsc.map((ring, i) => {
+      const indexes = byRing.get(ring).slice().sort((a, b) => a - b);
+      const fromTick = i * collapseRingTicks;
+      return {
+        ring,
+        atTick: fromTick, // ★ 兼容既有口径：`atTick` ＝ 该环**开始**变白的 tick
+        fromTick,
+        toTick: fromTick + collapseRingTicks, // ★ 该环**变满**的 tick（区间内线性 0→1）
+        sectorIndexes: indexes,
+        count: indexes.length,
+      };
+    });
+    const order = [];
+    for (const r of rings) order.push(...r.sectorIndexes);
+    // ★ 查表：星区 index -> 环条目（进度查询 O(1)；`entries` 恒与 `order` 逐一对应）
+    whitenRingOf = new Map();
+    for (const r of rings) for (const idx of r.sectorIndexes) whitenRingOf.set(idx, r);
+    return {
+      configId: gen.configId,
+      ringTicks: collapseRingTicks,
+      rings,
+      order,
+      ringCount: rings.length,
+      sectorCount: order.length,
+      totalTicks: rings.length * collapseRingTicks,
+    };
+  }
+
+  /** ★ **开始结束演出**（唯一入口；调用方先做完结算、关侧栏，再调本函数）：
+   *  · 允许时机＝星域**已停止/已结束/已结算**（时间耗尽或手动停止）；**运行中**调用 ⇒ 拒绝（`running`）；
+   *  · 幂等：已开始 ⇒ 原样返回既有计划（不重置进度、不改任何状态）；
+   *  · 开始后 ⇒ **玩法冻结**：`step()` 只推进变白进度（不再 step 任何星区 ⇒ 无 AI/攻击/事件/结算），
+   *    `moveUnitTo` 本就因 `finished`/`settled` 被拒（见其判据）；
+   *  · 本函数**不改 `finished`/`settled`/单位/星区**，只写容器自己的演出状态。
+   *  @returns `{ ok:true, plan }` / `{ ok:false, reason:{ code } }`（`running` / `collapsing` 幂等返回 ok） */
+  function beginCollapse() {
+    if (collapsing) return { ok: true, plan: whitenPlan, already: true };
+    if (!stopped && !finished && !settled) return { ok: false, reason: { code: 'running' } };
+    collapsing = true;
+    collapseElapsed = 0;
+    whitenPlan = buildWhitenPlan();
+    navQueue.clear(); // 演出期间绝无移动（兜底；正常路径结算时已清）
+    return { ok: true, plan: whitenPlan, already: false };
+  }
+
+  /** ★★ **单个星区的变白进度**（0..1；**只读、纯函数、确定性、无随机、无副作用**）——
+   *  M3d 迭代 2「渐变式变白」的**唯一数据源**（界面只渲染它，**不自算**）：
+   *  · 未开始演出 / 该星区不在计划里（非法 index）⇒ `0`；
+   *  · 否则 `p = (collapseElapsed − 该环 fromTick) / ringTicks`，夹取到 `[0,1]`：
+   *    `p ＝ 0` 尚未开始变白、`0 < p < 1` **正在变白（环内所有星区同时、线性）**、`p ＝ 1` **已纯白**；
+   *  · **同输入同进度**：只依赖 `collapseElapsed` 与计划（无随机、无时间函数）⇒ 可复现、可自检。 */
+  function sectorProgress(index) {
+    if (!collapsing || !whitenPlan || !whitenRingOf) return 0;
+    const r = whitenRingOf.get(index);
+    if (!r) return 0;
+    const span = Math.max(1, r.toTick - r.fromTick);
+    const p = (collapseElapsed - r.fromTick) / span;
+    return p <= 0 ? 0 : p >= 1 ? 1 : p;
+  }
+
+  /** 当前**已变白（进度达到 1）**的星区 index（**严格由计划派生** ⇒ 与渲染顺序不可能各算一遍；未开始 ⇒ 空数组）
+   *  ★ 与 `sectorProgress` 同源：只有 `toTick ≤ collapseElapsed`（该环整段区间走完）的环才算"已变白"。 */
+  function whiteIndexesNow() {
+    if (!collapsing || !whitenPlan) return [];
+    const out = [];
+    for (const r of whitenPlan.rings) {
+      if (r.toTick > collapseElapsed) break;
+      for (const idx of r.sectorIndexes) out.push(idx);
+    }
+    return out;
+  }
+
+  /** 推进变白进度（**唯一写入口**；由 `step()` 在演出期间调用） */
+  function advanceCollapse(n) {
+    if (!collapsing || !whitenPlan) return;
+    collapseElapsed = Math.min(whitenPlan.totalTicks, collapseElapsed + n);
+  }
+
   const api = {
     configId: gen.configId,
     seed: gen.seed,
@@ -683,7 +951,8 @@ export function createStarfield(configOrId, seed) {
     /** ★ **玩家单位入场星区**（只读下标；判定口径见 `data/starfield.js resolvePlayerEntryIndex`；
      *  显示编号 ＝ 下标 + 1；`-1` ＝ 无星区可入场）；UI **只读本字段、不自算** */
     playerEntryIndex,
-    /** ★ 已注入的**玩家单位数量**（我方编队条目数；`0` ＝ 本星域未配置玩家单位） */
+    /** ★ 创建时注入的**玩家单位数量**（我方编队条目数；`0` ＝ 本星域未配置玩家单位）
+     *  ★ M3d：**不含「多次派遣」增援注入的单位**（那是运行期增量；当前在场事实请读 `baseUnits`） */
     playerUnitCount: playerUnits.length,
     /** 星域级告警（A-5 截断告警 + 编队/货物规范化告警，后者带 `index`） */
     warnings,
@@ -708,6 +977,38 @@ export function createStarfield(configOrId, seed) {
     get settleResult() {
       return settleResult;
     },
+    /* ---------- ★★ M3d：结束演出（变白）的只读口径 + 唯一推进入口 ---------- */
+    /** 是否处于结束演出（**演出期间玩法冻结**：`step()` 只推进变白进度） */
+    get collapsing() {
+      return collapsing;
+    },
+    /** 演出已推进 tick 数（未开始 ⇒ 0） */
+    get collapseElapsed() {
+      return collapseElapsed;
+    },
+    /** 演出是否播完（全部星区已变白；`collapsing !== true` ⇒ false） */
+    get collapseDone() {
+      return collapsing && !!whitenPlan && collapseElapsed >= whitenPlan.totalTicks;
+    },
+    /** ★ **变白计划（只读）**：`{ ringTicks, rings:[{ring,atTick,fromTick,toTick,sectorIndexes,count}], order,
+     *    ringCount, sectorCount, totalTicks }`；未开始演出 ⇒ `null`。
+     *  ★ 界面**只读它**渲染逐环变白（顺序/时序/环内集合全部由引擎给出，UI 不自算）；
+     *  ★ 迭代 2：每环带 `fromTick/toTick` ⇒ 该环在区间内**线性**由 0 变到 1（进度派生见 `sectorWhitenProgress`）。 */
+    get whitenPlan() {
+      return whitenPlan;
+    },
+    /** ★ 当前**已变白（进度＝1）**星区 index 数组（**严格由计划派生**；未开始 ⇒ `[]`） */
+    get whiteSectorIndexes() {
+      return whiteIndexesNow();
+    },
+    /** ★★ 单个星区的**变白进度 0..1**（只读、纯函数、确定性；未演出 ⇒ 0）——迭代 2「渐变式变白」的唯一数据源 */
+    sectorWhitenProgress(index) {
+      return sectorProgress(index);
+    },
+    /** ★ 本档的**星门星区类型 id**（返回判据的唯一来源；配置 `sideRules.playerEntryTypeId` → 注册表常量） */
+    gateTypeId,
+    /** 每环间隔（tick）——**读配置字段 `collapseRingTicks`**（配置缺失 ⇒ 兜底常量） */
+    collapseRingTicks,
     /** ★ 逐区只读摘要（每次读取返回新数组/新对象） */
     get sectors() {
       return sectorSummaries();
@@ -717,7 +1018,129 @@ export function createStarfield(configOrId, seed) {
       const e = entries.find((x) => x.index === index);
       return e ? e.battle : null;
     },
+    /* ---------- ★ M3d：出征单位的只读视图 / 取回（返回基地） ---------- */
+    /** ★ **出征单位只读汇总**（**每次读取返回新数组 + 新对象**；只含**有归属标签**的单位）：
+     *  条目字段见 `baseUnitViewOf`（含 `alive` / `inEntry` / 血量 / 携回矿物与货物）。
+     *  · 顺序＝「`entries` 索引序 × 区内 `units()` 顺序」⇒ **确定可复现**（与随机 `uid()` 无关的次序口径，
+     *    自检对拍只用 `configId`/`ordinal` 等确定字段，不比 id）。
+     *  · 星域侧**只提供事实**（谁活着、在哪、带什么），"能不能返回/该销账哪些"的判据见
+     *    `systems/expedition.js`（**单一实现**，容器不复制一套业务判据）。 */
+    get baseUnits() {
+      const out = [];
+      for (const e of entries) {
+        for (const u of e.battle.units()) if (u.baseRef) out.push(baseUnitViewOf(e, u, playerEntryIndex));
+      }
+      return out;
+    },
+    /** ★★ **把单位取回基地（离开星域场景）** —— 容器侧的唯一摘取入口（M3d）：
+     *  · 摘取走引擎既有 `takeUnit`（**保留单位全部自身状态**；本函数随后按口径**清空携回载荷**并**修复**）；
+     *  · **携回载荷随对象一起交出**：返回的 `ore` / `cargos` 就是该单位这一趟的收获
+     *    （容器同时把它们从单位上清掉 ⇒ **同一份载荷只有一处来源**，不会被算第二遍）；
+     *  · `opts.allowDead`（默认 false）：阵亡单位**不允许"主动返回"**（`unitDead`）——
+     *    但**结束结算**要把它移出场景（损毁销账）⇒ 结算传 `true`，此时 `alive:false`、**载荷为空**
+     *    （阵亡时引擎已把矿物返还星区、货物退回星区 ⇒ 不产生基地收益，符合"损毁不返还"）。
+     *  @returns `{ ok:true, unitId, configId, ordinal, alive, inEntry, atGate, ore, cargos, repaired }` /
+     *           `{ ok:false, reason:{ code, ... } }`（`notDeployed` / `unknown` / `unitDead` / `none`） */
+    takeBackUnit(unitId, opts = {}) {
+      const id = unitId === undefined || unitId === null ? '' : String(unitId);
+      const found = findUnitEntry(id);
+      if (!found) return { ok: false, reason: { code: 'unknown', id } };
+      const u = found.unit;
+      if (!u.baseRef) return { ok: false, reason: { code: 'notDeployed', id } };
+      if (!u.alive && !(opts && opts.allowDead)) {
+        return { ok: false, reason: { code: 'unitDead', id } };
+      }
+      const carry = u.alive ? carryViewOf(u) : { ore: 0, cargos: [] };
+      // 先摘取（引擎侧清理到位）——失败 ⇒ 什么都不改（零改动）
+      const taken = found.entry.battle.takeUnit(id);
+      if (!taken.ok) return { ok: false, reason: { code: 'none', id } };
+      navQueue.delete(id); // 摘取后清掉可能的移动指令（队列不留失效 id）
+      if (u.alive) {
+        // ★ 载荷随手带走 ⇒ 从单位上清空（避免"基地已入账、单位还挂着"的第二处账目）
+        u.hull.ore = 0;
+        u.cargos = [];
+        u.hull.cargo = 0;
+      }
+      const repaired = repairForReturn(u);
+      return {
+        ok: true,
+        unitId: id,
+        configId: u.baseRef.configId,
+        ordinal: Number.isInteger(u.baseRef.ordinal) ? u.baseRef.ordinal : null,
+        alive: !!u.alive,
+        inEntry: found.entry.index === playerEntryIndex,
+        atGate: !!found.entry.isGate, // ★ 迭代 2：按**星区类型**判定的"是否在星门星区"（结算口径与 `returnCheck` 同源）
+        ore: carry.ore,
+        cargos: carry.cargos,
+        repaired,
+      };
+    },
+    /** ★★ **增援注入（M3d「多次派遣」的星域侧落地）** —— 把**新派遣的单位**增量并入**入场星区**的我方编队：
+     *  · 时机判据：**运行中**才可增援（`finished`/`stopped`/`settled`/演出中 ⇒ 拒绝 `fieldOver`）；
+     *  · 与创建时注入**同一套编队口径**（引擎新增最小接口 `battle.reinforce()`，见 `systems/battle.js`）；
+     *  · **不新建星域、不重建任何星区实例、不动既有单位与星区状态**（纯追加到入场星区我方数组末尾）；
+     *  · **归属标签 `baseRef` 就地写上**（`configId` ＋ 该配置**继续递增**的序号；
+     *    序号计数器由创建时的 `opts.baseRefs` 初始化 ⇒ 同一配置内序号恒唯一、可复现）；
+     *  · 若本星域**未配置入场星区**（`playerEntryIndex < 0`，理论上仅畸形配置）⇒ 拒绝 `noEntry`（零改动）。
+     *  @param {Array<{shipId:string, count:number, level?:number, modules?:Array, configId:string}>} list
+     *         「逐配置一批」的注入清单（`count` 份 ⇒ 生成 `count` 个单位；顺序＝传入顺序）
+     *  @returns `{ ok:true, entryIndex, unitIds, refs }` / `{ ok:false, reason:{ code } }`
+     *  ★ **落地前必须先通过业务干跑**（见 `systems/expedition.js`；本函数只做"能不能注"的容器级判据）。 */
+    reinforce(list) {
+      if (collapsing) return { ok: false, reason: { code: 'fieldOver', phase: 'collapsing' } };
+      if (stopped || finished || settled) return { ok: false, reason: { code: 'fieldOver' } };
+      const entry = entryByIndex.get(playerEntryIndex);
+      if (!entry) return { ok: false, reason: { code: 'noEntry', entryIndex: playerEntryIndex } };
+      const spec = Array.isArray(list) ? list : [];
+      const flat = []; // 引擎编队条目（与 `startBattle` 的 allies 同构）
+      const refs = []; // 与 flat **一一对应**的归属标签
+      for (const it of spec) {
+        if (!it || typeof it !== 'object') continue;
+        const configId = it.configId == null ? '' : String(it.configId);
+        const n = Number.isFinite(it.count) ? Math.max(0, Math.floor(it.count)) : 0;
+        if (!configId || n <= 0) continue;
+        const mods = Array.isArray(it.modules) ? it.modules.map((m) => ({ ...m })) : [];
+        for (let k = 0; k < n; k += 1) {
+          flat.push({ type: it.shipId, level: Number.isFinite(it.level) ? it.level : 1, modules: mods.map((m) => ({ ...m })) });
+          const next = (ordinalSeq.get(configId) || 0) + 1;
+          ordinalSeq.set(configId, next);
+          refs.push({ configId, ordinal: next });
+        }
+      }
+      if (!flat.length) return { ok: true, entryIndex: playerEntryIndex, unitIds: [], refs: [] };
+      const added = entry.battle.reinforce(flat, 'ally');
+      if (!added || !added.ok) return { ok: false, reason: { code: 'none' } };
+      // ★ 归属标签：直接写在**引擎交回的新单位对象**上（`added.units` 就是本次追加的那批，顺序＝传入顺序）
+      const n = Math.min(refs.length, added.units.length);
+      const unitIds = [];
+      for (let i = 0; i < n; i += 1) {
+        const u = added.units[i];
+        if (!u) continue;
+        u.baseRef = { configId: refs[i].configId, ordinal: refs[i].ordinal };
+        unitIds.push(u.id);
+      }
+      return { ok: true, entryIndex: playerEntryIndex, unitIds, refs: refs.slice(0, n) };
+    },
+    /** ★ **增援撤销（唯一用途：编排层"基地侧落地失败"时的回滚）**：把刚注入的单位**原样摘除**（不计账、不修复）。
+     *  · 与 `takeBackUnit` 的区别：**不带任何业务语义**（不产生"返回/损毁"账目、不清载荷、不修复）；
+     *  · 只摘除**有指定 id 且仍在场**的单位；找不到 ⇒ 跳过（幂等）。
+     *  @returns `{ ok:true, removed:number }` */
+    undoReinforce(unitIds) {
+      const ids = Array.isArray(unitIds) ? unitIds : [];
+      let removed = 0;
+      for (const id of ids) {
+        const found = findUnitEntry(String(id));
+        if (!found) continue;
+        const r = found.entry.battle.takeUnit(found.unit.id);
+        if (r && r.ok) {
+          navQueue.delete(found.unit.id);
+          removed += 1;
+        }
+      }
+      return { ok: true, removed };
+    },
     /* ---------- ★ 星区间移动（阶段 1）：只读口径 + 唯一写入口 ---------- */
+
     /** ★ **单位航行只读快照**（**UI 只读、绝不自算**；每次读取返回**新对象**；未知单位 ⇒ `null`）：
      *  `{ unitId, side, sectorIndex, navCoeff, navReadyUntil, navRemainTicks, moveQueueTargetIndex,
      *     navPath, navCdTicks, navEnergy, navEnergyPerTick, navStalled, canCommand }`。
@@ -727,7 +1150,8 @@ export function createStarfield(configOrId, seed) {
      *    （**引擎派生**：秒数换算由 UI 调 `core/tick.js formatTickSeconds`，UI 不得自己算到期）；
      *  · `moveQueueTargetIndex` ＝**已下达的目标星区 index**（未排队 ⇒ `null`）；
      *  · ★ `navPath` ＝**剩余路径的星区 index 序列**（含目标、**不含当前所在星区**；未排队/不可达 ⇒ `null`）
-     *     —— 引擎按唯一阶梯路径口径算出（`navPathOf`），UI **只渲染、不自算**（阶段 2 地图描边用）；
+     *     —— 引擎按唯一路径口径算出（`navPathOf`：无障碍＝均匀阶梯 / 被挡＝图上最短通路绕行），
+     *     UI **只渲染、不自算**（阶段 2 地图描边用；★ 迭代 3 起描边自然反映绕行结果，UI 代码未变）；
      *  · `navCdTicks` ＝**本条（当前这一步）冻结的冷却长度**（与 `navReadyUntil` 同写同源；
      *     UI 进度条的**分母**：`进度 ＝ 1 − navRemainTicks / navCdTicks`，就绪/未排队 ⇒ 0 ⇒ 按“满格”呈现）；
      *  · `navEnergy` ＝当前能量（引擎唯一能量字段，读 `hull.energy`；NaN/缺失 ⇒ 0）；
@@ -755,7 +1179,7 @@ export function createStarfield(configOrId, seed) {
         navReadyUntil: until,
         navRemainTicks: Math.max(0, until - runTicks),
         moveQueueTargetIndex: target,
-        // ★ 剩余路径：引擎唯一阶梯路径口径（`navPathOf`）；不可达/未排队 ⇒ null
+        // ★ 剩余路径：引擎唯一路径口径（`navPathOf`：阶梯 / 绕行）；无通路或未排队 ⇒ null
         navPath: target == null ? null : navPathOf(crossCtx, found.entry.index, target),
         navCdTicks: Math.max(0, u.navCdTicks || 0),
         navEnergy: energy,
@@ -791,8 +1215,9 @@ export function createStarfield(configOrId, seed) {
     /**
      * ★ **单位「星区间移动」的唯一写入口**（**只记账 / 排队，绝不直接搬迁**；搬迁只发生在
      *   `crossSectorPhase` 内 —— 见文件头「星区间移动」）。语义（与文件头 ③④⑤⑥ 逐条对应）：
-     *   · **一次只移动一个星区**：目标可以是任意**合法星区**，单位会按「阶梯型」路径**逐格**走过去
-     *     （每完成一步冻结下一步 cd；到期后**自动执行**，玩家无需再操作）；
+     *   · **一次只移动一个星区**：目标可以是任意**合法星区**，单位会按**引擎算好的路径**逐格走过去
+     *     （★ 迭代 3：**无障碍＝均匀阶梯**、**被边界/空位挡住＝图上最短通路绕行** ⇒ 见 `navPathOf`；
+     *     每完成一步冻结下一步 cd；到期后**自动执行**，玩家无需再操作）；
      *   · **就绪时**（`navReadyUntil ≤ runTicks`）⇒ **立即到期**（`navReadyUntil = runTicks`）：
      *     **下一 tick 的跨星区阶段即执行迁移**（用户口径：**不需要先充能满**）；迁移落地后再按
      *     `cd = max(1, round(navCdTicks ÷ navCoeff × (1 + timeCoeff)))` 重新计时（用于**下一步**）；
@@ -824,8 +1249,10 @@ export function createStarfield(configOrId, seed) {
      *     不代表失败 —— UI 据此给“已取消移动”的短提示，**不当作失败**）；
      *   · **失败** (`ok:false`) 的 `reason` 语义：`'none'`＝无此单位（或已不在任何星区）；
      *     `'dead'`＝该单位已阵亡；`'owner'`＝**不归玩家指挥**（非我方 / 召唤·临时单位）；
-     *     `'invalid'`＝目标星区**不存在**（越界/无此星区）；`'far'`＝目标存在但**阶梯路径越出 `layout`
-     *     有效格**（按均匀阶梯口径不可达）；`'finished'`＝星域已停止/结束/结算（不再接受指令）。
+     *     `'invalid'`＝目标星区**不存在**（越界/无此星区）；`'far'`＝**图上无通路**（★ 迭代 3 口径：
+     *     目标存在，但**四方向逐格**从出发格出发**绕也绕不到**它 —— 见 `navPathOf`/`bfsPathOf`；
+     *     拒绝 ⇒ **零改动**：不排队、不动 `navReadyUntil`、不产生任何星区变化）；
+     *     `'finished'`＝星域已停止/结束/结算（不再接受指令）。
      *   ★ **`'same'` 已不再是失败口径**（同一输入现在走上面的“取消”成功分支）。
      */
     moveUnitTo(unitId, targetIndex) {
@@ -866,7 +1293,8 @@ export function createStarfield(configOrId, seed) {
           navReadyUntil: Math.max(0, u.navReadyUntil || 0),
         };
       }
-      // ③ 阶梯路径必须**完全落在有效格内**（不可达 ⇒ 'far'，与跨星区阶段的同一判据）
+      // ③ **可达性**：路径（无障碍＝均匀阶梯 / 被挡＝图上最短通路绕行）必须存在 ⇒ 否则 'far'（无通路）
+      //    （与跨星区阶段同一判据：同一个 `navPathOf`；此处拒绝 ⇒ 零改动，不排队、不改冷却字段）
       if (!navPathOf(crossCtx, found.entry.index, t)) {
         return { ok: false, reason: 'far', unitId: u.id, fromIndex: found.entry.index, targetIndex: t, queued: false };
       }
@@ -892,14 +1320,33 @@ export function createStarfield(configOrId, seed) {
     /**
      * ★ **推进星域时间**（默认 1 tick；唯一驱动入口）——严格按文档 §1 的流程：
      *   ① `runTicks += 1` → ② 固定顺序逐区 `step()` → ③ 跨星区阶段 → ④ 时间耗尽 ⇒ 停止 + 结算。
+     *  ★★ M3d **结束演出期间（`collapsing`）**：本函数**只推进变白进度**——
+     *   不 step 任何星区（无 AI/攻击/事件/结算）、不动 `runTicks`、不产生任何战报 ⇒ 演出**零玩法副作用**。
      * @param {number} [n] 推进 tick 数（非正整数 ⇒ 不推进）
      * @returns {{ ok:boolean, reason?:string, ticks:number, runTicks:number, remainingTicks:number,
      *             finished:boolean, stopped:boolean, settled:boolean }}
      */
     step(n = 1) {
+      const want0 = Math.floor(Number(n));
+      const ticks0 = Number.isFinite(want0) && want0 > 0 ? want0 : 0;
+      // ★★ 结束演出（**优先于 stopped/finished 分支**）：只推进变白
+      if (collapsing) {
+        advanceCollapse(ticks0);
+        return {
+          ok: true,
+          ticks: ticks0,
+          runTicks,
+          remainingTicks: Math.max(0, durationTicks - runTicks),
+          finished,
+          stopped,
+          settled,
+          collapsing: true,
+          collapseElapsed,
+          collapseDone: api.collapseDone,
+        };
+      }
       if (stopped) return { ok: false, reason: 'stopped', ticks: 0, runTicks, remainingTicks: Math.max(0, durationTicks - runTicks), finished, stopped, settled };
-      const want = Math.floor(Number(n));
-      const ticks = Number.isFinite(want) && want > 0 ? want : 0;
+      const ticks = ticks0;
       let done = 0;
       for (let k = 0; k < ticks; k += 1) {
         if (finished) break;
@@ -939,6 +1386,8 @@ export function createStarfield(configOrId, seed) {
     },
     /** ★ 结算入口（时间耗尽时自动调用；也可手动调用 ⇒ 手动调用会置 `settled` 但不改 `finished`） */
     settle,
+    /** ★★ M3d **开始结束演出（变白）**（唯一入口；调用方先做完结算再调；幂等，见同名函数注释） */
+    beginCollapse,
     /** ★★ **星域级「全队主要目标」**（用户口径：星域模式下**全队唯一**，跨所有星区统一）——
      *  · **单一来源＝本容器**（`fleetPolicy`，取值同既有唯一实现 `battle.setAllyPolicy` 的合法值域）；
      *  · 各星区实例**不各自持有一份 UI 状态**：读走本 getter，写走下面的 `setFleetPolicy()`；
@@ -1012,6 +1461,75 @@ function starfieldSigOf(sf) {
   return sf.sectors.map((s) => `${s.index}:${sectorSigOf(sf.battleOf(s.index))}`).join('\n');
 }
 
+/* ---------- ★ M3d：出征单位的**只读载荷视图** / **取回（返回基地）** / **返回即修复** ---------- */
+
+/** ★ 单位携回载荷的只读视图（`{templateId, level, tons}`；**只读、不摘取**）：
+ *  · 货物实体清单走既有唯一只读口径 `cargoListOf`（引擎 `hull.cargo` 是同源数值口径）；
+ *  · 模板键兼容 `templateId` / `type` 两种既有写法（规范化在 `systems/base.js` 再做一次）。 */
+function carryViewOf(unit) {
+  const cargos = cargoListOf(unit).map((c) => ({
+    templateId: (c && (c.templateId || c.type)) || '',
+    level: c && Number.isInteger(c.level) ? c.level : 1,
+    tons: c && Number.isFinite(c.tons) ? c.tons : 0,
+  }));
+  return { ore: oreLoadOf(unit), cargos };
+}
+
+/** ★ 出征单位的**只读汇总条目**（容器 `baseUnits` 用它；**每次读取返回新对象**）：
+ *  · 归属＝`unit.baseRef`（创建时按 `opts.baseRefs` 写在单位对象上，跨星区搬迁随对象走）；
+ *  · `inEntry` ＝ 该单位**此刻在入场星区**（`playerEntryIndex`；生成器口径，历史字段）；
+ *  · ★ M3d 迭代 2 `atGate` ＝ 该单位**此刻在任一「星门类型」星区**（**按类型 id 判定、不按下标**）
+ *    ⇒ **这才是"能不能返回基地"的判据**（完整版在 `systems/expedition.js` 的 `returnCheck`）；界面只读，不自算。 */
+function baseUnitViewOf(entry, unit, entryIndex) {
+  const carry = carryViewOf(unit);
+  return {
+    unitId: unit.id,
+    configId: unit.baseRef ? unit.baseRef.configId : null,
+    ordinal: unit.baseRef && Number.isInteger(unit.baseRef.ordinal) ? unit.baseRef.ordinal : null,
+    alive: !!unit.alive,
+    sectorIndex: entry.index,
+    inEntry: entry.index === entryIndex,
+    atGate: !!entry.isGate, // ★ 按**类型**判定（星域里可能有多个星门星区）
+    sectorTypeId: entry.typeId, // ★ 只读：当前所在星区的类型 id（界面/自检可核对类型判据）
+    hp: Number.isFinite(unit.hull && unit.hull.hp) ? Math.round(unit.hull.hp) : 0,
+    hpMax: Number.isFinite(unit.hull && unit.hull.hpMax) ? Math.round(unit.hull.hpMax) : 0,
+    shield: Number.isFinite(unit.hull && unit.hull.shield) ? Math.round(unit.hull.shield) : 0,
+    energy: Number.isFinite(unit.hull && unit.hull.energy) ? Math.round(unit.hull.energy) : 0,
+    ore: carry.ore,
+    cargos: carry.cargos,
+  };
+}
+
+/** ★★ **返回即修复**（用户口径）：满血 → 满盾（各护盾池各自补满）→ 满能量 → **模块冷却归零**。
+ *  · 只写单位自身字段（`hull.hp/hpMax`、`hull.pools` 各池 `value/cap`、`hull.shield` 汇总、
+ *    `hull.energy/energyCap`、模块实例 `cooldown/cdElapsed`）—— **不改任何配置、不动等级与模块**；
+ *  · 返回 `{ hp, shield, energy, maxHp, maxShield, maxEnergy }`（供结算回执与自检）。
+ *  ★ 说明：基地侧是**抽象配置**（`count/out`），**不存血量** ⇒ "修复"落在**单位对象**上并由结算回执体现。 */
+function repairForReturn(unit) {
+  const h = (unit && unit.hull) || {};
+  if (Number.isFinite(h.hpMax)) h.hp = h.hpMax;
+  if (h.pools instanceof Map) {
+    for (const p of h.pools.values()) {
+      if (p && Number.isFinite(p.cap)) p.value = Math.max(0, p.cap);
+    }
+  }
+  if (Number.isFinite(h.shieldCap)) h.shield = h.shieldCap; // 汇总口径：Σ 池值（各池已补满）
+  if (Number.isFinite(h.energyCap)) h.energy = h.energyCap;
+  for (const inst of unit.modules || []) {
+    if (!inst) continue;
+    inst.cooldown = 0; // 就绪（`advanceModuleState` 的判据字段）
+    inst.cdElapsed = 0;
+  }
+  return {
+    hp: Number.isFinite(h.hp) ? h.hp : 0,
+    shield: Number.isFinite(h.shield) ? h.shield : 0,
+    energy: Number.isFinite(h.energy) ? h.energy : 0,
+    maxHp: Number.isFinite(h.hpMax) ? h.hpMax : 0,
+    maxShield: Number.isFinite(h.shieldCap) ? h.shieldCap : 0,
+    maxEnergy: Number.isFinite(h.energyCap) ? h.energyCap : 0,
+  };
+}
+
 /** ★ **自检**：单位「星区间移动」（逐格跨区 + 航行引擎「始终充能」 + 排队 + **同一实例整体搬迁**）。
  *  检查项（全部纯本地、同步；星域星区模式本就不订阅全局 ticker / 不写全局战报）：
  *   ① **零回归（新口径）**：**在“无任何单位处于充能中”的前提下**，逐 tick 与「空实现」完全一致
@@ -1021,9 +1539,14 @@ function starfieldSigOf(sf) {
  *   ①b **始终充能（实测）**：**无指令**（队列恒空）时仍逐 tick 推进冷却并按**单位配置的能耗**扣能；
  *      扣不起 ⇒ 不扣、不推进（`navStalled` 真、剩余不变）、回能足够后继续推进；
  *      **充能完成后零耗能**（就绪态能量只回不扣、剩余恒 0）；
- *   ② **均匀阶梯路径**：最少步数、逐步四方向相邻（|Δ|=1）、**交替推进**（Bresenham 式；对角 `|Δq|=|Δr|`
- *      时**首步走 q**）、不越出有效格（含 `'far'`/`'invalid'`/`'none'` 拒绝口径）
+ *   ② **路径（无障碍）**：**均匀阶梯**（交替推进 / 最少步数 / 逐步相邻 / 不越出有效格）、拒绝口径 `'invalid'`/`'none'`
  *      ＋**未装任何模块的单位同样可移动**；并核对只读口径 `unitNav().navPath` 与引擎判据同源（同一函数）；
+ *   ②c ★ **M3d 迭代 3 寻路**（详见下方 `run('②c …')` 的注释）：**有通路走最短路径** ——
+ *      · **绕行样例**：阶梯被空位/边界挡住 ⇒ 图上四方向 **BFS 最短通路**（含"路径长于曼哈顿"的严格绕行）；
+ *      · **无通路** ⇒ `moveUnitTo` 返回 `'far'`、不排队、**星域逐区快照零改动**；
+ *      · **同起终点路径稳定**（重复读取 / 取消后重下 / 同配置同 seed 另容器 ⇒ 逐项一致）；
+ *      · **引擎判据 ＝ `navPath` 描边数据 ＝ 实际逐格脚步**（三者同源）；
+ *      （原 ② 里"对角目标 ⇒ `'far'`"的两个样本**已变成可达的绕行样例** ⇒ 断言搬到本项，覆盖面不减）
  *   ③ **就绪即走 + 落地后才为下一步计时**：就绪下达 ⇒ `navReadyUntil = runTicks`（下一 tick 即走、**不必充能满**）；
  *      迁移落地后写入 `navReadyUntil = 落地 tick + cd` 与只读分母 `navCdTicks = cd`（两者同写同源），
  *      冷却期内**一字不改**、执行时刻恰＝冻结值；
@@ -1304,22 +1827,24 @@ export function starfieldMoveSelfCheck() {
     const s0 = sf.sectors.find((x) => x.index === start);
     const [idA, idB, idC] = sf.battleOf(start).allies.map((u) => u.id);
     const nUp = atOf(sf, s0.q, s0.r + 1);        // (0,−1)
-    const nDia = atOf(sf, s0.q + 1, s0.r + 1);   // (1,−1)：从起点不可达（对角 ⇒ 首步走 q ⇒ (1,−2) 无格）
-    const nFar = atOf(sf, s0.q - 1, s0.r + 1);   // (−1,−1)：同理不可达
+    // ★ M3d 迭代 3：下列两个对角目标**过去**因"阶梯首步落在空位"被判 `'far'`，**现在可由 BFS 绕行抵达**
+    //   （用户口径：有通路走最短路径）⇒ 它们的断言搬去 **②c**（绕行样例）；本项只留 `'invalid'`/`'none'`。
+    const nDia = atOf(sf, s0.q + 1, s0.r + 1);   // (1,−1)：阶梯被空位 (1,−2) 挡住 ⇒ 绕行 (0,−1)→(1,−1)
+    const nFar = atOf(sf, s0.q - 1, s0.r + 1);   // (−1,−1)：镜像样例（同理绕行）
     const nEnd = atOf(sf, s0.q, s0.r + 4);       // (0,2)：同列 4 步之外（=曼哈顿距离 ⇒ 最少步数）
     const nDiag = atOf(sf, s0.q + 1, s0.r + 2);  // (1,0)：|Δq|=1、|Δr|=2
     const moverObj = unitOf(sf, idA);
     const noModule = (moverObj.modules || []).length === 0; // ★ 可移动性不依赖模块
 
     // —— 拒绝口径（都不产生队列、不改任何字段）——
-    //    ★ 注意：目标＝自身所在星区**不再是拒绝口径**（现在走“取消”成功分支，见 ⑤b）
-    const rFar = sf.moveUnitTo(idA, nDia);
-    const rFar2 = sf.moveUnitTo(idA, nFar);
+    //    ★ 注意：目标＝自身所在星区**不再是拒绝口径**（现在走“取消”成功分支，见 ⑤b）；
+    //    ★ `'far'`（图上无通路）的拒绝口径见 **②c**（那里用"图上隔断"的样例断言，零改动一并核对）
     const rInv = sf.moveUnitTo(idA, 9999);
     const rNone = sf.moveUnitTo('ship_not_exist', nUp);
-    const rejectsOk =
-      rFar.reason === 'far' && rFar2.reason === 'far' && rInv.reason === 'invalid' && rNone.reason === 'none';
+    const rejectsOk = rInv.reason === 'invalid' && rNone.reason === 'none';
     const noQueueAfterReject = sf.moveQueue.length === 0;
+    // 对角目标**仍然合法且可达**（供 ②c 使用同一算例；此处只确认"不再是拒绝口径"）
+    const diaReachNow = nDia >= 0 && nFar >= 0;
 
     // —— ②b **均匀阶梯**（同一函数的独立算例）：目标 (1,0)（|Δq|=1、|Δr|=2）
     //    ★ 旧“先 q 后 r”口径下首步要经 (1,−2)（无格）⇒ 不可达；新交替口径下**可达**，且**首步走 r**。
@@ -1394,10 +1919,10 @@ export function starfieldMoveSelfCheck() {
     const cancelNoopOk = cancelNoop.ok === true && cancelNoop.cancelled === true && cancelNoop.cleared === false;
 
     add(
-      '② 均匀阶梯路径（交替推进 / 最少步数 / 逐步相邻 / 不越出有效格 / 拒绝口径 / 无模块可移动）',
+      '② 均匀阶梯路径（无障碍 ⇒ 交替推进 / 最少步数 / 逐步相邻 / 拒绝口径 invalid·none / 无模块可移动）',
       noModule && rejectsOk && noQueueAfterReject && stairOk && step1Ok && step2Ok && step3Ok &&
-        srcEmpty1 && srcEmpty2 && destHasIt && cIdle,
-      `拒绝：far=${rFar.reason}/${rFar2.reason} invalid=${rInv.reason} none=${rNone.reason}；` +
+        srcEmpty1 && srcEmpty2 && destHasIt && cIdle && diaReachNow,
+      `拒绝：invalid=${rInv.reason} none=${rNone.reason}（'far' 无通路口径见 ②c）；` +
         `无模块=${noModule}；交替算例（|Δq|=1、|Δr|=2）：可达=${stairBook.ok} 路径=[${(stairPath || []).join(',')}]` +
         `（首步走 r=${(stairPath || [])[0] === stUp}）首步落点=${stairFirst} 消减后剩余=[${(stairLeft || []).join(',')}]；` +
         `对角算例（|Δq|=|Δr|=1）首步走 q；落脚序列 ${start}→${nUp}→${atOf(sf, s0.q + 1, s0.r + 1)}→${nDiag}；` +
@@ -1417,6 +1942,114 @@ export function starfieldMoveSelfCheck() {
         `取消后 600 tick 未再搬迁=${noStepAfterCancel}；无指令时再取消＝幂等成功=${cancelNoopOk}`
     );
   });
+
+  /* ---- ②c ★ M3d 迭代 3：**星域寻路（有通路走最短路径）** ----
+   *   · **绕行样例**：直线/阶梯被版图边界（空位格）挡住 ⇒ 引擎改走**图上四方向最短通路**（BFS）；
+   *   · **严格绕行**：路径比曼哈顿距离更长也要绕过去（用"图上隔断"样例：挖掉中心格 ⇒ 只能绕外圈）；
+   *   · **无通路 ⇒ 拒绝且零改动**：入口格的唯一邻格被挖掉 ⇒ `moveUnitTo` 返回 `'far'`、不排队、不改任何字段；
+   *   · **同起终点路径稳定**：重复读取 / 取消后重下 / 另开同配置同 seed 的容器 ⇒ 路径逐项一致；
+   *   · **引擎判据 ＝ 描边数据 ＝ 实际脚步**：把绕行路径走完，逐格落点序列必等于 `unitNav().navPath`。
+   *   ★ **自检专用的"挖格"注入**：直接删容器自己暴露的格位表 `entryIndexAtCell` 的条目（＝模拟"图上那块不存在/
+   *     被隔断"），**只影响寻路**（该表在引擎里只被 `navPathOf`/`bfsPathOf` 读）；星区本身仍在 `entryByIndex` 里
+   *     ⇒ 正好构造出"目标存在但无通路"的 `'far'` 场景（真实版图是连通的圆盘，天然没有这种样例）。 */
+  run('②c 星域寻路（无障碍＝阶梯 / 被挡＝图上最短通路绕行 / 无通路拒绝 / 路径稳定）', () => {
+    const mkSf = (seed) => createStarfield(navSandboxConfig([P3], 4000), seed);
+    const cut = (sf, q, r) => sf.entryIndexAtCell.delete(`${q},${r}`); // 自检专用：把某格从图的通行集合里挖掉
+    const restore = (sf, q, r, idx) => sf.entryIndexAtCell.set(`${q},${r}`, idx);
+
+    // ① **绕行样例**：入口 (0,−2) → (1,−1)：阶梯首步要落 (1,−2)（该格不存在）⇒ 必须绕经 (0,−1)
+    const sf1 = mkSf('move-bfs');
+    const e1 = sf1.sectors.find((x) => x.index === sf1.playerEntryIndex);
+    const id1 = sf1.battleOf(sf1.playerEntryIndex).allies[0].id;
+    const up1 = atOf(sf1, e1.q, e1.r + 1); // (0,−1)：绕行中转格
+    const dia1 = atOf(sf1, e1.q + 1, e1.r + 1); // (1,−1)：目标（阶梯被空位挡住）
+    const detourBook = sf1.moveUnitTo(id1, dia1);
+    const detourPath = sf1.unitNav(id1).navPath;
+    // 逐步走完：记录每一格的落点序列（＝实际脚步）
+    const walked = [];
+    for (let i = 0; i < 12 && sf1.unitNav(id1).sectorIndex !== dia1; i += 1) {
+      const before = sf1.unitNav(id1).sectorIndex;
+      stepUntilMove(sf1, id1, 600);
+      const now = sf1.unitNav(id1).sectorIndex;
+      if (now === before) break; // 走不动（能量停滞等）⇒ 退出，交由断言失败报告
+      walked.push(now);
+    }
+    const detourOk =
+      detourBook.ok === true &&
+      Array.isArray(detourPath) && detourPath.length === 2 &&
+      detourPath[0] === up1 && detourPath[1] === dia1 && // 绕行：r 方向一格 → q 方向一格
+      walked.length === 2 && walked[0] === up1 && walked[1] === dia1 && // 实际脚步与描边数据一致
+      sf1.unitNav(id1).sectorIndex === dia1;
+
+    // ② **严格绕行**（路径长于曼哈顿距离）：挖掉中心 (0,0) ⇒ (0,−1) → (0,1) 只能绕右侧外圈（4 步 > 曼哈顿 2）
+    const sf2 = mkSf('move-bfs-detour');
+    const e2 = sf2.sectors.find((x) => x.index === sf2.playerEntryIndex); // (0,−2)
+    const id2 = sf2.battleOf(sf2.playerEntryIndex).allies[0].id;
+    const c002 = atOf(sf2, 0, 0); // 中心格（将被挖掉）
+    const from2 = atOf(sf2, 0, -1); // (0,−1)
+    const to2 = atOf(sf2, 0, 1); // (0,1)：与 from2 曼哈顿距离 2
+    const g_right1 = atOf(sf2, 1, -1); // (1,−1)
+    const g_right2 = atOf(sf2, 1, 0); // (1,0)
+    const g_right3 = atOf(sf2, 1, 1); // (1,1)
+    cut(sf2, 0, 0);
+    // 先把单位挪到 (0,−1)（未挖中心时的合法一步），再从那里下达"严格绕行"目标
+    sf2.moveUnitTo(id2, from2);
+    stepUntilAt(sf2, id2, from2, 2000);
+    const sf2moved = sf2.unitNav(id2).sectorIndex === from2;
+    const detour2 = sf2.moveUnitTo(id2, to2);
+    const path2 = sf2.unitNav(id2).navPath;
+    const strictOk =
+      sf2moved && detour2.ok === true &&
+      Array.isArray(path2) && path2.length === 4 && // 4 步 > 曼哈顿 2 ⇒ 确实是"绕过去"
+      path2[0] === g_right1 && path2[1] === g_right2 && path2[2] === g_right3 && path2[3] === to2;
+
+    // ③ **无通路 ⇒ 拒绝且零改动**：挖掉入口格 (0,−2) 的**唯一邻格** (0,−1) ⇒ 四面无路
+    const sf3 = mkSf('move-bfs-cut');
+    const e3 = sf3.sectors.find((x) => x.index === sf3.playerEntryIndex);
+    const id3 = sf3.battleOf(sf3.playerEntryIndex).allies[0].id;
+    const nbr3 = atOf(sf3, e3.q, e3.r + 1); // (0,−1)：入口的唯一邻格
+    const tgt3 = atOf(sf3, e3.q + 1, e3.r + 1); // (1,−1)
+    cut(sf3, e3.q, e3.r + 1);
+    const sigBefore3 = starfieldSigOf(sf3);
+    const navBefore3 = JSON.stringify({ u: sf3.unitNav(id3).navReadyUntil, c: sf3.unitNav(id3).navCdTicks });
+    const noPath = sf3.moveUnitTo(id3, tgt3);
+    const navPath3 = sf3.unitNav(id3).navPath;
+    restore(sf3, e3.q, e3.r + 1, nbr3); // 复原（保持容器自洽，便于后续断言）
+    const noPathOk =
+      noPath.ok === false && noPath.reason === 'far' && noPath.queued === false &&
+      sf3.moveQueue.length === 0 && navPath3 === null &&
+      JSON.stringify({ u: sf3.unitNav(id3).navReadyUntil, c: sf3.unitNav(id3).navCdTicks }) === navBefore3 &&
+      starfieldSigOf(sf3) === sigBefore3; // ★ 零改动：星域逐区快照逐字节一致
+
+    // ④ **同起终点路径稳定**：重复读取 / 取消后重下 / 另一同配置同 seed 的容器 ⇒ 路径逐项一致
+    // ④ **同起终点路径稳定**：重复读取 / 取消后重下 / 另一同配置同 seed 的容器 ⇒ 路径逐项一致
+    const sf4 = mkSf('move-bfs-stable');
+    const e4 = sf4.sectors.find((x) => x.index === sf4.playerEntryIndex);
+    const id4 = sf4.battleOf(sf4.playerEntryIndex).allies[0].id;
+    const t4 = atOf(sf4, e4.q + 1, e4.r + 1);
+    sf4.moveUnitTo(id4, t4);
+    const s4a = JSON.stringify(sf4.unitNav(id4).navPath);
+    const s4b = JSON.stringify(sf4.unitNav(id4).navPath); // 重复读取
+    sf4.moveUnitTo(id4, e4.index); // 取消（拖回自身）
+    sf4.moveUnitTo(id4, t4); // 重新下达同一目标
+    const s4c = JSON.stringify(sf4.unitNav(id4).navPath);
+    const sf5 = mkSf('move-bfs-stable'); // 同配置 + 同 seed ⇒ 生成器确定 ⇒ 同版图
+    const e5 = sf5.sectors.find((x) => x.index === sf5.playerEntryIndex);
+    const id5 = sf5.battleOf(sf5.playerEntryIndex).allies[0].id;
+    sf5.moveUnitTo(id5, atOf(sf5, e5.q + 1, e5.r + 1));
+    const s5 = JSON.stringify(sf5.unitNav(id5).navPath);
+    const stableOk = s4a !== 'null' && s4a === s4b && s4a === s4c && s4a === s5;
+
+    add(
+      '②c 星域寻路：绕行样例（阶梯被空位挡住 ⇒ 图上最短通路）/ 严格绕行（长于曼哈顿）/ 无通路 ⇒ far 且零改动 / 同起终点路径稳定',
+      detourOk && strictOk && noPathOk && stableOk,
+      `绕行：ok=${detourBook.ok} 路径=[${(detourPath || []).join(',')}]（期望 ${up1},${dia1}）实际脚步=[${walked.join(',')}]；` +
+        `严格绕行：ok=${detour2.ok} 路径=[${(path2 || []).join(',')}]（期望 ${g_right1},${g_right2},${g_right3},${to2}）；` +
+        `无通路：ok=${noPath.ok} reason=${noPath.reason} 队列=${sf3.moveQueue.length} 快照一致=${starfieldSigOf(sf3) === sigBefore3}；` +
+        `路径稳定：重复=${s4a === s4b} 取消重下=${s4a === s4c} 同种子另容器=${s4a === s5}`
+    );
+  });
+
 
   /* ---- ③b 唯一公式锚点：cd ＝ max(1, round(navCdTicks ÷ navCoeff × (1 + 时间系数))) ---- */
   run('③b 航行冷却唯一公式锚点（navCdTicks=200 ÷ 系数：1 / 1.1 / 1.5 ⇒ 200 / 182 / 133t）', () => {
